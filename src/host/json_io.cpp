@@ -114,22 +114,32 @@ Json to_json(const Spec &spec) {
   Json palette = Json::array();
   for (BlockType type : spec.palette)
     palette.push_back(palette_name(type));
+  Json fixed = Json::array();
+  for (const auto &[position, block] : spec.fixed) {
+    Json entry = to_json(block);
+    entry["position"] = vec3(position);
+    fixed.push_back(std::move(entry));
+  }
+  Json forbidden = Json::array();
+  for (Vec3 p : spec.forbidden)
+    forbidden.push_back(vec3(p));
 
   const TimingSpec &t = spec.timing;
-  return {
-      {"size", vec3(spec.size)},
-      {"inputs", inputs},
-      {"outputs", outputs},
-      {"rows", rows},
-      {"timing",
-       {{"earliest", optional_int(t.earliest)},
-        {"latest", optional_int(t.latest)},
-        {"holdPrevious", t.hold_previous},
-        {"settle", t.settle_ticks},
-        {"horizon", t.horizon_ticks}}},
-      {"palette", palette},
-      {"feedback", spec.allow_feedback},
-      {"tiled", Json::array({spec.tiled[0], spec.tiled[1], spec.tiled[2]})}};
+  return {{"size", vec3(spec.size)},
+          {"inputs", inputs},
+          {"outputs", outputs},
+          {"rows", rows},
+          {"timing",
+           {{"earliest", optional_int(t.earliest)},
+            {"latest", optional_int(t.latest)},
+            {"holdPrevious", t.hold_previous},
+            {"settle", t.settle_ticks},
+            {"horizon", t.horizon_ticks}}},
+          {"palette", palette},
+          {"feedback", spec.allow_feedback},
+          {"tiled", Json::array({spec.tiled[0], spec.tiled[1], spec.tiled[2]})},
+          {"fixed", fixed},
+          {"forbidden", forbidden}};
 }
 
 Spec spec_from_json(const Json &json) {
@@ -181,6 +191,11 @@ Spec spec_from_json(const Json &json) {
     fail("'tiled' must be [x, y, z] booleans");
   for (int axis = 0; axis < 3; ++axis)
     spec.tiled[axis] = tiled[axis].get<bool>();
+  for (const Json &entry : json.value("fixed", Json::array()))
+    spec.fixed.emplace_back(vec3_from(field(entry, "position"), "position"),
+                            block_from_json(entry));
+  for (const Json &cell : json.value("forbidden", Json::array()))
+    spec.forbidden.push_back(vec3_from(cell, "forbidden cell"));
   spec.validate();
   return spec;
 }

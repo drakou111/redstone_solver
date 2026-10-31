@@ -261,6 +261,8 @@ World Spec::base_world() const {
     world.set(port.position,
               Block::output(static_cast<int>(i), port.kind, port.facing));
   }
+  for (const auto &[position, block] : this->fixed)
+    world.set(position, block);
   return world;
 }
 
@@ -287,12 +289,25 @@ void Spec::validate() const {
           std::format("{} is outside the volume", name));
     if (!occupied.insert({p.x, p.y, p.z}).second)
       throw std::invalid_argument(
-          std::format("{} shares its position with another port", name));
+          std::format("{} shares its position with another port or a "
+                      "kept/empty cell",
+                      name));
   };
   for (std::size_t i = 0; i < this->inputs.size(); ++i)
     check_position(this->inputs[i].position, std::format("IN{}", i + 1));
   for (std::size_t i = 0; i < this->outputs.size(); ++i)
     check_position(this->outputs[i].position, std::format("OUT{}", i + 1));
+  for (const auto &[position, block] : this->fixed) {
+    check_position(position,
+                   std::format("kept {} at ({}, {}, {})", to_string(block),
+                               position.x, position.y, position.z));
+    if (block.type == BlockType::Air || block.type == BlockType::Input ||
+        block.type == BlockType::Output)
+      throw std::invalid_argument("kept cells must hold a placeable block");
+  }
+  for (Vec3 position : this->forbidden)
+    check_position(position, std::format("empty cell ({}, {}, {})", position.x,
+                                         position.y, position.z));
 
   for (const TruthRow &row : this->rows) {
     if (row.inputs.size() != this->inputs.size() ||
@@ -492,6 +507,15 @@ Spec parse_spec(std::string_view text) {
                 std::format("unknown block '{}'", w[i]));
           spec.palette.push_back(*type);
         }
+      } else if (key == "keep") {
+        if (w.size() < 5)
+          throw std::invalid_argument("keep needs x y z and a block");
+        Vec3 position{coordinate(1), coordinate(2), coordinate(3)};
+        spec.fixed.emplace_back(position,
+                                parse_block_words({w.begin() + 4, w.end()}));
+      } else if (key == "empty") {
+        need(4, 4);
+        spec.forbidden.push_back({coordinate(1), coordinate(2), coordinate(3)});
       } else if (key == "row") {
         row_lines.emplace_back(line_number, trim(line.substr(3)));
       } else {
@@ -586,6 +610,11 @@ std::string format_spec(const Spec &spec) {
     if (spec.tiled[axis])
       axes += std::format(" {}", static_cast<char>('x' + axis));
   text += "tile" + (axes.empty() ? std::string(" none") : axes) + "\n";
+  for (const auto &[p, block] : spec.fixed)
+    text +=
+        std::format("keep {} {} {} {}\n", p.x, p.y, p.z, block_words(block));
+  for (Vec3 p : spec.forbidden)
+    text += std::format("empty {} {} {}\n", p.x, p.y, p.z);
   text += "palette";
   for (BlockType type : spec.palette)
     text += std::format(" {}", palette_name(type));
@@ -607,6 +636,74 @@ std::string format_spec(const Spec &spec) {
                         side(row.outputs, "OUT"));
   }
   return text;
+}
+
+Block parse_block_words(const std::vector<std::string_view> &words) {
+  if (words.empty())
+    throw std::invalid_argument("missing block name");
+  std::optional<BlockType> type = parse_palette_block(words[0]);
+  if (!type)
+    throw std::invalid_argument(std::format("unknown block '{}'", words[0]));
+  auto expect = [&](std::size_t count, std::string_view form) {
+    if (words.size() != count)
+      throw std::invalid_argument(
+          std::format("write {} as '{}'", words[0], form));
+  };
+  switch (*type) {
+  case BlockType::Torch:
+    expect(2, "torch <attached side>");
+    return Block::torch(parse_dir(words[1]));
+  case BlockType::Observer:
+    expect(2, "observer <watched side>");
+    return Block::observer(parse_dir(words[1]));
+  case BlockType::Repeater:
+    expect(3, "repeater <facing> <delay 1-4>");
+    return Block::repeater(parse_dir(words[1]),
+                           parse_int(words[2], "repeater delay"));
+  case BlockType::Comparator:
+    expect(3, "comparator <facing> compare|subtract");
+    if (words[2] != "compare" && words[2] != "subtract")
+      throw std::invalid_argument("comparator mode is compare or subtract");
+    return Block::comparator(parse_dir(words[1]),
+                             words[2] == "subtract" ? ComparatorMode::Subtract
+                                                    : ComparatorMode::Compare);
+  case BlockType::Hopper:
+  case BlockType::Barrel:
+  case BlockType::Chest: {
+    expect(2, std::format("{} <signal 0-15>", words[0]));
+    int signal = parse_int(words[1], "container signal");
+    if (*type == BlockType::Hopper)
+      return Block::hopper(signal);
+    return *type == BlockType::Barrel ? Block::barrel(signal)
+                                      : Block::chest(signal);
+  }
+  default:
+    expect(1, words[0]);
+    return Block{*type};
+  }
+}
+
+std::string block_words(const Block &b) {
+  std::string name(palette_name(b.type));
+  switch (b.type) {
+  case BlockType::Torch:
+  case BlockType::Observer:
+    return std::format("{} {}", name, to_string(b.facing));
+  case BlockType::Repeater:
+    return std::format("{} {} {}", name, to_string(b.facing),
+                       b.repeater_delay());
+  case BlockType::Comparator:
+    return std::format("{} {} {}", name, to_string(b.facing),
+                       b.comparator_mode() == ComparatorMode::Subtract
+                           ? "subtract"
+                           : "compare");
+  case BlockType::Hopper:
+  case BlockType::Barrel:
+  case BlockType::Chest:
+    return std::format("{} {}", name, b.stored_signal());
+  default:
+    return name;
+  }
 }
 
 } // namespace rs

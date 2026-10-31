@@ -1,5 +1,6 @@
 #include "redstone/encoder.hpp"
 
+#include <algorithm>
 #include <array>
 #include <format>
 #include <stdexcept>
@@ -253,11 +254,24 @@ struct CircuitEncoder::Impl {
       Vec3 p = this->base.position_of(i);
       const Block &block = this->base.at(p);
       Cell &c = this->cells[i];
-      if (block.type == BlockType::Input || block.type == BlockType::Output) {
+      bool forbidden =
+          std::find(this->spec.forbidden.begin(), this->spec.forbidden.end(),
+                    p) != this->spec.forbidden.end();
+      if (block.type != BlockType::Air || forbidden) {
+        // Ports, kept blocks and cells that must stay empty are constants.
         c = this->constant_cell(kind_of(block));
         c.facing = this->constant_facing(block.facing);
         c.fixed = true;
-        c.channel = block.channel;
+        if (block.type == BlockType::Input || block.type == BlockType::Output)
+          c.channel = block.channel;
+        if (block.type == BlockType::Repeater)
+          for (int k = 0; k < kRepeaterDelays; ++k)
+            c.delay[k] = this->b.constant(k + 1 == block.repeater_delay());
+        if (block.type == BlockType::Comparator)
+          c.subtract = this->b.constant(block.comparator_mode() ==
+                                        ComparatorMode::Subtract);
+        if (has_stored_signal(kind_of(block)))
+          c.stored = Int::constant(block.stored_signal());
       } else {
         for (Lit &lit : c.kind)
           lit = this->b.constant(false);
@@ -409,9 +423,9 @@ struct CircuitEncoder::Impl {
           {this->b.any_exclusive(
               {c.kind[kInputComparator], c.kind[kInputRepeater],
                c.kind[kOutputRepeater], c.kind[kOutputComparator]})});
-      if (c.fixed)
-        continue;
 
+      // Placement rules apply to kept blocks too (their literals are
+      // constants, so this costs nothing for them).
       const auto &k = c.kind;
       for (Kind diode : {kRepeater, kComparator}) {
         this->b.require(below.top_support, {k[diode]});
@@ -439,12 +453,14 @@ struct CircuitEncoder::Impl {
         this->b.require(this->cell_at(p + offset(d)).side_support,
                         {k[kTorch], c.facing[index_of(d)]});
 
-      // Symmetry breaking: unused settings take a fixed value.
-      this->b.require(c.facing[index_of(Dir::Down)], {!c.directional});
-      this->b.require(c.delay[0], {!k[kRepeater]});
-      this->b.require(!c.subtract, {!k[kComparator]});
-      Lit stores = this->b.any_exclusive({k[kHopper], k[kBarrel], k[kChest]});
-      this->b.require_equal(c.stored, Int::constant(0), {!stores});
+      if (!c.fixed) {
+        // Symmetry breaking: unused settings take a fixed value.
+        this->b.require(c.facing[index_of(Dir::Down)], {!c.directional});
+        this->b.require(c.delay[0], {!k[kRepeater]});
+        this->b.require(!c.subtract, {!k[kComparator]});
+        Lit stores = this->b.any_exclusive({k[kHopper], k[kBarrel], k[kChest]});
+        this->b.require_equal(c.stored, Int::constant(0), {!stores});
+      }
 
       for (Dir d : kHorizontalDirs)
         this->b.require_any(

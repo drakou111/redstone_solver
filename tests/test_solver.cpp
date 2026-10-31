@@ -141,3 +141,27 @@ row IN2(ss0) -> OUT1(ss0)
   CHECK(report.status == SolveStatus::Cancelled);
   CHECK(report.seconds < 10.0);
 }
+
+TEST_CASE("solver keeps pre-placed blocks and leaves empty cells empty") {
+  const std::string base = R"(
+size 4 2 2
+input IN1 comparator 0 1 0 east
+output OUT1 dust 3 1 0
+horizon 8
+row IN1(ss1..15) -> OUT1(ss0)
+row IN1(ss0) -> OUT1(ss1..15)
+)";
+  // Keep the wool the input powers and forbid the cell where the torch
+  // usually goes, so the solver has to route around it.
+  Spec spec = parse_spec(base + "keep 1 1 0 solid\nempty 2 1 0\n");
+  SolveReport report = solve(spec, test_options());
+  REQUIRE(report.solution);
+  const World &layout = report.solution->layout;
+  CHECK(layout.at({1, 1, 0}) == Block::solid());
+  CHECK(layout.at({2, 1, 0}).type == BlockType::Air);
+  CHECK_FALSE(verify_layout(layout, spec, spec.verification_vectors()));
+
+  // The output dust can only stand on the cell below it.
+  Spec impossible = parse_spec(base + "empty 3 0 0\n");
+  CHECK(solve(impossible, test_options()).status == SolveStatus::Infeasible);
+}

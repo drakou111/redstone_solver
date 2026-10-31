@@ -73,6 +73,10 @@ struct Spec {
   // Axes (x, y, z) along which copies are placed side by side. Copies must
   // not influence each other whatever their inputs are.
   std::array<bool, 3> tiled{};
+  // Blocks the solver must keep exactly as given.
+  std::vector<std::pair<Vec3, Block>> fixed;
+  // Cells the solver must leave empty.
+  std::vector<Vec3> forbidden;
 
   bool is_tiled() const {
     return this->tiled[0] || this->tiled[1] || this->tiled[2];
@@ -86,7 +90,7 @@ struct Spec {
   // Min, middle and max of every range, combined per row; used for
   // verification.
   std::vector<InputVector> verification_vectors() const;
-  // Empty world with only the input and output blocks placed.
+  // Empty world with the ports and fixed blocks placed.
   World base_world() const;
   bool palette_contains(BlockType type) const;
 
@@ -114,5 +118,10 @@ std::string format_spec(const Spec &spec);
 SignalRange parse_signal_range(std::string_view text);
 // Short form used by the editor: "*", "5" or "1..15".
 std::string short_range_text(SignalRange range);
+
+// "solid", "repeater east 2", "comparator north subtract", "barrel 7",
+// "torch down"... -> the block (as written after "keep x y z").
+Block parse_block_words(const std::vector<std::string_view> &words);
+std::string block_words(const Block &block);
 
 } // namespace rs

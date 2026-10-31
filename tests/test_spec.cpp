@@ -168,3 +168,31 @@ TEST_CASE("port kinds parse, including the old names") {
   CHECK_THROWS_AS(parse_spec("size 2 2 1\ninput IN1 lever 0 1 0\n"),
                   std::invalid_argument);
 }
+
+TEST_CASE("kept and empty cells parse, validate and round-trip") {
+  Spec spec = parse_spec("size 4 2 1\n"
+                         "input IN1 comparator 0 1 0 east\n"
+                         "output OUT1 dust 3 1 0\n"
+                         "keep 1 1 0 repeater east 2\n"
+                         "keep 1 0 0 barrel 7\n"
+                         "empty 2 1 0\n"
+                         "row -> OUT1(ss0..15)\n");
+  REQUIRE(spec.fixed.size() == 2);
+  CHECK(spec.fixed[0].second == Block::repeater(Dir::East, 2));
+  CHECK(spec.fixed[1].second == Block::barrel(7));
+  CHECK(spec.forbidden == std::vector<Vec3>{{2, 1, 0}});
+  CHECK(spec.base_world().at({1, 1, 0}) == Block::repeater(Dir::East, 2));
+
+  Spec again = parse_spec(format_spec(spec));
+  CHECK(again.fixed == spec.fixed);
+  CHECK(again.forbidden == spec.forbidden);
+
+  CHECK_THROWS_AS(parse_spec("size 2 2 1\ninput IN1 comparator 0 1 0 east\n"
+                             "output OUT1 dust 1 1 0\nempty 0 1 0\n"
+                             "row -> OUT1(ss0)\n"),
+                  std::invalid_argument);
+  CHECK_THROWS_AS(parse_spec("size 2 2 1\ninput IN1 comparator 0 1 0 east\n"
+                             "output OUT1 dust 1 1 0\nkeep 0 0 0 repeater\n"
+                             "row -> OUT1(ss0)\n"),
+                  std::invalid_argument);
+}
