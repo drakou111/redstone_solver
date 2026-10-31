@@ -35,6 +35,7 @@ struct EncoderOptions {
   bool minimize_blocks = true;
   std::optional<World> fixed_layout;    // forces every non-port cell
   std::vector<World> forbidden_layouts; // layouts that failed verification
+  std::optional<int> max_blocks;        // upper bound on placed blocks
 };
 
 struct TransitionTrace {

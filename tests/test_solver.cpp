@@ -121,3 +121,21 @@ row IN1(ss0) -> OUT1(ss0)
   CHECK(report.status == SolveStatus::Infeasible);
   CHECK_FALSE(report.solution);
 }
+
+TEST_CASE("a cancelled solve stops promptly") {
+  Spec spec = parse_spec(R"(
+size 6 4 6
+input IN1 strong 0 1 0 east
+input IN2 strong 0 1 5 east
+output OUT1 dust 5 1 3
+row IN1(ss1..15),IN2(ss1..15) -> OUT1(ss1..15)
+row IN1(ss0) -> OUT1(ss0)
+row IN2(ss0) -> OUT1(ss0)
+)");
+  std::atomic<bool> cancel = true;
+  SolverOptions options = test_options();
+  options.cancel = &cancel;
+  SolveReport report = solve(spec, options);
+  CHECK(report.status == SolveStatus::Cancelled);
+  CHECK(report.seconds < 10.0);
+}

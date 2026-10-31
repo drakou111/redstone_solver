@@ -180,8 +180,18 @@ struct CircuitEncoder::Impl {
       this->require_layout(*this->options.fixed_layout, true);
     for (const World &layout : this->options.forbidden_layouts)
       this->require_layout(layout, false);
+    if (this->options.max_blocks)
+      this->limit_blocks(*this->options.max_blocks);
     if (this->options.minimize_blocks)
       this->add_objective();
+  }
+
+  void limit_blocks(int max_blocks) {
+    sat::LinearExpr placed;
+    for (const Cell &c : this->cells)
+      if (!c.fixed)
+        placed += sat::LinearExpr(1) - c.kind[kAir].expr();
+    this->model.AddLessOrEqual(placed, max_blocks);
   }
 
   // ---------------------------------------------------------------- cells

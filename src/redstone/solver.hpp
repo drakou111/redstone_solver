@@ -1,5 +1,6 @@
 #pragma once
 
+#include <atomic>
 #include <functional>
 #include <optional>
 #include <string>
@@ -19,6 +20,8 @@ struct SolverOptions {
   bool stop_at_first = false; // accept the first verified circuit
   bool show_rejected = false; // include rejected layouts in progress messages
   VerificationOptions verification;
+  // Set to true from another thread to stop early.
+  std::atomic<bool> *cancel = nullptr;
 };
 
 enum class SolveStatus {
@@ -27,6 +30,7 @@ enum class SolveStatus {
   Infeasible,      // no circuit fits the volume and palette
   OutOfTime,       // no verified circuit within the time limit
   RefinementLimit, // verification kept rejecting candidates
+  Cancelled,       // stopped through SolverOptions::cancel
 };
 
 std::string_view to_string(SolveStatus status);

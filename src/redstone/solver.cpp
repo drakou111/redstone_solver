@@ -3,12 +3,15 @@
 #include <algorithm>
 #include <chrono>
 #include <format>
+#include <map>
 #include <stdexcept>
 #include <thread>
 
 #include "ortools/sat/cp_model.pb.h"
 #include "ortools/sat/cp_model_solver.h"
+#include "ortools/sat/model.h"
 #include "ortools/sat/sat_parameters.pb.h"
+#include "ortools/util/time_limit.h"
 #include "redstone/report.hpp"
 
 namespace rs {
@@ -18,6 +21,12 @@ namespace sat = operations_research::sat;
 namespace {
 
 using Clock = std::chrono::steady_clock;
+// A solver round never gets less than this unless it is the last one.
+constexpr double kMinRoundSeconds = 5.0;
+// Transitions make the model several times larger, so a misbehaving input
+// change is first answered by banning layouts; only once it has caused this
+// many rejections is it added to the model.
+constexpr int kRejectionsBeforeTransition = 3;
 
 // Removes blocks one at a time while the layout still passes verification.
 // Cheap compared to solving, and it cleans up first-found solutions.
@@ -74,8 +83,6 @@ bool add_transition(ModelPlan &plan, TransitionCase transition) {
   return true;
 }
 
-// Transitions make the model several times larger; when only a first
-// solution is wanted, banning the layout is the cheaper response.
 bool refine_plan(ModelPlan &plan, const Spec &spec,
                  const VerificationFailure &failure, bool allow_transitions) {
   if (!failure.at_identity_placement() || failure.tiling_interference)
@@ -112,12 +119,18 @@ std::string_view to_string(SolveStatus status) {
     return "infeasible";
   case SolveStatus::OutOfTime:
     return "out of time";
+  case SolveStatus::Cancelled:
+    return "cancelled";
   case SolveStatus::RefinementLimit:
     return "refinement limit reached";
   }
   return "?";
 }
 
+// Anytime loop: each round solves the model with at most half of the
+// remaining time. A verified candidate becomes the best so far and later
+// rounds must beat it; a rejected one refines the model or is banned. When a
+// round proves nothing smaller exists, the best circuit is optimal.
 SolveReport solve(const Spec &spec, const SolverOptions &options,
                   const ProgressCallback &progress) {
   spec.validate();
@@ -129,9 +142,12 @@ SolveReport solve(const Spec &spec, const SolverOptions &options,
   auto elapsed = [&] {
     return std::chrono::duration<double>(Clock::now() - start).count();
   };
+  auto cancelled = [&] { return options.cancel && options.cancel->load(); };
 
   ModelPlan plan = initial_plan(spec);
   std::vector<World> forbidden;
+  std::map<std::pair<InputVector, InputVector>, int> rejections;
+  bool previous_round_found_nothing = false;
   std::vector<InputVector> verification_vectors = spec.verification_vectors();
   int threads =
       options.threads > 0
@@ -139,28 +155,54 @@ SolveReport solve(const Spec &spec, const SolverOptions &options,
           : static_cast<int>(std::max(1u, std::thread::hardware_concurrency()));
 
   SolveReport report;
+  auto finish = [&](SolveStatus status) {
+    report.status = status;
+    if (report.solution && status != SolveStatus::Optimal) {
+      report.status = SolveStatus::Feasible;
+      int removed = prune_layout(report.solution->layout, spec,
+                                 verification_vectors, options.verification);
+      report.solution->block_count -= removed;
+      if (removed > 0)
+        report_progress(std::format("removed {} unneeded blocks", removed));
+    }
+    report.seconds = elapsed();
+    return report;
+  };
+
   for (int iteration = 0; iteration <= options.max_refinements; ++iteration) {
-    if (elapsed() >= options.time_limit_seconds)
-      break;
-    CircuitEncoder encoder(spec, plan,
-                           EncoderOptions{.forbidden_layouts = forbidden});
+    if (cancelled())
+      return finish(SolveStatus::Cancelled);
+    EncoderOptions encoder_options{.forbidden_layouts = forbidden};
+    if (report.solution)
+      encoder_options.max_blocks = report.solution->block_count - 1;
+    CircuitEncoder encoder(spec, plan, encoder_options);
     sat::CpModelProto proto = encoder.model().Build();
     double remaining = options.time_limit_seconds - elapsed();
     if (remaining <= 0)
-      break;
-    report_progress(std::format("iteration {}: {} steady states, {} "
-                                "transitions, {} variables, {} constraints",
-                                iteration, plan.steady.size(),
-                                plan.transitions.size(), proto.variables_size(),
-                                proto.constraints_size()));
+      return finish(SolveStatus::OutOfTime);
+    report_progress(std::format(
+        "round {}: {} steady states, {} transitions, {} variables{}", iteration,
+        plan.steady.size(), plan.transitions.size(), proto.variables_size(),
+        report.solution ? std::format(", looking for fewer than {} blocks",
+                                      report.solution->block_count)
+                        : std::string()));
 
     sat::SatParameters parameters;
-    parameters.set_max_time_in_seconds(remaining);
+    // A round that found nothing gets no second chance to restart from
+    // scratch: the next one gets all the remaining time.
+    bool last_chance =
+        previous_round_found_nothing || remaining < kMinRoundSeconds * 2;
+    parameters.set_max_time_in_seconds(
+        last_chance ? remaining : std::max(kMinRoundSeconds, remaining / 2));
     parameters.set_num_workers(threads);
     parameters.set_log_search_progress(options.log_search);
     parameters.set_stop_after_first_solution(options.stop_at_first);
-    sat::CpSolverResponse response =
-        sat::SolveWithParameters(proto, parameters);
+    sat::Model solver_model;
+    solver_model.Add(sat::NewSatParameters(parameters));
+    if (options.cancel)
+      solver_model.GetOrCreate<operations_research::TimeLimit>()
+          ->RegisterExternalBooleanAsLimit(options.cancel);
+    sat::CpSolverResponse response = sat::SolveCpModel(proto, &solver_model);
     report.refinements = iteration;
 
     switch (response.status()) {
@@ -168,38 +210,36 @@ SolveReport solve(const Spec &spec, const SolverOptions &options,
     case sat::CpSolverStatus::FEASIBLE:
       break;
     case sat::CpSolverStatus::INFEASIBLE:
-      report.status = SolveStatus::Infeasible;
-      report.seconds = elapsed();
-      return report;
+      // With a best circuit in hand this proves nothing smaller exists.
+      return finish(report.solution ? SolveStatus::Optimal
+                                    : SolveStatus::Infeasible);
     case sat::CpSolverStatus::UNKNOWN:
-      report.status = SolveStatus::OutOfTime;
-      report.seconds = elapsed();
-      return report;
+      if (cancelled())
+        return finish(SolveStatus::Cancelled);
+      previous_round_found_nothing = true;
+      continue;
     default:
       throw std::logic_error("CP-SAT rejected the model: " +
                              response.solution_info());
     }
 
+    previous_round_found_nothing = false;
+    bool optimal = response.status() == sat::CpSolverStatus::OPTIMAL;
     EncodedSolution candidate = encoder.decode(response);
     report_progress(std::format(
         "candidate with {} blocks ({}), verifying", candidate.block_count,
-        response.status() == sat::CpSolverStatus::OPTIMAL ? "optimal"
-                                                          : "feasible"));
+        optimal ? "optimal for the model" : "feasible"));
     std::optional<VerificationFailure> failure = verify_layout(
         candidate.layout, spec, verification_vectors, options.verification);
     if (!failure) {
-      bool optimal = response.status() == sat::CpSolverStatus::OPTIMAL;
-      if (!optimal) {
-        int removed = prune_layout(candidate.layout, spec, verification_vectors,
-                                   options.verification);
-        candidate.block_count -= removed;
-        if (removed > 0)
-          report_progress(std::format("removed {} unneeded blocks", removed));
-      }
-      report.status = optimal ? SolveStatus::Optimal : SolveStatus::Feasible;
+      report_progress(
+          std::format("verified a {}-block circuit", candidate.block_count));
       report.solution = std::move(candidate);
-      report.seconds = elapsed();
-      return report;
+      if (optimal)
+        return finish(SolveStatus::Optimal);
+      if (options.stop_at_first)
+        return finish(SolveStatus::Feasible);
+      continue;
     }
 
     if (options.show_rejected)
@@ -208,7 +248,10 @@ SolveReport solve(const Spec &spec, const SolverOptions &options,
         failure->from ? std::format("{} -> {}", to_string(*failure->from),
                                     to_string(failure->to))
                       : std::format("settling at {}", to_string(failure->to));
-    if (refine_plan(plan, spec, *failure, !options.stop_at_first)) {
+    int &count = rejections[{failure->from.value_or(failure->to), failure->to}];
+    bool allow_transitions =
+        !options.stop_at_first && ++count >= kRejectionsBeforeTransition;
+    if (refine_plan(plan, spec, *failure, allow_transitions)) {
       report_progress(
           std::format("rejected ({}: {}); adding that case to the model", where,
                       failure->reason));
@@ -223,12 +266,7 @@ SolveReport solve(const Spec &spec, const SolverOptions &options,
       forbidden.push_back(candidate.layout);
     }
   }
-
-  report.status = elapsed() >= options.time_limit_seconds
-                      ? SolveStatus::OutOfTime
-                      : SolveStatus::RefinementLimit;
-  report.seconds = elapsed();
-  return report;
+  return finish(SolveStatus::RefinementLimit);
 }
 
 } // namespace rs
