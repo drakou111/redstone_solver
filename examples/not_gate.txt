@@ -1,6 +1,6 @@
 # NOT gate: output on exactly when the input is off.
 size 4 2 1
-input IN1 strong 0 1 0 east
+input IN1 comparator 0 1 0 east
 output OUT1 dust 3 1 0
 timing none
 horizon 8

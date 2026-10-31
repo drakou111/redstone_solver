@@ -1,6 +1,6 @@
 # Copies the input after exactly 2 redstone ticks; the output may not change earlier.
 size 4 2 1
-input IN1 strong 0 1 0 east
+input IN1 comparator 0 1 0 east
 output OUT1 dust 3 1 0
 timing 2rt 2rt
 hold_previous on

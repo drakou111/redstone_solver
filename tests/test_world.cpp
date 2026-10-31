@@ -67,7 +67,7 @@ TEST_CASE("validation catches unsupported and conflicting blocks") {
   }
   SECTION("channels must be unique") {
     World world({2, 1, 1});
-    world.set({0, 0, 0}, Block::input(0, InputKind::Strong));
+    world.set({0, 0, 0}, Block::input(0, InputKind::Comparator));
     world.set({1, 0, 0}, Block::input(0, InputKind::Container));
     CHECK_FALSE(world.validate().empty());
   }

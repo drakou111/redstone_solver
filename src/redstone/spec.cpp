@@ -316,6 +316,9 @@ void Spec::validate() const {
   if (t.settle_ticks < 0 || t.horizon_ticks < kMinHorizon)
     throw std::invalid_argument("settle must be >= 0 and horizon >= 1");
 
+  // Port blocks reject invalid settings (e.g. a vertical repeater input).
+  this->base_world();
+
   // Surfaces contradicting rows early.
   for (const InputVector &vector : this->verification_vectors())
     this->expected_outputs(vector);
@@ -402,16 +405,18 @@ Spec parse_spec(std::string_view text) {
         need(6, 7);
         int channel = parse_port_name(w[1], "IN");
         InputPort port;
-        if (w[2] == "strong")
-          port.kind = InputKind::Strong;
-        else if (w[2] == "container")
-          port.kind = InputKind::Container;
-        else
-          throw std::invalid_argument(
-              std::format("unknown input kind '{}'", w[2]));
+        std::optional<InputKind> kind = parse_input_kind(w[2]);
+        if (!kind)
+          throw std::invalid_argument(std::format(
+              "unknown input kind '{}' (comparator, repeater, dust, container)",
+              w[2]));
+        port.kind = *kind;
         port.position = {coordinate(3), coordinate(4), coordinate(5)};
-        if (port.kind == InputKind::Strong && w.size() != 7)
-          throw std::invalid_argument("a strong input needs a facing");
+        bool directional = port.kind == InputKind::Comparator ||
+                           port.kind == InputKind::Repeater;
+        if (directional && w.size() != 7)
+          throw std::invalid_argument(
+              std::format("a {} input needs a facing", w[2]));
         if (w.size() == 7)
           port.facing = parse_dir(w[6]);
         if (static_cast<int>(inputs.size()) <= channel)
@@ -423,16 +428,15 @@ Spec parse_spec(std::string_view text) {
         need(6, 7);
         int channel = parse_port_name(w[1], "OUT");
         OutputPort port;
-        if (w[2] == "dust")
-          port.kind = OutputKind::Dust;
-        else if (w[2] == "component")
-          port.kind = OutputKind::Component;
-        else
-          throw std::invalid_argument(
-              std::format("unknown output kind '{}'", w[2]));
+        std::optional<OutputKind> kind = parse_output_kind(w[2]);
+        if (!kind)
+          throw std::invalid_argument(std::format(
+              "unknown output kind '{}' (dust, repeater, comparator)", w[2]));
+        port.kind = *kind;
         port.position = {coordinate(3), coordinate(4), coordinate(5)};
-        if (port.kind == OutputKind::Component && w.size() != 7)
-          throw std::invalid_argument("a component output needs a facing");
+        if (port.kind != OutputKind::Dust && w.size() != 7)
+          throw std::invalid_argument(
+              std::format("a {} output needs a facing", w[2]));
         if (w.size() == 7)
           port.facing = parse_dir(w[6]);
         if (static_cast<int>(outputs.size()) <= channel)
@@ -549,21 +553,21 @@ std::string format_spec(const Spec &spec) {
   for (std::size_t i = 0; i < spec.inputs.size(); ++i) {
     const InputPort &port = spec.inputs[i];
     Vec3 p = port.position;
-    if (port.kind == InputKind::Strong)
-      text += std::format("input IN{} strong {} {} {} {}\n", i + 1, p.x, p.y,
-                          p.z, to_string(port.facing));
-    else
-      text +=
-          std::format("input IN{} container {} {} {}\n", i + 1, p.x, p.y, p.z);
+    bool directional =
+        port.kind == InputKind::Comparator || port.kind == InputKind::Repeater;
+    text += std::format("input IN{} {} {} {} {}{}\n", i + 1,
+                        input_kind_name(port.kind), p.x, p.y, p.z,
+                        directional ? " " + std::string(to_string(port.facing))
+                                    : std::string());
   }
   for (std::size_t i = 0; i < spec.outputs.size(); ++i) {
     const OutputPort &port = spec.outputs[i];
     Vec3 p = port.position;
-    if (port.kind == OutputKind::Component)
-      text += std::format("output OUT{} component {} {} {} {}\n", i + 1, p.x,
-                          p.y, p.z, to_string(port.facing));
-    else
-      text += std::format("output OUT{} dust {} {} {}\n", i + 1, p.x, p.y, p.z);
+    text += std::format("output OUT{} {} {} {} {}{}\n", i + 1,
+                        output_kind_name(port.kind), p.x, p.y, p.z,
+                        port.kind != OutputKind::Dust
+                            ? " " + std::string(to_string(port.facing))
+                            : std::string());
   }
 
   const TimingSpec &t = spec.timing;

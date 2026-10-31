@@ -150,3 +150,21 @@ TEST_CASE("signal ranges parse from editor text") {
   CHECK(short_range_text({4, 4}) == "4");
   CHECK(short_range_text({1, 15}) == "1..15");
 }
+
+TEST_CASE("port kinds parse, including the old names") {
+  Spec spec = parse_spec("size 4 2 2\n"
+                         "input IN1 strong 0 1 0 east\n"
+                         "input IN2 dust 0 1 1\n"
+                         "output OUT1 component 3 1 0 east\n"
+                         "output OUT2 comparator 3 1 1 east\n"
+                         "row -> OUT1(ss0..15)\n");
+  CHECK(spec.inputs[0].kind == InputKind::Comparator);
+  CHECK(spec.inputs[1].kind == InputKind::Dust);
+  CHECK(spec.outputs[0].kind == OutputKind::Repeater);
+  CHECK(spec.outputs[1].kind == OutputKind::Comparator);
+  CHECK_THROWS_AS(parse_spec("size 2 2 1\ninput IN1 repeater 0 1 0\n"
+                             "output OUT1 dust 1 1 0\nrow -> OUT1(ss0)\n"),
+                  std::invalid_argument);
+  CHECK_THROWS_AS(parse_spec("size 2 2 1\ninput IN1 lever 0 1 0\n"),
+                  std::invalid_argument);
+}

@@ -19,6 +19,7 @@ World not_gate(const Spec &spec) {
   World world = spec.base_world();
   world.set({1, 1, 0}, Block::solid());
   world.set({2, 1, 0}, Block::torch(Dir::West));
+  world.set({0, 0, 0}, Block::glass());
   world.set({3, 0, 0}, Block::glass());
   return world;
 }

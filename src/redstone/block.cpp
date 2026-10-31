@@ -67,13 +67,63 @@ Block Block::comparator(Dir output, ComparatorMode mode) {
 Block Block::observer(Dir watched) { return {BlockType::Observer, watched}; }
 
 Block Block::input(int channel, InputKind kind, Dir output) {
-  return {BlockType::Input, output, static_cast<std::uint8_t>(kind),
-          checked_channel(channel)};
+  Block block{BlockType::Input, output, static_cast<std::uint8_t>(kind),
+              checked_channel(channel)};
+  if (is_diode_port(block))
+    checked_horizontal(output, input_kind_name(kind));
+  return block;
 }
 
 Block Block::output(int channel, OutputKind kind, Dir signal_direction) {
-  return {BlockType::Output, signal_direction, static_cast<std::uint8_t>(kind),
-          checked_channel(channel)};
+  Block block{BlockType::Output, signal_direction,
+              static_cast<std::uint8_t>(kind), checked_channel(channel)};
+  if (is_diode_port(block))
+    checked_horizontal(signal_direction, output_kind_name(kind));
+  return block;
+}
+
+std::string_view input_kind_name(InputKind kind) {
+  switch (kind) {
+  case InputKind::Comparator:
+    return "comparator";
+  case InputKind::Container:
+    return "container";
+  case InputKind::Repeater:
+    return "repeater";
+  case InputKind::Dust:
+    return "dust";
+  }
+  return "?";
+}
+
+std::string_view output_kind_name(OutputKind kind) {
+  switch (kind) {
+  case OutputKind::Dust:
+    return "dust";
+  case OutputKind::Repeater:
+    return "repeater";
+  case OutputKind::Comparator:
+    return "comparator";
+  }
+  return "?";
+}
+
+std::optional<InputKind> parse_input_kind(std::string_view name) {
+  if (name == "strong") // older spec files
+    return InputKind::Comparator;
+  for (InputKind kind : kInputKinds)
+    if (input_kind_name(kind) == name)
+      return kind;
+  return std::nullopt;
+}
+
+std::optional<OutputKind> parse_output_kind(std::string_view name) {
+  if (name == "component") // older spec files
+    return OutputKind::Repeater;
+  for (OutputKind kind : kOutputKinds)
+    if (output_kind_name(kind) == name)
+      return kind;
+  return std::nullopt;
 }
 
 std::string to_string(const Block &block) {
@@ -112,13 +162,11 @@ std::string to_string(const Block &block) {
     return std::format("observer(watching {})", to_string(block.facing));
   case BlockType::Input:
     return std::format("input{}({}, {})", block.channel,
-                       block.input_kind() == InputKind::Strong ? "strong"
-                                                               : "container",
+                       input_kind_name(block.input_kind()),
                        to_string(block.facing));
   case BlockType::Output:
     return std::format("output{}({}, {})", block.channel,
-                       block.output_kind() == OutputKind::Dust ? "dust"
-                                                               : "component",
+                       output_kind_name(block.output_kind()),
                        to_string(block.facing));
   }
   return "?";

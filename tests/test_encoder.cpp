@@ -1,5 +1,3 @@
-#include <catch2/catch_test_macros.hpp>
-
 #include <set>
 
 #include "ortools/sat/cp_model.pb.h"
@@ -7,6 +5,9 @@
 #include "ortools/sat/sat_parameters.pb.h"
 #include "redstone/encoder.hpp"
 #include "redstone/simulator.hpp"
+
+// Last, so Catch2's CHECK replaces the one abseil (via OR-Tools) defines.
+#include <catch2/catch_test_macros.hpp>
 
 using namespace rs;
 namespace sat = operations_research::sat;
@@ -133,7 +134,7 @@ std::vector<TransitionCase> all_pairs(int count) {
 
 TEST_CASE("model matches simulator: torch inverter") {
   World w = with_glass_floor({4, 2, 1});
-  w.set({0, 1, 0}, Block::input(0, InputKind::Strong, Dir::East));
+  w.set({0, 1, 0}, Block::input(0, InputKind::Comparator, Dir::East));
   w.set({1, 1, 0}, Block::solid());
   w.set({2, 1, 0}, Block::torch(Dir::West));
   w.set({3, 1, 0}, Block::output(0, OutputKind::Dust));
@@ -142,7 +143,7 @@ TEST_CASE("model matches simulator: torch inverter") {
 
 TEST_CASE("model matches simulator: repeater chain and dust decay") {
   World w = with_glass_floor({6, 2, 1});
-  w.set({0, 1, 0}, Block::input(0, InputKind::Strong, Dir::East));
+  w.set({0, 1, 0}, Block::input(0, InputKind::Comparator, Dir::East));
   w.set({1, 1, 0}, Block::dust());
   w.set({2, 1, 0}, Block::repeater(Dir::East, 3));
   w.set({3, 1, 0}, Block::repeater(Dir::East, 1));
@@ -157,7 +158,7 @@ TEST_CASE("model matches simulator: comparator subtract with container and "
   w.set({0, 1, 0}, Block::input(0, InputKind::Container));
   w.set({1, 1, 0}, Block::solid());
   w.set({2, 1, 0}, Block::comparator(Dir::East, ComparatorMode::Subtract));
-  w.set({2, 1, 1}, Block::input(1, InputKind::Strong, Dir::North));
+  w.set({2, 1, 1}, Block::input(1, InputKind::Comparator, Dir::North));
   w.set({3, 1, 0}, Block::output(0, OutputKind::Dust));
   check_model_matches_simulator(w, {{0, 0}, {12, 0}, {12, 5}, {3, 7}},
                                 all_pairs(4));
@@ -165,7 +166,7 @@ TEST_CASE("model matches simulator: comparator subtract with container and "
 
 TEST_CASE("model matches simulator: observer pulse from a note block") {
   World w = with_glass_floor({2, 2, 3});
-  w.set({0, 1, 0}, Block::input(0, InputKind::Strong, Dir::East));
+  w.set({0, 1, 0}, Block::input(0, InputKind::Comparator, Dir::East));
   w.set({1, 1, 0}, Block::note_block());
   w.set({1, 1, 1}, Block::observer(Dir::North));
   w.set({1, 1, 2}, Block::output(0, OutputKind::Dust));
@@ -175,19 +176,19 @@ TEST_CASE("model matches simulator: observer pulse from a note block") {
 TEST_CASE("model matches simulator: observer watching a hopper, strong and "
           "weak power") {
   World w = with_glass_floor({4, 2, 3});
-  w.set({0, 1, 0}, Block::input(0, InputKind::Strong, Dir::East));
+  w.set({0, 1, 0}, Block::input(0, InputKind::Comparator, Dir::East));
   w.set({1, 1, 0}, Block::dust());
   w.set({2, 1, 0}, Block::solid());
   w.set({3, 1, 0}, Block::output(0, OutputKind::Dust));
   w.set({2, 1, 1}, Block::hopper(4));
   w.set({2, 1, 2}, Block::observer(Dir::North));
-  w.set({1, 1, 2}, Block::output(1, OutputKind::Component, Dir::West));
+  w.set({1, 1, 2}, Block::output(1, OutputKind::Repeater, Dir::West));
   check_model_matches_simulator(w, {{0}, {15}}, all_pairs(2));
 }
 
 TEST_CASE("model matches simulator: dust stepping up glass and down solid") {
   World w = with_glass_floor({5, 3, 1});
-  w.set({0, 1, 0}, Block::input(0, InputKind::Strong, Dir::East));
+  w.set({0, 1, 0}, Block::input(0, InputKind::Comparator, Dir::East));
   w.set({1, 1, 0}, Block::dust());
   w.set({2, 1, 0}, Block::glass());
   w.set({2, 2, 0}, Block::dust());
@@ -200,10 +201,10 @@ TEST_CASE("model matches simulator: dust stepping up glass and down solid") {
 TEST_CASE("model matches simulator: repeater lock with one input changing at a "
           "time") {
   World w = with_glass_floor({4, 2, 4});
-  w.set({1, 1, 1}, Block::input(0, InputKind::Strong, Dir::East));
+  w.set({1, 1, 1}, Block::input(0, InputKind::Comparator, Dir::East));
   w.set({2, 1, 1}, Block::repeater(Dir::East, 1));
   w.set({3, 1, 1}, Block::output(0, OutputKind::Dust));
-  w.set({2, 1, 3}, Block::input(1, InputKind::Strong, Dir::North));
+  w.set({2, 1, 3}, Block::input(1, InputKind::Comparator, Dir::North));
   w.set({2, 1, 2}, Block::repeater(Dir::North, 1));
   // [0 0] -> [1 0] -> [1 1]: the main repeater is on before the lock engages.
   // Locks are memory, which truth-table mode forbids, so allow feedback.
@@ -213,8 +214,8 @@ TEST_CASE("model matches simulator: repeater lock with one input changing at a "
 
 TEST_CASE("model matches simulator: torch AND gate") {
   World w = with_glass_floor({4, 3, 3});
-  w.set({0, 1, 0}, Block::input(0, InputKind::Strong, Dir::East));
-  w.set({0, 1, 2}, Block::input(1, InputKind::Strong, Dir::East));
+  w.set({0, 1, 0}, Block::input(0, InputKind::Comparator, Dir::East));
+  w.set({0, 1, 2}, Block::input(1, InputKind::Comparator, Dir::East));
   w.set({1, 1, 0}, Block::solid());
   w.set({1, 1, 1}, Block::solid());
   w.set({1, 1, 2}, Block::solid());
@@ -232,7 +233,7 @@ TEST_CASE("feedback loops are rejected unless allowed") {
   World w(Vec3{4, 3, 1});
   for (int x = 0; x < 4; ++x)
     w.set({x, 0, 0}, Block::glass());
-  w.set({0, 1, 0}, Block::input(0, InputKind::Strong, Dir::Up));
+  w.set({0, 1, 0}, Block::input(0, InputKind::Comparator, Dir::East));
   w.set({1, 1, 0}, Block::solid());
   w.set({2, 1, 0}, Block::torch(Dir::West));
   w.set({2, 2, 0}, Block::solid());
@@ -254,4 +255,18 @@ TEST_CASE("feedback loops are rejected unless allowed") {
   CHECK(solve_status(false) == sat::CpSolverStatus::INFEASIBLE);
   // With feedback allowed this loop is a clock and has no steady state either.
   CHECK(solve_status(true) == sat::CpSolverStatus::INFEASIBLE);
+}
+
+TEST_CASE("model matches simulator: dust and repeater inputs, comparator "
+          "output") {
+  World w = with_glass_floor({5, 2, 3});
+  w.set({0, 1, 0}, Block::input(0, InputKind::Dust));
+  w.set({1, 1, 0}, Block::dust());
+  w.set({2, 1, 0}, Block::solid());
+  w.set({3, 1, 0}, Block::output(0, OutputKind::Comparator, Dir::East));
+  w.set({0, 1, 2}, Block::input(1, InputKind::Repeater, Dir::East));
+  w.set({1, 1, 2}, Block::dust());
+  w.set({2, 1, 2}, Block::output(1, OutputKind::Repeater, Dir::East));
+  check_model_matches_simulator(w, {{0, 0}, {12, 0}, {12, 4}, {1, 9}},
+                                all_pairs(4));
 }

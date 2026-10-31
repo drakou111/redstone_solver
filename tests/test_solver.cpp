@@ -1,7 +1,8 @@
-#include <catch2/catch_test_macros.hpp>
-
 #include "redstone/simulator.hpp"
 #include "redstone/solver.hpp"
+
+// Last, so Catch2's CHECK replaces the one abseil (via OR-Tools) defines.
+#include <catch2/catch_test_macros.hpp>
 
 using namespace rs;
 
@@ -30,8 +31,8 @@ row IN1(ss0) -> OUT1(ss1..15)
   SolveReport report = solve(spec, test_options());
   REQUIRE(report.status == SolveStatus::Optimal);
   REQUIRE(report.solution);
-  // Block, torch, and something under the output dust.
-  CHECK(report.solution->block_count == 3);
+  // Block, torch, and supports under the comparator input and output dust.
+  CHECK(report.solution->block_count == 4);
   CHECK(report.solution->layout.at({2, 1, 0}).type == BlockType::Torch);
 }
 
@@ -79,11 +80,12 @@ row IN1(ss0) -> OUT1(ss1..15)
   Spec dust = parse_spec(std::string(base) + "output OUT1 dust 3 1 0\n");
   CHECK(solve(dust, test_options()).status == SolveStatus::Infeasible);
 
-  Spec component =
-      parse_spec(std::string(base) + "output OUT1 component 3 1 0 east\n");
-  SolveReport report = solve(component, test_options());
+  Spec repeater =
+      parse_spec(std::string(base) + "output OUT1 repeater 3 1 0 east\n");
+  SolveReport report = solve(repeater, test_options());
   REQUIRE(report.status == SolveStatus::Optimal);
-  CHECK(report.solution->block_count == 2);
+  // Block and torch, plus supports under the input and the output repeater.
+  CHECK(report.solution->block_count == 4);
 }
 
 TEST_CASE("stop at first returns a verified circuit") {

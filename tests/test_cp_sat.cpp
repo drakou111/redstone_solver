@@ -1,8 +1,9 @@
-#include <catch2/catch_test_macros.hpp>
-
 #include "ortools/sat/cp_model.h"
 #include "ortools/sat/cp_model.pb.h"
 #include "ortools/sat/cp_model_solver.h"
+
+// Last, so Catch2's CHECK replaces the one abseil (via OR-Tools) defines.
+#include <catch2/catch_test_macros.hpp>
 
 namespace sat = operations_research::sat;
 

@@ -42,8 +42,8 @@ A spec file describes the volume, the ports, the timing and the truth table (see
 
 ```
 size 4 3 3                          # x y z
-input IN1 strong 0 1 0 east         # comparator-like source facing east
-input IN2 strong 0 1 2 east
+input IN1 comparator 0 1 0 east     # comparator input facing east (needs a block below)
+input IN2 comparator 0 1 2 east
 output OUT1 dust 3 1 1              # output read from this dust
 timing 4                            # correct within 4 game ticks ("2rt" = redstone ticks)
 row IN1(ss1..15),IN2(ss1..15) -> OUT1(ss1..15)

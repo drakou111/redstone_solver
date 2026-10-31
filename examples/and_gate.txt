@@ -1,7 +1,7 @@
 # 2-input AND gate, output correct within 4 game ticks.
 size 4 3 3
-input IN1 strong 0 1 0 east
-input IN2 strong 0 1 2 east
+input IN1 comparator 0 1 0 east
+input IN2 comparator 0 1 2 east
 output OUT1 dust 3 1 1
 timing 4
 row IN1(ss1..15),IN2(ss1..15) -> OUT1(ss1..15)

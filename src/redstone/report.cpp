@@ -147,15 +147,22 @@ std::string java_block(const Block &b, const Simulator &sim, Vec3 p) {
                                                         : "compare");
   case BlockType::Dust:
   case BlockType::Output:
+  case BlockType::Input:
+    if (is_container_input(b))
+      return "barrel[facing=up]";
+    if (is_output(b, OutputKind::Repeater))
+      return std::format("repeater[facing={},delay=1]",
+                         state_name(opposite(b.facing)));
+    if (is_output(b, OutputKind::Comparator))
+      return std::format("comparator[facing={},mode=compare]",
+                         state_name(opposite(b.facing)));
     if (!is_dust(b))
-      return "";
+      return ""; // repeater/comparator inputs belong to the driving circuit
     return std::format("redstone_wire[north={},south={},east={},west={}]",
                        sim.dust_points(p, Dir::North) ? "side" : "none",
                        sim.dust_points(p, Dir::South) ? "side" : "none",
                        sim.dust_points(p, Dir::East) ? "side" : "none",
                        sim.dust_points(p, Dir::West) ? "side" : "none");
-  case BlockType::Input:
-    return is_container_input(b) ? "barrel[facing=up]" : "";
   case BlockType::Air:
     return "";
   }
@@ -163,7 +170,7 @@ std::string java_block(const Block &b, const Simulator &sim, Vec3 p) {
 }
 
 bool needs_support(const Block &b) {
-  return is_dust(b) || b.type == BlockType::Torch ||
+  return is_dust(b) || is_diode_port(b) || b.type == BlockType::Torch ||
          b.type == BlockType::Repeater || b.type == BlockType::Comparator;
 }
 
@@ -179,18 +186,17 @@ std::string setblock_commands(const World &world) {
     const Block &b = world.at(p);
     if (b.type == BlockType::Input)
       text += std::format(
-          "# IN{} at ~{} ~{} ~{}: {}\n", b.channel + 1, p.x, p.y, p.z,
-          is_strong_input(b)
-              ? std::format("strong source facing {}", to_string(b.facing))
-              : std::string("barrel whose fill sets the "
-                            "signal"));
+          "# IN{} at ~{} ~{} ~{}: {} input{}\n", b.channel + 1, p.x, p.y, p.z,
+          input_kind_name(b.input_kind()),
+          is_diode_input(b)
+              ? std::format(" facing {} (place your own)", to_string(b.facing))
+              : std::string());
     if (b.type == BlockType::Output)
-      text += std::format("# OUT{} at ~{} ~{} ~{}: {}\n", b.channel + 1, p.x,
-                          p.y, p.z,
-                          is_dust(b) ? std::string("read this dust")
-                                     : std::format("read like a repeater "
-                                                   "facing {}",
-                                                   to_string(b.facing)));
+      text += std::format(
+          "# OUT{} at ~{} ~{} ~{}: {} output{}\n", b.channel + 1, p.x, p.y, p.z,
+          output_kind_name(b.output_kind()),
+          is_dust(b) ? std::string()
+                     : std::format(" facing {}", to_string(b.facing)));
     if (b.type == BlockType::Hopper || b.type == BlockType::Barrel ||
         b.type == BlockType::Chest)
       text += std::format("# fill the {} at ~{} ~{} ~{} to comparator "

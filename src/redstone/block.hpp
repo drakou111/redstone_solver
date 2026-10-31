@@ -1,8 +1,10 @@
 #pragma once
 
+#include <array>
 #include <cstdint>
 #include <optional>
 #include <string>
+#include <string_view>
 
 #include "redstone/geometry.hpp"
 
@@ -33,18 +35,23 @@ enum class BlockType : std::uint8_t {
 
 enum class ComparatorMode : std::uint8_t { Compare, Subtract };
 
-// Strong: behaves like a comparator output pointing along `facing`.
-// Container: behaves like a barrel whose comparator signal is the input value.
-enum class InputKind : std::uint8_t { Strong, Container };
+// What drives an input port. Each behaves like the real block:
+//   Comparator: outputs the input strength along `facing`.
+//   Container: a barrel whose comparator signal is the input value.
+//   Repeater: outputs 15 along `facing` while the input is above 0.
+//   Dust: dust held at the input strength.
+enum class InputKind : std::uint8_t { Comparator, Container, Repeater, Dust };
 
-// Dust: a dust cell whose power is the output value.
-// Component: reads the signal a repeater facing the same way would receive from
-// behind.
-enum class OutputKind : std::uint8_t { Dust, Component };
+// What reads an output port:
+//   Dust: the dust's power.
+//   Repeater: the signal a repeater facing `facing` receives from behind.
+//   Comparator: what a comparator facing `facing` reads from behind,
+//   including containers (also through a block).
+enum class OutputKind : std::uint8_t { Dust, Repeater, Comparator };
 
 // Static description of one cell. Meaning of `facing` per type:
 //   Torch: direction from the torch to the block it is attached to (Down =
-//   standing torch). Repeater, Comparator, Input(Strong), Output(Component):
+//   standing torch). Repeater, Comparator and repeater/comparator ports:
 //   direction the signal travels. Observer: direction of the watched face; it
 //   outputs on the opposite side.
 struct Block {
@@ -86,25 +93,52 @@ struct Block {
 
 std::string to_string(const Block &block);
 
-constexpr bool is_dust(const Block &b) {
-  return b.type == BlockType::Dust ||
-         (b.type == BlockType::Output &&
-          b.value == static_cast<int>(OutputKind::Dust));
+inline constexpr std::array<InputKind, 4> kInputKinds{
+    InputKind::Comparator, InputKind::Repeater, InputKind::Dust,
+    InputKind::Container};
+inline constexpr std::array<OutputKind, 3> kOutputKinds{
+    OutputKind::Dust, OutputKind::Repeater, OutputKind::Comparator};
+
+// Spec-file names: comparator, repeater, dust, container / dust, repeater,
+// comparator. The old names "strong" and "component" are still accepted.
+std::string_view input_kind_name(InputKind kind);
+std::string_view output_kind_name(OutputKind kind);
+std::optional<InputKind> parse_input_kind(std::string_view name);
+std::optional<OutputKind> parse_output_kind(std::string_view name);
+
+constexpr bool is_input(const Block &b, InputKind kind) {
+  return b.type == BlockType::Input && b.value == static_cast<int>(kind);
 }
 
-constexpr bool is_strong_input(const Block &b) {
-  return b.type == BlockType::Input &&
-         b.value == static_cast<int>(InputKind::Strong);
+constexpr bool is_output(const Block &b, OutputKind kind) {
+  return b.type == BlockType::Output && b.value == static_cast<int>(kind);
+}
+
+constexpr bool is_dust(const Block &b) {
+  return b.type == BlockType::Dust || is_output(b, OutputKind::Dust) ||
+         is_input(b, InputKind::Dust);
 }
 
 constexpr bool is_container_input(const Block &b) {
-  return b.type == BlockType::Input &&
-         b.value == static_cast<int>(InputKind::Container);
+  return is_input(b, InputKind::Container);
 }
 
-constexpr bool is_component_output(const Block &b) {
-  return b.type == BlockType::Output &&
-         b.value == static_cast<int>(OutputKind::Component);
+// Comparator or repeater input: a source that outputs along its facing.
+constexpr bool is_diode_input(const Block &b) {
+  return is_input(b, InputKind::Comparator) || is_input(b, InputKind::Repeater);
+}
+
+// Ports standing in for a repeater or comparator: they need a block below
+// and a horizontal facing, like the real thing.
+constexpr bool is_diode_port(const Block &b) {
+  return is_diode_input(b) || is_output(b, OutputKind::Repeater) ||
+         is_output(b, OutputKind::Comparator);
+}
+
+// Dust connects to these only along their axis.
+constexpr bool connects_along_axis(const Block &b) {
+  return b.type == BlockType::Repeater || is_input(b, InputKind::Repeater) ||
+         is_output(b, OutputKind::Repeater);
 }
 
 // Java's isRedstoneConductor: the block can be powered and relay that power.
@@ -127,10 +161,10 @@ constexpr bool is_container(const Block &b) {
          b.type == BlockType::Chest || is_container_input(b);
 }
 
-// Repeaters, comparators and comparator-like inputs.
+// Repeaters, comparators and the inputs standing in for them.
 constexpr bool is_diode(const Block &b) {
   return b.type == BlockType::Repeater || b.type == BlockType::Comparator ||
-         is_strong_input(b);
+         is_diode_input(b);
 }
 
 constexpr bool is_signal_source(const Block &b) {
@@ -143,7 +177,9 @@ constexpr bool is_signal_source(const Block &b) {
   case BlockType::Observer:
     return true;
   case BlockType::Input:
-    return is_strong_input(b);
+    return is_diode_input(b) || is_dust(b);
+  case BlockType::Output:
+    return is_output(b, OutputKind::Comparator) || is_dust(b);
   default:
     return is_dust(b);
   }

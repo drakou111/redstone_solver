@@ -121,8 +121,7 @@ void App::draw_texture_controls() {
 
 void App::load_spec(const Spec &spec) {
   this->size_ = {spec.size.x, spec.size.y, spec.size.z};
-  // InputKind (strong, container) and OutputKind (dust, component) both map
-  // to the draft's 0/1.
+  // The draft stores InputKind / OutputKind as their underlying values.
   auto ports = [](const auto &list) {
     std::vector<PortDraft> drafts;
     for (const auto &port : list) {
@@ -167,15 +166,13 @@ Spec App::build_spec() const {
   Spec spec;
   spec.size = {this->size_[0], this->size_[1], this->size_[2]};
   for (const PortDraft &d : this->inputs_)
-    spec.inputs.push_back(
-        {d.kind == 0 ? InputKind::Strong : InputKind::Container,
-         {d.position[0], d.position[1], d.position[2]},
-         static_cast<Dir>(d.facing)});
+    spec.inputs.push_back({static_cast<InputKind>(d.kind),
+                           {d.position[0], d.position[1], d.position[2]},
+                           static_cast<Dir>(d.facing)});
   for (const PortDraft &d : this->outputs_)
-    spec.outputs.push_back(
-        {d.kind == 0 ? OutputKind::Dust : OutputKind::Component,
-         {d.position[0], d.position[1], d.position[2]},
-         static_cast<Dir>(d.facing)});
+    spec.outputs.push_back({static_cast<OutputKind>(d.kind),
+                            {d.position[0], d.position[1], d.position[2]},
+                            static_cast<Dir>(d.facing)});
 
   for (std::size_t r = 0; r < this->rows_.size(); ++r) {
     TruthRow row;
@@ -330,7 +327,9 @@ void App::draw_file_section() {
 
 void App::draw_ports(std::vector<PortDraft> &ports, bool inputs) {
   const char *prefix = inputs ? "IN" : "OUT";
-  const char *kinds = inputs ? "strong\0container\0" : "dust\0component\0";
+  // Combo items follow the enum values.
+  const char *kinds = inputs ? "comparator\0container\0repeater\0dust\0"
+                             : "dust\0repeater\0comparator\0";
   int remove = -1;
   for (std::size_t i = 0; i < ports.size(); ++i) {
     PortDraft &port = ports[i];
@@ -342,7 +341,10 @@ void App::draw_ports(std::vector<PortDraft> &ports, bool inputs) {
     ImGui::SameLine();
     ImGui::SetNextItemWidth(130);
     ImGui::InputInt3("##pos", port.position.data());
-    bool directional = inputs ? port.kind == 0 : port.kind == 1;
+    bool directional =
+        inputs ? (static_cast<InputKind>(port.kind) == InputKind::Comparator ||
+                  static_cast<InputKind>(port.kind) == InputKind::Repeater)
+               : static_cast<OutputKind>(port.kind) != OutputKind::Dust;
     if (directional) {
       ImGui::SameLine();
       ImGui::SetNextItemWidth(70);
@@ -367,10 +369,9 @@ void App::draw_ports(std::vector<PortDraft> &ports, bool inputs) {
     this->resize_rows();
   }
   ImGui::SameLine();
-  ImGui::TextDisabled(inputs ? "strong: comparator-like source; container: "
-                               "barrel read by comparators"
-                             : "dust: dust power; component: what a "
-                               "repeater facing that way reads");
+  ImGui::TextDisabled(inputs ? "each behaves like that block driven to the "
+                               "input strength"
+                             : "the output is what that block would receive");
 }
 
 void App::draw_truth_table() {

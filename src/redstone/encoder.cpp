@@ -29,10 +29,13 @@ enum Kind : int {
   kHopper,
   kBarrel,
   kChest,
-  kInputStrong,
+  kInputComparator,
   kInputContainer,
+  kInputRepeater,
+  kInputDust,
   kOutputDust,
-  kOutputComponent,
+  kOutputRepeater,
+  kOutputComparator,
   kKindCount
 };
 
@@ -83,11 +86,27 @@ Kind kind_of(const Block &block) {
   case BlockType::Air:
     return kAir;
   case BlockType::Input:
-    return block.input_kind() == InputKind::Strong ? kInputStrong
-                                                   : kInputContainer;
+    switch (block.input_kind()) {
+    case InputKind::Comparator:
+      return kInputComparator;
+    case InputKind::Container:
+      return kInputContainer;
+    case InputKind::Repeater:
+      return kInputRepeater;
+    case InputKind::Dust:
+      return kInputDust;
+    }
+    throw std::logic_error("unknown input kind");
   case BlockType::Output:
-    return block.output_kind() == OutputKind::Dust ? kOutputDust
-                                                   : kOutputComponent;
+    switch (block.output_kind()) {
+    case OutputKind::Dust:
+      return kOutputDust;
+    case OutputKind::Repeater:
+      return kOutputRepeater;
+    case OutputKind::Comparator:
+      return kOutputComparator;
+    }
+    throw std::logic_error("unknown output kind");
   default:
     return palette_kind(block.type);
   }
@@ -319,7 +338,7 @@ struct CircuitEncoder::Impl {
         {k[kSolid], k[kGlass], k[kRedstoneBlock], k[kTarget], k[kNoteBlock],
          k[kBarrel], k[kObserver], k[kInputContainer]});
     c.top_support = this->b.any_exclusive({c.side_support, k[kHopper]});
-    c.dust = this->b.any_exclusive({k[kDust], k[kOutputDust]});
+    c.dust = this->b.any_exclusive({k[kDust], k[kOutputDust], k[kInputDust]});
     c.container = this->b.any_exclusive(
         {k[kHopper], k[kBarrel], k[kChest], k[kInputContainer]});
     c.directional = this->b.any_exclusive(
@@ -367,13 +386,15 @@ struct CircuitEncoder::Impl {
     return this->b.any_exclusive({
         n.dust,
         this->b.all({k[kRepeater], axis}),
-        this->b.all({k[kOutputComponent], axis}),
+        this->b.all({k[kOutputRepeater], axis}),
+        this->b.all({k[kInputRepeater], axis}),
         this->b.all({k[kObserver], n.facing[index_of(toward)]}),
         k[kTorch],
         k[kRedstoneBlock],
         k[kComparator],
         k[kTarget],
-        k[kInputStrong],
+        k[kInputComparator],
+        k[kOutputComparator],
     });
   }
 
@@ -382,6 +403,12 @@ struct CircuitEncoder::Impl {
       Vec3 p = c.position;
       const Cell &below = this->cell_at(p + offset(Dir::Down));
       this->b.require(below.top_support, {c.dust});
+      // Ports standing in for repeaters and comparators need a block below.
+      this->b.require(
+          below.top_support,
+          {this->b.any_exclusive(
+              {c.kind[kInputComparator], c.kind[kInputRepeater],
+               c.kind[kOutputRepeater], c.kind[kOutputComparator]})});
       if (c.fixed)
         continue;
 
@@ -398,7 +425,8 @@ struct CircuitEncoder::Impl {
           for (Dir side : {rotate_clockwise(d), rotate_counter_clockwise(d)}) {
             const Cell &n = this->cell_at(p + offset(side));
             Lit n_diode = this->b.any_exclusive(
-                {n.kind[kRepeater], n.kind[kComparator], n.kind[kInputStrong]});
+                {n.kind[kRepeater], n.kind[kComparator],
+                 n.kind[kInputComparator], n.kind[kInputRepeater]});
             this->b.require_any({!k[kRepeater], !c.facing[index_of(d)],
                                  !n_diode,
                                  !n.facing[index_of(opposite(side))]});
@@ -433,9 +461,10 @@ struct CircuitEncoder::Impl {
     const auto &k = q.kind;
     Lit forward = q.facing[index_of(d)];
     std::vector<Lit> ways{
-        this->b.all({this->b.any_exclusive(
-                         {k[kRepeater], k[kComparator], k[kInputStrong]}),
-                     forward}),
+        this->b.all(
+            {this->b.any_exclusive({k[kRepeater], k[kComparator],
+                                    k[kInputComparator], k[kInputRepeater]}),
+             forward}),
         this->b.all({k[kObserver], q.facing[index_of(opposite(d))]}),
         this->b.all({q.dust, d == Dir::Down ? this->b.constant(true)
                                             : q.points[index_of(d)]}),
@@ -567,7 +596,9 @@ struct CircuitEncoder::Impl {
 
     for (int i = 0; i < n; ++i) {
       const Cell &c = this->cells[i];
-      if (!c.dust.is_false())
+      if (c.kind[kInputDust].is_true())
+        s.dust[i] = Int::constant(this->input_value(s, c));
+      else if (!c.dust.is_false())
         s.dust[i] = this->b.new_int(0, kMaxSignal);
       if (c.may(kComparator))
         s.comp_positive[i] = this->b.positive(s.comp[i].comp_out);
@@ -589,8 +620,13 @@ struct CircuitEncoder::Impl {
           diode.push_back(this->b.scaled(
               this->b.all({k.obs_on, c.facing[index_of(opposite(d))]}),
               kMaxSignal));
-        if (c.kind[kInputStrong].is_true() && c.facing[di].is_true())
-          diode.push_back(Int::constant(this->input_value(s, c)));
+        if (c.facing[di].is_true()) {
+          if (c.kind[kInputComparator].is_true())
+            diode.push_back(Int::constant(this->input_value(s, c)));
+          if (c.kind[kInputRepeater].is_true())
+            diode.push_back(
+                Int::constant(this->input_value(s, c) > 0 ? kMaxSignal : 0));
+        }
         Int diode_sum = cp::Builder::exclusive_sum(diode);
 
         std::vector<Int> weak{
@@ -668,7 +704,7 @@ struct CircuitEncoder::Impl {
     // Dust power: strongest source, or strongest connected dust minus one.
     for (int i = 0; i < n; ++i) {
       const Cell &c = this->cells[i];
-      if (c.dust.is_false())
+      if (c.dust.is_false() || c.kind[kInputDust].is_true())
         continue;
       Vec3 p = c.position;
       std::vector<Int> candidates{Int::constant(0)};
@@ -697,6 +733,22 @@ struct CircuitEncoder::Impl {
       this->b.require_equal(s.dust[i], strongest, {c.dust});
       this->b.require_equal(s.dust[i], Int::constant(0), {!c.dust});
     }
+
+    // What a comparator at p sending towards d reads from behind, including
+    // containers (also through a conductor).
+    auto rear_reading = [&](Vec3 p, Dir d) {
+      int behind = from_side(p, opposite(d));
+      int further =
+          this->cell_index(p + offset(opposite(d)) + offset(opposite(d)));
+      Int rear_signal = signal(behind, d);
+      const Cell &behind_cell = this->cell(behind);
+      Lit through = this->b.all(
+          {behind_cell.conductor, this->cell(further).container,
+           !this->b.greater(rear_signal, Int::constant(kMaxSignal - 1))});
+      return this->b.if_else(
+          behind_cell.container, this->analog(s, behind),
+          this->b.if_else(through, this->analog(s, further), rear_signal));
+    };
 
     for (int i = 0; i < n; ++i) {
       const Cell &c = this->cells[i];
@@ -745,17 +797,7 @@ struct CircuitEncoder::Impl {
           Lit facing = c.facing[index_of(d)];
           if (facing.is_false())
             continue;
-          int behind = from_side(p, opposite(d));
-          int further =
-              this->cell_index(p + offset(opposite(d)) + offset(opposite(d)));
-          Int rear_signal = signal(behind, d);
-          const Cell &behind_cell = this->cell(behind);
-          Lit through = this->b.all(
-              {behind_cell.conductor, this->cell(further).container,
-               !this->b.greater(rear_signal, Int::constant(kMaxSignal - 1))});
-          Int rear = this->b.if_else(
-              behind_cell.container, this->analog(s, behind),
-              this->b.if_else(through, this->analog(s, further), rear_signal));
+          Int rear = rear_reading(p, d);
           rear_terms.push_back(this->b.select(facing, rear));
 
           Dir right = rotate_clockwise(d);
@@ -785,6 +827,8 @@ struct CircuitEncoder::Impl {
       int j = this->cell_index(port.position);
       if (port.kind == OutputKind::Dust)
         s.outputs.push_back(s.dust[j]);
+      else if (port.kind == OutputKind::Comparator)
+        s.outputs.push_back(rear_reading(port.position, port.facing));
       else
         s.outputs.push_back(
             signal(this->cell_index(port.position - offset(port.facing)),
@@ -808,7 +852,7 @@ struct CircuitEncoder::Impl {
       return this->b.constant(false);
     const Cell &c = this->cells[j];
     Lit facing = c.facing[index_of(d)];
-    if (c.kind[kInputStrong].is_true())
+    if (c.kind[kInputComparator].is_true() || c.kind[kInputRepeater].is_true())
       return this->b.constant(facing.is_true() && this->input_value(s, c) > 0);
     return this->b.any_exclusive({this->b.all({s.comp[j].rep_on, facing}),
                                   this->b.all({s.comp_positive[j], facing})});

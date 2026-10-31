@@ -441,6 +441,8 @@ void add_block(Scene &scene, const World &world, const Simulator *sim,
     }
     if (b.type == BlockType::Output)
       scene.label(mid + V3{0, -0.3f, 0}, std::format("OUT{}", b.channel + 1));
+    if (b.type == BlockType::Input)
+      scene.label(mid + V3{0, -0.3f, 0}, std::format("IN{}", b.channel + 1));
     return;
   }
 
@@ -471,9 +473,16 @@ void add_block(Scene &scene, const World &world, const Simulator *sim,
     return;
   }
 
-  if (b.type == BlockType::Repeater || b.type == BlockType::Comparator) {
-    bool repeater = b.type == BlockType::Repeater;
+  if (b.type == BlockType::Repeater || b.type == BlockType::Comparator ||
+      is_diode_port(b)) {
+    bool repeater = b.type == BlockType::Repeater ||
+                    is_input(b, InputKind::Repeater) ||
+                    is_output(b, OutputKind::Repeater);
     bool powered = repeater ? s.on : comparator_output > 0;
+    if (sim && b.type == BlockType::Input)
+      powered = sim->input(b.channel) > 0;
+    if (sim && b.type == BlockType::Output)
+      powered = sim->output(b.channel) > 0;
     Skin skin = uniform_skin(tex("smooth_stone"));
     skin.faces[kTop] =
         tex(repeater ? (powered ? "repeater_on" : "repeater")
@@ -486,11 +495,16 @@ void add_block(Scene &scene, const World &world, const Simulator *sim,
     if (!textured)
       scene.arrow(top, surface + dir_v3(b.facing) * -0.35f,
                   surface + dir_v3(b.facing) * 0.35f, arrow_color);
-    scene.label(surface, repeater
-                             ? std::to_string(b.repeater_delay())
-                             : (b.comparator_mode() == ComparatorMode::Subtract
-                                    ? std::string("-")
-                                    : std::string("=")));
+    if (b.type == BlockType::Input)
+      scene.label(surface, std::format("IN{}", b.channel + 1));
+    else if (b.type == BlockType::Output)
+      scene.label(surface, std::format("OUT{}", b.channel + 1));
+    else
+      scene.label(surface,
+                  repeater ? std::to_string(b.repeater_delay())
+                           : (b.comparator_mode() == ComparatorMode::Subtract
+                                  ? std::string("-")
+                                  : std::string("=")));
     return;
   }
 
@@ -518,7 +532,7 @@ void add_block(Scene &scene, const World &world, const Simulator *sim,
   }
   if (b.type == BlockType::Input) {
     V3 surface = mid + V3{0, 0.5f, 0};
-    if (is_strong_input(b) && is_horizontal(b.facing))
+    if (is_diode_input(b) && is_horizontal(b.facing))
       scene.arrow(top, surface, surface + dir_v3(b.facing) * 0.45f,
                   arrow_color);
     scene.label(surface, std::format("IN{}", b.channel + 1));

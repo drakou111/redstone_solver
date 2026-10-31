@@ -75,8 +75,10 @@ std::vector<std::string> World::validate() const {
     const Block &below = this->at(p + offset(Dir::Down));
     std::string where = to_string(b) + " at " + describe(p);
 
-    if (is_dust(b) && !supports_on_top(below))
+    if ((is_dust(b) || is_diode_port(b)) && !supports_on_top(below))
       errors.push_back(where + " has nothing to stand on");
+    if (is_diode_port(b) && !is_horizontal(b.facing))
+      errors.push_back(where + " must face horizontally");
 
     switch (b.type) {
     case BlockType::Repeater:

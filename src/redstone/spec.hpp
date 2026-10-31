@@ -35,7 +35,7 @@ struct TruthRow {
 };
 
 struct InputPort {
-  InputKind kind = InputKind::Strong;
+  InputKind kind = InputKind::Comparator;
   Vec3 position{};
   Dir facing = Dir::North;
 };

@@ -32,7 +32,7 @@ void advance(Simulator &sim, int ticks) {
 // Input 0 -> solid block -> wall torch -> output dust 0.
 World not_gate() {
   World world = with_glass_floor({4, 2, 1});
-  world.set({0, 1, 0}, Block::input(0, InputKind::Strong, Dir::East));
+  world.set({0, 1, 0}, Block::input(0, InputKind::Comparator, Dir::East));
   world.set({1, 1, 0}, Block::solid());
   world.set({2, 1, 0}, Block::torch(Dir::West));
   world.set({3, 1, 0}, Block::output(0, OutputKind::Dust));
@@ -54,7 +54,7 @@ std::vector<int> output_timeline(Simulator &sim, int ticks) {
 TEST_CASE("dust loses one signal strength per block") {
   constexpr int kLength = 18;
   World world = with_glass_floor({kLength + 1, 2, 1});
-  world.set({0, 1, 0}, Block::input(0, InputKind::Strong, Dir::East));
+  world.set({0, 1, 0}, Block::input(0, InputKind::Comparator, Dir::East));
   for (int x = 1; x <= kLength; ++x)
     world.set({x, 1, 0}, Block::dust());
   Simulator sim = settled(world);
@@ -99,7 +99,7 @@ TEST_CASE("torch inverts its attached block with a 2 game tick delay") {
 
 TEST_CASE("repeater delays by 2 game ticks per step and extends short pulses") {
   World world = with_glass_floor({3, 2, 1});
-  world.set({0, 1, 0}, Block::input(0, InputKind::Strong, Dir::East));
+  world.set({0, 1, 0}, Block::input(0, InputKind::Comparator, Dir::East));
   world.set({1, 1, 0}, Block::repeater(Dir::East, 3));
   world.set({2, 1, 0}, Block::output(0, OutputKind::Dust));
   Simulator sim = settled(world);
@@ -119,10 +119,10 @@ TEST_CASE("repeater delays by 2 game ticks per step and extends short pulses") {
 
 TEST_CASE("a repeater powered from the side by a diode locks") {
   World world = with_glass_floor({4, 2, 4});
-  world.set({1, 1, 1}, Block::input(0, InputKind::Strong, Dir::East));
+  world.set({1, 1, 1}, Block::input(0, InputKind::Comparator, Dir::East));
   world.set({2, 1, 1}, Block::repeater(Dir::East, 1));
   world.set({3, 1, 1}, Block::output(0, OutputKind::Dust));
-  world.set({2, 1, 3}, Block::input(1, InputKind::Strong, Dir::North));
+  world.set({2, 1, 3}, Block::input(1, InputKind::Comparator, Dir::North));
   world.set({2, 1, 2}, Block::repeater(Dir::North, 1));
   Simulator sim = settled(world);
 
@@ -170,9 +170,9 @@ TEST_CASE("container input drives a comparator after 2 game ticks") {
 TEST_CASE("comparator compare and subtract modes") {
   auto build = [](ComparatorMode mode) {
     World world = with_glass_floor({3, 2, 2});
-    world.set({0, 1, 0}, Block::input(0, InputKind::Strong, Dir::East));
+    world.set({0, 1, 0}, Block::input(0, InputKind::Comparator, Dir::East));
     world.set({1, 1, 0}, Block::comparator(Dir::East, mode));
-    world.set({1, 1, 1}, Block::input(1, InputKind::Strong, Dir::North));
+    world.set({1, 1, 1}, Block::input(1, InputKind::Comparator, Dir::North));
     world.set({2, 1, 0}, Block::output(0, OutputKind::Dust));
     return world;
   };
@@ -197,7 +197,7 @@ TEST_CASE("comparator compare and subtract modes") {
 TEST_CASE(
     "observer emits a 2 game tick pulse after a watched note block changes") {
   World world = with_glass_floor({2, 2, 3});
-  world.set({0, 1, 0}, Block::input(0, InputKind::Strong, Dir::East));
+  world.set({0, 1, 0}, Block::input(0, InputKind::Comparator, Dir::East));
   world.set({1, 1, 0}, Block::note_block());
   world.set({1, 1, 1}, Block::observer(Dir::North));
   world.set({1, 1, 2}, Block::output(0, OutputKind::Dust));
@@ -214,7 +214,7 @@ TEST_CASE(
 
 TEST_CASE("observer sees a hopper being disabled") {
   World world = with_glass_floor({2, 2, 3});
-  world.set({0, 1, 0}, Block::input(0, InputKind::Strong, Dir::East));
+  world.set({0, 1, 0}, Block::input(0, InputKind::Comparator, Dir::East));
   world.set({1, 1, 0}, Block::hopper(2));
   world.set({1, 1, 1}, Block::observer(Dir::North));
   world.set({1, 1, 2}, Block::output(0, OutputKind::Dust));
@@ -231,10 +231,11 @@ TEST_CASE("dust climbs transparent blocks but does not descend them") {
     world.set({1, 1, 0}, Block::output(0, OutputKind::Dust));
     world.set({2, 1, 0}, step);
     world.set({2, 2, 0}, Block::output(1, OutputKind::Dust));
-    if (power_from_top)
-      world.set({3, 2, 0}, Block::input(0, InputKind::Strong, Dir::West));
-    else
-      world.set({0, 1, 0}, Block::input(0, InputKind::Strong, Dir::East));
+    if (power_from_top) {
+      world.set({3, 1, 0}, Block::glass());
+      world.set({3, 2, 0}, Block::input(0, InputKind::Comparator, Dir::West));
+    } else
+      world.set({0, 1, 0}, Block::input(0, InputKind::Comparator, Dir::East));
     return world;
   };
 
@@ -257,12 +258,12 @@ TEST_CASE("blocks powered by dust power components but not other dust") {
   // reading it.
   auto build = [](Block feeder) {
     World world = with_glass_floor({4, 2, 3});
-    world.set({0, 1, 0}, Block::input(0, InputKind::Strong, Dir::East));
+    world.set({0, 1, 0}, Block::input(0, InputKind::Comparator, Dir::East));
     world.set({1, 1, 0}, feeder);
     world.set({2, 1, 0}, Block::solid());
     world.set({3, 1, 0}, Block::output(0, OutputKind::Dust));
     world.set({2, 1, 1}, Block::repeater(Dir::South, 1));
-    world.set({2, 1, 2}, Block::output(1, OutputKind::Component, Dir::South));
+    world.set({2, 1, 2}, Block::output(1, OutputKind::Repeater, Dir::South));
     return world;
   };
 
@@ -281,7 +282,7 @@ TEST_CASE("blocks powered by dust power components but not other dust") {
 
 TEST_CASE("dust running past a block does not power it") {
   World world = with_glass_floor({5, 2, 3});
-  world.set({1, 1, 0}, Block::input(0, InputKind::Strong, Dir::South));
+  world.set({1, 1, 0}, Block::input(0, InputKind::Comparator, Dir::South));
   world.set({1, 1, 1}, Block::dust());
   world.set({1, 1, 2}, Block::dust());
   world.set({2, 1, 1}, Block::solid());
@@ -342,4 +343,49 @@ TEST_CASE("simulator rejects invalid worlds and unknown channels") {
   CHECK_THROWS_AS(sim.set_input(3, 1), std::invalid_argument);
   CHECK_THROWS_AS(sim.set_input(0, 16), std::invalid_argument);
   CHECK_THROWS_AS(sim.output(2), std::invalid_argument);
+}
+
+TEST_CASE("repeater input outputs 15 for any non-zero value") {
+  World world = with_glass_floor({3, 2, 1});
+  world.set({0, 1, 0}, Block::input(0, InputKind::Repeater, Dir::East));
+  world.set({1, 1, 0}, Block::dust());
+  world.set({2, 1, 0}, Block::output(0, OutputKind::Dust));
+  Simulator sim = settled(world);
+  sim.set_input(0, 3);
+  CHECK(sim.output(0) == 14);
+  sim.set_input(0, 0);
+  CHECK(sim.output(0) == 0);
+}
+
+TEST_CASE("dust input is held at the input value and decays along dust") {
+  World world = with_glass_floor({4, 2, 1});
+  world.set({0, 1, 0}, Block::input(0, InputKind::Dust));
+  world.set({1, 1, 0}, Block::dust());
+  world.set({2, 1, 0}, Block::dust());
+  world.set({3, 1, 0}, Block::output(0, OutputKind::Dust));
+  Simulator sim = settled(world);
+  sim.set_input(0, 9);
+  CHECK(sim.state_at({0, 1, 0}).power == 9);
+  CHECK(sim.output(0) == 6);
+  sim.set_input(0, 0);
+  CHECK(sim.output(0) == 0);
+}
+
+TEST_CASE("comparator output reads a container through a block") {
+  World world = with_glass_floor({3, 2, 1});
+  world.set({0, 1, 0}, Block::input(0, InputKind::Container));
+  world.set({1, 1, 0}, Block::solid());
+  world.set({2, 1, 0}, Block::output(0, OutputKind::Comparator, Dir::East));
+  Simulator sim = settled(world);
+  sim.set_input(0, 11);
+  CHECK(sim.output(0) == 11);
+}
+
+TEST_CASE(
+    "repeater and comparator ports need support and a horizontal facing") {
+  World floating({1, 2, 1});
+  floating.set({0, 1, 0}, Block::output(0, OutputKind::Repeater, Dir::East));
+  CHECK_FALSE(floating.validate().empty());
+  CHECK_THROWS_AS(Block::input(0, InputKind::Repeater, Dir::Up),
+                  std::invalid_argument);
 }

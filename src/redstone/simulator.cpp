@@ -28,7 +28,7 @@ constexpr std::uint8_t bit(Dir d) {
 bool dust_should_connect_to(const Block &b, Dir toward) {
   if (is_dust(b))
     return true;
-  if (b.type == BlockType::Repeater || is_component_output(b))
+  if (connects_along_axis(b))
     return same_axis(toward, b.facing);
   if (b.type == BlockType::Observer)
     return toward == b.facing;
@@ -89,11 +89,20 @@ void Simulator::set_input(int channel, int signal) {
   this->input_values_[channel] = static_cast<std::uint8_t>(signal);
   Vec3 p = this->world_.position_of(this->input_cells_[channel]);
   const Block &b = this->block(p);
-  if (is_strong_input(b)) {
+  if (is_diode_input(b)) {
     CellState next = this->states_[this->cell(p)];
     next.on = signal > 0;
     this->set_state(p, next, false);
     this->update_in_front(p, b.facing);
+    return;
+  }
+  if (is_dust(b)) {
+    // Like dust whose power changed: update around it and its neighbours.
+    CellState next = this->states_[this->cell(p)];
+    next.power = static_cast<std::uint8_t>(signal);
+    this->set_state(p, next, false);
+    for (Vec3 q : this->order_.dust_update_positions(p))
+      this->update_neighbors_at(q);
     return;
   }
   this->update_comparators_around_container(p);
@@ -112,7 +121,11 @@ int Simulator::output(int channel) const {
     throw std::invalid_argument(
         std::format("no output with channel {}", channel));
   Vec3 p = this->world_.position_of(this->output_cells_[channel]);
-  return is_dust(this->block(p)) ? this->dust_power(p) : this->diode_input(p);
+  const Block &b = this->block(p);
+  if (is_dust(b))
+    return this->dust_power(p);
+  return is_output(b, OutputKind::Comparator) ? this->comparator_input(p)
+                                              : this->diode_input(p);
 }
 
 void Simulator::tick() {
@@ -232,7 +245,11 @@ int Simulator::weak_emit(Vec3 p, Dir d, bool dust_signals) const {
   case BlockType::Observer:
     return s.on && d == opposite(b.facing) ? kMaxSignal : 0;
   case BlockType::Input:
-    return is_strong_input(b) && d == b.facing ? this->input_value_at(p) : 0;
+    if (!is_diode_input(b) || d != b.facing)
+      return 0;
+    if (is_input(b, InputKind::Repeater))
+      return this->input_value_at(p) > 0 ? kMaxSignal : 0;
+    return this->input_value_at(p);
   default:
     return 0;
   }
@@ -562,6 +579,8 @@ void Simulator::shape_changed(Vec3 p, Dir toward_changed) {
 
 // DefaultRedstoneController.updatePowerStrength.
 void Simulator::update_dust(Vec3 p) {
+  if (is_input(this->block(p), InputKind::Dust))
+    return; // held at the input value
   int target = this->dust_target_strength(p);
   CellState s = this->states_[this->cell(p)];
   if (s.power == target)

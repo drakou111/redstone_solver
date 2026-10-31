@@ -18,7 +18,7 @@ TEST_CASE("setblock export uses Java block states and places supports first") {
   World world({5, 2, 2});
   for (int x = 0; x < 5; ++x)
     world.set({x, 0, 0}, Block::solid());
-  world.set({0, 1, 0}, Block::input(0, InputKind::Strong, Dir::East));
+  world.set({0, 1, 0}, Block::input(0, InputKind::Comparator, Dir::East));
   world.set({1, 1, 0}, Block::repeater(Dir::East, 3));
   world.set({2, 1, 0}, Block::comparator(Dir::East, ComparatorMode::Subtract));
   world.set({3, 1, 0}, Block::dust());
