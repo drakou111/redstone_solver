@@ -4,10 +4,10 @@ import { HoverInfo } from './panels/HoverInfo';
 import { SimBar } from './panels/SimBar';
 import { SolveBar } from './panels/SolveBar';
 import { SpecPanel } from './panels/SpecPanel';
-import { TOOL_INFO, Toolbar } from './panels/Toolbar';
-import { type GhostStyle, Scene } from './scene/Scene';
+import { PLACING_INFO, Toolbar } from './panels/Toolbar';
+import { Scene } from './scene/Scene';
 import { specWorld } from './specEdit';
-import { RESULT_TOOLS, SPEC_TOOLS, useStore } from './store';
+import { PLACING, useStore } from './store';
 
 function ViewControls() {
   const spec = useStore((s) => s.spec);
@@ -74,16 +74,12 @@ function useShortcuts() {
       if (isTyping(event.target) || event.ctrlKey || event.altKey || event.metaKey) return;
       const state = useStore.getState();
       const k = event.key.toLowerCase();
-      if (k === 'r') state.rotate();
-      else if (k === 'delete' || k === 'backspace') state.deleteSelected();
-      else if (k === 'escape') {
-        state.setTool('select');
-        state.select(null);
+      if (k === 'r') {
+        state.rotate();
       } else {
-        const tools = state.view === 'result' ? RESULT_TOOLS : SPEC_TOOLS;
-        const tool = tools.find((t) => TOOL_INFO[t].key.toLowerCase() === k);
-        if (tool) state.setTool(tool);
-        else return;
+        const placing = PLACING.find((p) => PLACING_INFO[p].key.toLowerCase() === k);
+        if (!placing || state.view !== 'spec') return;
+        state.setPlacing(placing);
       }
       event.preventDefault();
     };
@@ -99,20 +95,13 @@ function Viewport() {
   const sim = useStore((s) => s.sim);
   const textures = useStore((s) => s.textures);
   const topLayer = useStore((s) => s.topLayer);
-  const tool = useStore((s) => s.tool);
-  const selected = useStore((s) => s.selected);
   const hover = useStore((s) => s.hover);
   const setHover = useStore((s) => s.setHover);
-  const click = useStore((s) => s.click);
+  const place = useStore((s) => s.place);
+  const remove = useStore((s) => s.remove);
   const showResult = view === 'result' && result !== null;
   const world = useMemo(() => (showResult ? result.layout : spec ? specWorld(spec) : null), [showResult, result, spec]);
   if (!spec || !world) return <div className="muted center">Loading...</div>;
-
-  const selectedPort = selected ? (selected.input ? spec.inputs[selected.index] : spec.outputs[selected.index]) : undefined;
-  let ghost: GhostStyle = null;
-  if (tool === 'remove') ghost = 'remove';
-  else if (tool === 'select') ghost = !showResult && selectedPort ? 'move' : null;
-  else ghost = 'place';
 
   return (
     <Scene
@@ -122,11 +111,10 @@ function Viewport() {
       topLayer={topLayer}
       forbidden={showResult ? [] : spec.forbidden}
       kept={showResult ? [] : spec.fixed.map((b) => b.position)}
-      selected={showResult ? null : (selectedPort?.position ?? null)}
       hover={hover}
-      ghost={ghost}
       onHover={setHover}
-      onClick={click}
+      onPlace={place}
+      onRemove={remove}
     />
   );
 }

@@ -11,6 +11,9 @@ export interface Look {
   texture?: string; // Minecraft block texture name
   color: string; // tint when textured, fill otherwise
   transparent?: boolean;
+  // Part of the texture to stretch over each box face, in texture pixels
+  // [left, top, right, bottom]; by default faces use the block-local area.
+  pixels?: [number, number, number, number];
 }
 
 export interface BoxPart {
@@ -177,9 +180,48 @@ function torchParts(attached: Dir, lit: boolean): Part[] {
   return parts;
 }
 
-function diodeParts(texture: string, facing: Dir, label: string): Part[] {
-  const stone: Look = { texture: 'smooth_stone', color: WHITE };
+const PX = 1 / 16;
+
+// Rotates a box (block-local) clockwise by quarter turns seen from above.
+function turnBox(min: V3, max: V3, turns: number): [V3, V3] {
+  let a: V3 = min;
+  let b: V3 = max;
+  for (let i = 0; i < ((turns % 4) + 4) % 4; ++i) {
+    a = [1 - a[2], a[1], a[0]];
+    b = [1 - b[2], b[1], b[0]];
+  }
   return [
+    [Math.min(a[0], b[0]), Math.min(a[1], b[1]), Math.min(a[2], b[2])],
+    [Math.max(a[0], b[0]), Math.max(a[1], b[1]), Math.max(a[2], b[2])],
+  ];
+}
+
+// A small torch as in Minecraft's repeater and comparator models: a 2x2 pixel
+// stick using the torch texture's stick and head pixels. Pixel coordinates
+// are given with the output side towards north.
+function diodeTorch(x0: number, z0: number, top: number, lit: boolean, turns: number): BoxPart {
+  const texture = lit ? 'redstone_torch' : 'redstone_torch_off';
+  const height = top - 2;
+  const side: Look = { texture, color: WHITE, pixels: [7, 6, 9, 6 + height] };
+  const head: Look = { texture, color: WHITE, pixels: [7, 6, 9, 8] };
+  const [min, max] = turnBox([x0 * PX, 2 * PX, z0 * PX], [(x0 + 2) * PX, top * PX, (z0 + 2) * PX], turns);
+  return { kind: 'box', min, max, faces: { top: head, north: side, south: side, west: side, east: side } };
+}
+
+interface DiodeLook {
+  comparator: boolean;
+  facing: Dir;
+  powered: boolean;
+  delay?: number; // repeater
+  locked?: boolean; // repeater
+  subtract?: boolean; // comparator
+}
+
+function diodeParts({ comparator, facing, powered, delay = 1, locked = false, subtract = false }: DiodeLook): Part[] {
+  const stone: Look = { texture: 'smooth_stone', color: WHITE };
+  const turns = turnsTowards(facing);
+  const texture = comparator ? (powered ? 'comparator_on' : 'comparator') : powered ? 'repeater_on' : 'repeater';
+  const parts: Part[] = [
     {
       kind: 'box',
       min: [0, 0, 0],
@@ -189,11 +231,29 @@ function diodeParts(texture: string, facing: Dir, label: string): Part[] {
     {
       kind: 'quad',
       corners: flatQuad(0, 0, 1, 1, DIODE_HEIGHT),
-      uvs: topUVs(turnsTowards(facing)),
+      uvs: topUVs(turns),
       look: { texture, color: WHITE, transparent: true },
     },
-    { kind: 'label', at: [0.5, DIODE_HEIGHT + 0.05, 0.5], text: label },
   ];
+  if (comparator) {
+    // Front torch shows subtract mode; the two rear torches show output.
+    parts.push(diodeTorch(7, 2, 5, subtract, turns));
+    parts.push(diodeTorch(4, 11, 7, powered, turns));
+    parts.push(diodeTorch(10, 11, 7, powered, turns));
+  } else {
+    // The second torch moves back two pixels per delay step; a lock bar
+    // replaces it while the repeater is locked.
+    const z = 6 + 2 * (delay - 1);
+    parts.push(diodeTorch(7, 2, 7, powered, turns));
+    if (locked) {
+      const bar: Look = { texture: 'stone', color: '#5a5a5a' };
+      const [min, max] = turnBox([2 * PX, 2 * PX, z * PX], [14 * PX, 4 * PX, (z + 2) * PX], turns);
+      parts.push(uniformBox(min, max, bar));
+    } else {
+      parts.push(diodeTorch(7, z, 7, powered, turns));
+    }
+  }
+  return parts;
 }
 
 function observerParts(watched: Dir, powered: boolean): Part[] {
@@ -267,13 +327,14 @@ export function blockParts(block: Block, state?: CellState, livePortValue?: numb
     case 'torch':
       return torchParts(facing, state ? on : true);
     case 'repeater':
-      return diodeParts(on ? 'repeater_on' : 'repeater', facing, String(block.delay ?? 1));
+      return diodeParts({ comparator: false, facing, powered: on, delay: block.delay ?? 1, locked: state?.locked ?? false });
     case 'comparator':
-      return diodeParts(
-        (state?.comparator ?? 0) > 0 ? 'comparator_on' : 'comparator',
+      return diodeParts({
+        comparator: true,
         facing,
-        block.mode === 'subtract' ? '-' : '=',
-      );
+        powered: (state?.comparator ?? 0) > 0,
+        subtract: block.mode === 'subtract',
+      });
     case 'observer':
       return observerParts(facing, on);
     case 'input':
@@ -291,9 +352,9 @@ function portParts(block: Block, state: CellState | undefined, value: number): P
     case 'dust':
       return [...dustParts(state?.power ?? value, state?.points ?? ['north', 'east', 'south', 'west']), { ...label, at: [0.5, 0.15, 0.5] }];
     case 'repeater':
-      return [...diodeParts(value > 0 ? 'repeater_on' : 'repeater', facing, ''), { ...label, at: [0.5, 0.3, 0.5] }];
+      return [...diodeParts({ comparator: false, facing, powered: value > 0 }), { ...label, at: [0.5, 0.55, 0.5] }];
     case 'comparator':
-      return [...diodeParts(value > 0 ? 'comparator_on' : 'comparator', facing, ''), { ...label, at: [0.5, 0.3, 0.5] }];
+      return [...diodeParts({ comparator: true, facing, powered: value > 0 }), { ...label, at: [0.5, 0.55, 0.5] }];
     case 'container':
       return [
         sidedCube(

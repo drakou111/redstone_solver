@@ -52,5 +52,6 @@ row IN1(ss0) -> OUT1(ss0)
 row IN2(ss0) -> OUT1(ss0)
 ```
 
-`tile z` asks for a circuit whose copies can sit side by side along z without influencing each
+`support_layer on` (the default) keeps the bottom layer to wool/glass supports, which makes solving
+much faster. `tile z` asks for a circuit whose copies can sit side by side along z without influencing each
 other. `feedback off` (the default) rules out loops and repeater locks, which would act as memory.

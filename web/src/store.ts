@@ -7,9 +7,7 @@ import {
   blockAt,
   editWorld,
   inside,
-  movePort,
   occupantAt,
-  type PortRef,
   removePort,
   rotateBlock,
   rotatePort,
@@ -23,9 +21,10 @@ const POLL_INTERVAL_MS = 400;
 const FULL_SIGNAL = 15;
 export const DEFAULT_TIME_LIMIT = 60;
 
-export type Tool = 'select' | 'input' | 'output' | 'keep' | 'empty' | 'place' | 'remove';
-export const SPEC_TOOLS: readonly Tool[] = ['select', 'input', 'output', 'keep', 'empty'];
-export const RESULT_TOOLS: readonly Tool[] = ['select', 'place', 'remove'];
+// What a right-click places in the spec view (the circuit view always
+// places the block brush).
+export type Placing = 'input' | 'output' | 'keep' | 'empty';
+export const PLACING: readonly Placing[] = ['input', 'output', 'keep', 'empty'];
 
 // Where the pointer is: the cell under it (if it hit a block or marker) and
 // the empty cell a placement would fill.
@@ -70,8 +69,7 @@ interface State {
 
   view: 'spec' | 'result';
   topLayer: number;
-  tool: Tool;
-  selected: PortRef | null;
+  placing: Placing;
   newInputKind: InputKind;
   newOutputKind: OutputKind;
   brush: Block;
@@ -90,15 +88,14 @@ interface State {
   setSim: (sim: SimState) => void;
   setSimError: (error: string | null) => void;
   setView: (view: 'spec' | 'result') => void;
-  setTool: (tool: Tool) => void;
+  setPlacing: (placing: Placing) => void;
   setNewInputKind: (kind: InputKind) => void;
   setNewOutputKind: (kind: OutputKind) => void;
   setBrush: (block: Block) => void;
   setHover: (hover: Hover | null) => void;
-  select: (port: PortRef | null) => void;
-  click: (hover: Hover) => void;
+  place: (hover: Hover) => void;
+  remove: (hover: Hover) => void;
   rotate: () => void;
-  deleteSelected: () => void;
 }
 
 let checkTimer: ReturnType<typeof setTimeout> | undefined;
@@ -160,8 +157,6 @@ export const useStore = create<State>((set, get) => {
         result: { ...result, layout: result.layout, spec, edited: false },
         verification: { checking: false, ok: true },
         view: 'result',
-        tool: 'select',
-        selected: null,
         topLayer: result.layout.size[1] - 1,
       });
       await loadIntoSimulator(
@@ -202,55 +197,24 @@ export const useStore = create<State>((set, get) => {
     }
   }
 
-  function clickSpec(spec: Spec, { hit, place }: Hover) {
-    const { tool, selected, newInputKind, newOutputKind, brush, updateSpec } = get();
-    const free = (p: Vec3 | null): p is Vec3 => p !== null && inside(spec.size, p) && occupantAt(spec, p) === null;
-    const occupant = hit ? occupantAt(spec, hit) : null;
-    switch (tool) {
-      case 'select':
-        if (occupant?.kind === 'port') set({ selected: occupant.port });
-        else if (selected && free(place)) updateSpec((s) => movePort(s, selected, place));
-        else set({ selected: null });
-        return;
-      case 'input':
-      case 'output': {
-        if (!free(place)) return;
-        const input = tool === 'input';
-        updateSpec((s) => addPort(s, input, place, input ? newInputKind : newOutputKind, 'east'));
-        const count = input ? spec.inputs.length : spec.outputs.length;
-        set({ selected: { input, index: count } });
-        return;
-      }
-      case 'keep':
-        if (hit && occupant?.kind === 'fixed') updateSpec((s) => setFixed(s, hit, null));
-        else if (free(place)) updateSpec((s) => setFixed(s, place, brush));
-        return;
-      case 'empty':
-        if (hit && occupant?.kind === 'forbidden') updateSpec((s) => toggleForbidden(s, hit));
-        else if (free(place)) updateSpec((s) => toggleForbidden(s, place));
-        return;
-      default:
-        return;
-    }
+  // Right-click: put the current item into the empty cell next to the face.
+  function placeInSpec(spec: Spec, place: Vec3 | null) {
+    const { placing, newInputKind, newOutputKind, brush, updateSpec } = get();
+    if (!place || !inside(spec.size, place) || occupantAt(spec, place) !== null) return;
+    if (placing === 'input') updateSpec((s) => addPort(s, true, place, newInputKind, 'east'));
+    else if (placing === 'output') updateSpec((s) => addPort(s, false, place, newOutputKind, 'east'));
+    else if (placing === 'keep') updateSpec((s) => setFixed(s, place, brush));
+    else updateSpec((s) => toggleForbidden(s, place));
   }
 
-  function clickResult(result: Result, { hit, place }: Hover) {
-    const { tool, brush } = get();
-    const hitBlock = hit ? blockAt(result.layout, hit) : undefined;
-    switch (tool) {
-      case 'select':
-        if (hitBlock?.type === 'input') void toggleInput(hitBlock.channel ?? 0);
-        return;
-      case 'place':
-        if (place && inside(result.layout.size, place) && !blockAt(result.layout, place))
-          void editResult(place, brush);
-        return;
-      case 'remove':
-        if (hit && hitBlock && hitBlock.type !== 'input' && hitBlock.type !== 'output') void editResult(hit, null);
-        return;
-      default:
-        return;
-    }
+  // Left-click: remove whatever occupies the clicked cell.
+  function removeInSpec(spec: Spec, hit: Vec3 | null) {
+    const occupant = hit ? occupantAt(spec, hit) : null;
+    if (!hit || !occupant) return;
+    const { updateSpec } = get();
+    if (occupant.kind === 'port') updateSpec((s) => removePort(s, occupant.port));
+    else if (occupant.kind === 'fixed') updateSpec((s) => setFixed(s, hit, null));
+    else updateSpec((s) => toggleForbidden(s, hit));
   }
 
   return {
@@ -274,8 +238,7 @@ export const useStore = create<State>((set, get) => {
     simError: null,
     view: 'spec',
     topLayer: 64,
-    tool: 'select',
-    selected: null,
+    placing: 'keep',
     newInputKind: 'comparator',
     newOutputKind: 'dust',
     brush: { type: 'solid' },
@@ -298,7 +261,6 @@ export const useStore = create<State>((set, get) => {
           result: null,
           sim: null,
           view: 'spec',
-          selected: null,
           topLayer: spec.size[1] - 1,
         });
         await checkSpec(spec);
@@ -359,41 +321,60 @@ export const useStore = create<State>((set, get) => {
     setTopLayer: (y) => set({ topLayer: y }),
     setSim: (sim) => set({ sim, simError: null }),
     setSimError: (error) => set({ simError: error }),
-    setView: (view) => set({ view, tool: 'select', selected: null }),
-    setTool: (tool) => set({ tool, selected: tool === 'select' ? get().selected : null }),
+    setView: (view) => set({ view }),
+    setPlacing: (placing) => set({ placing }),
     setNewInputKind: (kind) => set({ newInputKind: kind }),
     setNewOutputKind: (kind) => set({ newOutputKind: kind }),
     setBrush: (block) => set({ brush: block }),
     setHover: (hover) => set({ hover }),
-    select: (port) => set({ selected: port }),
-
-    click: (hover) => {
-      const { view, spec, result } = get();
-      if (view === 'result' && result) clickResult(result, hover);
-      else if (spec) clickSpec(spec, hover);
+    place: (hover) => {
+      const { view, spec, result, brush } = get();
+      if (view === 'result' && result) {
+        const p = hover.place;
+        if (p && inside(result.layout.size, p) && !blockAt(result.layout, p)) void editResult(p, brush);
+      } else if (spec) {
+        placeInSpec(spec, hover.place);
+      }
     },
 
-    rotate: () => {
-      const { selected, view, hover, result, updateSpec } = get();
-      if (view === 'spec' && selected) {
-        updateSpec((s) => rotatePort(s, selected));
-        return;
+    remove: (hover) => {
+      const { view, spec, result } = get();
+      if (view === 'result' && result) {
+        const hit = hover.hit;
+        const block = hit ? blockAt(result.layout, hit) : undefined;
+        if (!hit || !block) return;
+        // Inputs cannot be removed from a solved circuit; clicking switches them.
+        if (block.type === 'input') void toggleInput(block.channel ?? 0);
+        else if (block.type !== 'output') void editResult(hit, null);
+      } else if (spec) {
+        removeInSpec(spec, hover.hit);
       }
-      if (view === 'result' && result && hover?.hit) {
-        const block = blockAt(result.layout, hover.hit);
+    },
+
+    // R: rotate the port or block under the cursor, else the brush.
+    rotate: () => {
+      const { view, hover, result, spec, updateSpec } = get();
+      const hit = hover?.hit;
+      if (view === 'result' && result && hit) {
+        const block = blockAt(result.layout, hit);
         if (block && block.type !== 'input' && block.type !== 'output') {
-          void editResult(hover.hit, rotateBlock(block));
+          void editResult(hit, rotateBlock(block));
+          return;
+        }
+      }
+      if (view === 'spec' && spec && hit) {
+        const occupant = occupantAt(spec, hit);
+        if (occupant?.kind === 'port') {
+          updateSpec((s) => rotatePort(s, occupant.port));
+          return;
+        }
+        const kept = occupant?.kind === 'fixed' ? spec.fixed[occupant.index] : undefined;
+        if (kept) {
+          updateSpec((s) => setFixed(s, hit, rotateBlock(kept)));
           return;
         }
       }
       set({ brush: rotateBlock(get().brush) });
-    },
-
-    deleteSelected: () => {
-      const { selected, updateSpec } = get();
-      if (!selected) return;
-      updateSpec((s) => removePort(s, selected));
-      set({ selected: null });
     },
   };
 });

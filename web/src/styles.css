@@ -597,3 +597,8 @@ kbd {
   border-color: rgba(240, 192, 96, 0.5);
   background: rgba(240, 192, 96, 0.08);
 }
+.tools-label {
+  color: var(--muted);
+  font-size: 12px;
+  padding: 0 8px 0 6px;
+}

@@ -8,7 +8,6 @@ import type { CellState, SimState, Vec3, World } from '../types';
 import { key } from '../types';
 import { BlockView, type TextureMap } from './BlockView';
 
-export type GhostStyle = 'place' | 'remove' | 'move' | null;
 
 interface Props {
   world: World;
@@ -17,21 +16,17 @@ interface Props {
   topLayer: number;
   forbidden: Vec3[];
   kept: Vec3[];
-  selected: Vec3 | null;
   hover: Hover | null;
-  ghost: GhostStyle;
   onHover: (hover: Hover | null) => void;
-  onClick: (hover: Hover) => void;
+  onPlace: (hover: Hover) => void; // right-click
+  onRemove: (hover: Hover) => void; // left-click
 }
 
 const BACKGROUND = '#16181d';
 const GRID_COLOR = '#3a3f4b';
 const BOUNDS_COLOR = '#5b6475';
-const GHOST_COLORS: Record<Exclude<GhostStyle, null>, string> = {
-  place: '#63d07e',
-  remove: '#ff5a4d',
-  move: '#f0c060',
-};
+const PLACE_COLOR = '#63d07e';
+const REMOVE_COLOR = '#ff5a4d';
 // Pointer travel (px) above which a press counts as a camera drag, not a click.
 const CLICK_TOLERANCE = 5;
 
@@ -88,7 +83,7 @@ function hoverFromBlock(event: ThreeEvent<PointerEvent | MouseEvent>, cell: Vec3
   return { hit: cell, place: [cell[0] + Math.round(normal.x), cell[1] + Math.round(normal.y), cell[2] + Math.round(normal.z)] };
 }
 
-export function Scene({ world, sim, textures, topLayer, forbidden, kept, selected, hover, ghost, onHover, onClick }: Props) {
+export function Scene({ world, sim, textures, topLayer, forbidden, kept, hover, onHover, onPlace, onRemove }: Props) {
   const [sx, sy, sz] = world.size;
   const top = Math.min(topLayer, sy - 1);
   // Clicking empty space places on the floor, or on the top shown layer when
@@ -106,19 +101,24 @@ export function Scene({ world, sim, textures, topLayer, forbidden, kept, selecte
     event.stopPropagation();
     onHover(hoverFromBlock(event, cell));
   };
-  const click = (cell: Vec3) => (event: ThreeEvent<MouseEvent>) => {
+  // Clicks that moved further than a few pixels were camera drags.
+  const leftClick = (cell: Vec3) => (event: ThreeEvent<MouseEvent>) => {
     event.stopPropagation();
-    if (event.delta <= CLICK_TOLERANCE) onClick(hoverFromBlock(event, cell));
+    if (event.delta <= CLICK_TOLERANCE) onRemove(hoverFromBlock(event, cell));
+  };
+  const rightClick = (cell: Vec3) => (event: ThreeEvent<MouseEvent>) => {
+    event.stopPropagation();
+    if (event.delta <= CLICK_TOLERANCE) onPlace(hoverFromBlock(event, cell));
   };
   const planeHover = (event: ThreeEvent<PointerEvent | MouseEvent>): Hover => ({
     hit: null,
     place: [Math.floor(event.point.x), workLayer, Math.floor(event.point.z)],
   });
 
-  const ghostCell = ghost === 'remove' ? hover?.hit : hover?.place;
+  const within = (c: Vec3 | null | undefined): c is Vec3 => !!c && c.every((v, i) => v >= 0 && v < (world.size[i] ?? 0));
 
   return (
-    <div className="canvas-wrap" onPointerLeave={() => onHover(null)}>
+    <div className="canvas-wrap" onPointerLeave={() => onHover(null)} onContextMenu={(e) => e.preventDefault()}>
       <Canvas
         camera={{ position: [center[0] + distance * 0.6, center[1] + distance * 0.7, center[2] + distance], fov: 40 }}
         gl={{ antialias: true }}
@@ -137,9 +137,9 @@ export function Scene({ world, sim, textures, topLayer, forbidden, kept, selecte
             e.stopPropagation();
             onHover(planeHover(e));
           }}
-          onClick={(e) => {
+          onContextMenu={(e) => {
             e.stopPropagation();
-            if (e.delta <= CLICK_TOLERANCE) onClick(planeHover(e));
+            if (e.delta <= CLICK_TOLERANCE) onPlace(planeHover(e));
           }}
         >
           <planeGeometry args={[sx, sz]} />
@@ -160,7 +160,8 @@ export function Scene({ world, sim, textures, topLayer, forbidden, kept, selecte
                 portValue={portValue}
                 textures={textures}
                 onPointerMove={move(b.position)}
-                onClick={click(b.position)}
+                onClick={leftClick(b.position)}
+                onContextMenu={rightClick(b.position)}
               />
             );
           })}
@@ -169,7 +170,13 @@ export function Scene({ world, sim, textures, topLayer, forbidden, kept, selecte
           .filter((c) => c[1] <= top)
           .map((c) => (
             <group key={key(c)}>
-              <mesh position={[c[0] + 0.5, c[1] + 0.5, c[2] + 0.5]} scale={0.9} onPointerMove={move(c)} onClick={click(c)}>
+              <mesh
+                position={[c[0] + 0.5, c[1] + 0.5, c[2] + 0.5]}
+                scale={0.9}
+                onPointerMove={move(c)}
+                onClick={leftClick(c)}
+                onContextMenu={rightClick(c)}
+              >
                 <boxGeometry />
                 <meshBasicMaterial color="#ff5a4d" transparent opacity={0.18} depthWrite={false} />
               </mesh>
@@ -181,11 +188,11 @@ export function Scene({ world, sim, textures, topLayer, forbidden, kept, selecte
           .map((c) => (
             <CellBox key={key(c)} cell={c} color="#7aa7ff" opacity={0.8} />
           ))}
-        {selected && <CellBox cell={selected} color="#f0c060" scale={1.08} />}
-        {ghost && ghostCell && ghostCell.every((v, i) => v >= 0 && v < (world.size[i] ?? 0)) && (
+        {within(hover?.hit) && <CellBox cell={hover.hit} color={REMOVE_COLOR} opacity={0.8} scale={1.04} />}
+        {within(hover?.place) && (
           <>
-            <CellBox cell={ghostCell} color={GHOST_COLORS[ghost]} />
-            <CellBox cell={ghostCell} color={GHOST_COLORS[ghost]} solid opacity={0.15} scale={1} />
+            <CellBox cell={hover.place} color={PLACE_COLOR} />
+            <CellBox cell={hover.place} color={PLACE_COLOR} solid opacity={0.12} scale={1} />
           </>
         )}
       </Canvas>

@@ -277,6 +277,11 @@ struct CircuitEncoder::Impl {
           lit = this->b.constant(false);
         std::vector<sat::BoolVar> kind_vars;
         for (Kind k : palette) {
+          // Optional build style: the bottom layer only holds supports,
+          // which removes many choices the search would otherwise explore.
+          if (this->spec.support_layer && p.y == 0 && k != kAir &&
+              k != kSolid && k != kGlass)
+            continue;
           c.kind[k] = this->b.new_bool();
           kind_vars.push_back(c.kind[k].var());
         }

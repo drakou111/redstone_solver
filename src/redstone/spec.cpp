@@ -474,6 +474,11 @@ Spec parse_spec(std::string_view text) {
         if (w[1] != "on" && w[1] != "off")
           throw std::invalid_argument("hold_previous is on or off");
         spec.timing.hold_previous = w[1] == "on";
+      } else if (key == "support_layer") {
+        need(2, 2);
+        if (w[1] != "on" && w[1] != "off")
+          throw std::invalid_argument("support_layer is on or off");
+        spec.support_layer = w[1] == "on";
       } else if (key == "feedback") {
         need(2, 2);
         if (w[1] != "on" && w[1] != "off")
@@ -605,6 +610,7 @@ std::string format_spec(const Spec &spec) {
   text +=
       std::format("settle {}\nhorizon {}\n", t.settle_ticks, t.horizon_ticks);
   text += std::format("feedback {}\n", spec.allow_feedback ? "on" : "off");
+  text += std::format("support_layer {}\n", spec.support_layer ? "on" : "off");
   std::string axes;
   for (int axis = 0; axis < 3; ++axis)
     if (spec.tiled[axis])

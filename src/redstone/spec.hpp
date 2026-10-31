@@ -70,6 +70,10 @@ struct Spec {
   // clocks; truth tables do not need them and forbidding them keeps every
   // input's settled state unique.
   bool allow_feedback = false;
+  // The bottom layer only holds supports (wool, glass or air). Dust and
+  // diodes cannot sit there anyway, and leaving out the rare remaining uses
+  // makes solving much faster.
+  bool support_layer = true;
   // Axes (x, y, z) along which copies are placed side by side. Copies must
   // not influence each other whatever their inputs are.
   std::array<bool, 3> tiled{};

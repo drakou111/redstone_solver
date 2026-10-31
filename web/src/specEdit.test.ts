@@ -22,6 +22,7 @@ function spec(): Spec {
     timing: { earliest: null, latest: null, holdPrevious: false, settle: 4, horizon: 8 },
     palette: ['solid'],
     feedback: false,
+    supportLayer: true,
     tiled: [false, false, false],
     fixed: [],
     forbidden: [],

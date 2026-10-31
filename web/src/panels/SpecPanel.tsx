@@ -294,6 +294,10 @@ function Blocks({ spec }: { spec: Spec }) {
         <button className="link" onClick={() => updateSpec((s) => ({ ...s, palette: [] }))}>
           none
         </button>
+        <label className="check" title="Dust, repeaters and comparators need a block below anyway; keeping the bottom layer to supports makes solving much faster">
+          <input type="checkbox" checked={spec.supportLayer} onChange={(e) => updateSpec((s) => ({ ...s, supportLayer: e.target.checked }))} />
+          bottom layer: wool/glass supports only (faster)
+        </label>
         <label className="check">
           <input type="checkbox" checked={spec.feedback} onChange={(e) => updateSpec((s) => ({ ...s, feedback: e.target.checked }))} />
           allow loops and repeater locks (memory)

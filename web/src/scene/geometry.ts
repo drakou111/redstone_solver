@@ -29,12 +29,29 @@ function boxFaceQuad(box: BoxPart, face: BoxFace, look: Look): QuadPart {
       corners = [[x1, y0, z1], [x1, y0, z0], [x1, y1, z0], [x1, y1, z1]];
       break;
   }
-  const uvs = corners.map(([x, y, z]): UV => {
+  let uvs = corners.map(([x, y, z]): UV => {
     if (face === 'top' || face === 'bottom') return [x, 1 - z];
     if (face === 'north' || face === 'south') return [face === 'north' ? 1 - x : x, y];
     return [face === 'east' ? 1 - z : z, y];
   }) as [UV, UV, UV, UV];
+  if (look.pixels) uvs = stretchToPixels(uvs, look.pixels);
   return { kind: 'quad', corners, uvs, look };
+}
+
+// Maps a face's UVs onto a pixel rectangle of a 16x16 texture, keeping the
+// face's orientation.
+function stretchToPixels(uvs: [UV, UV, UV, UV], [left, top, right, bottom]: [number, number, number, number]): [UV, UV, UV, UV] {
+  const us = uvs.map((uv) => uv[0]);
+  const vs = uvs.map((uv) => uv[1]);
+  const u0 = Math.min(...us);
+  const u1 = Math.max(...us);
+  const v0 = Math.min(...vs);
+  const v1 = Math.max(...vs);
+  const span = (value: number, lo: number, hi: number) => (hi > lo ? (value - lo) / (hi - lo) : 0);
+  return uvs.map(([u, v]): UV => [
+    (left + span(u, u0, u1) * (right - left)) / 16,
+    1 - (bottom - span(v, v0, v1) * (bottom - top)) / 16,
+  ]) as [UV, UV, UV, UV];
 }
 
 export function partsToQuads(parts: Part[]): QuadPart[] {

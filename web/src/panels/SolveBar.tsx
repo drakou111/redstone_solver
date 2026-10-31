@@ -33,8 +33,19 @@ export function SolveBar() {
     <div className="solvebar">
       <label className="field">
         <span>Time limit</span>
-        <input type="range" min={5} max={600} step={5} value={timeLimit} disabled={solving} onChange={(e) => setTimeLimit(Number(e.target.value))} />
-        <span className="value">{timeLimit}s</span>
+        <input
+          type="number"
+          className="number"
+          style={{ width: 72 }}
+          min={1}
+          value={timeLimit}
+          disabled={solving}
+          onChange={(e) => {
+            const seconds = Number(e.target.value);
+            if (Number.isFinite(seconds) && seconds > 0) setTimeLimit(seconds);
+          }}
+        />
+        <span className="muted">s</span>
       </label>
       <label className="check" title="Stop at the first circuit that passes the simulator, then remove unneeded blocks">
         <input type="checkbox" checked={firstOnly} disabled={solving} onChange={(e) => setFirstOnly(e.target.checked)} />

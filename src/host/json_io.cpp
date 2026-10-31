@@ -137,6 +137,7 @@ Json to_json(const Spec &spec) {
             {"horizon", t.horizon_ticks}}},
           {"palette", palette},
           {"feedback", spec.allow_feedback},
+          {"supportLayer", spec.support_layer},
           {"tiled", Json::array({spec.tiled[0], spec.tiled[1], spec.tiled[2]})},
           {"fixed", fixed},
           {"forbidden", forbidden}};
@@ -186,6 +187,7 @@ Spec spec_from_json(const Json &json) {
     spec.palette.push_back(*type);
   }
   spec.allow_feedback = field(json, "feedback").get<bool>();
+  spec.support_layer = json.value("supportLayer", true);
   const Json &tiled = field(json, "tiled");
   if (!tiled.is_array() || tiled.size() != 3)
     fail("'tiled' must be [x, y, z] booleans");

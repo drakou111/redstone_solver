@@ -33,7 +33,7 @@ test('adds an input by clicking in the scene', async ({ page }) => {
   await expect(page.locator('.port-name.in')).toHaveCount(2);
   await page.keyboard.press('i');
   const spot = await findInScene(page, (text) => text.includes('free for the solver'));
-  await page.mouse.click(spot.x, spot.y);
+  await page.mouse.click(spot.x, spot.y, { button: 'right' });
   await expect(page.locator('.port-name.in')).toHaveCount(3);
   await page.screenshot({ path: 'test-results/add-input.png' });
 });
@@ -48,9 +48,21 @@ test('toggles an input by clicking it in the circuit', async ({ page }) => {
 
 test('removing a block from the circuit re-checks it', async ({ page }) => {
   await solveExample(page, 'delay_buffer.txt');
-  await page.keyboard.press('x');
   const spot = await findInScene(page, (text) => /\n(solid|repeater|glass)/.test(text));
   await page.mouse.click(spot.x, spot.y);
   await expect(page.locator('.edit-badge.fail')).toBeVisible({ timeout: 30_000 });
   await page.screenshot({ path: 'test-results/edited.png' });
+});
+
+test('cancel stops a long solve promptly', async ({ page }) => {
+  await page.goto('');
+  // Several more inputs and a large volume make a solve that runs for long.
+  await page.locator('.volume input.number').first().fill('8');
+  await page.getByRole('button', { name: 'Solve' }).click();
+  await expect(page.getByRole('button', { name: 'Cancel' })).toBeVisible();
+  await page.waitForTimeout(3000);
+  const pressed = Date.now();
+  await page.getByRole('button', { name: 'Cancel' }).click();
+  await expect(page.getByRole('button', { name: 'Solve' })).toBeVisible({ timeout: 10_000 });
+  expect(Date.now() - pressed).toBeLessThan(5000);
 });
