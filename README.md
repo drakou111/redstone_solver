@@ -1,9 +1,9 @@
 # redstone_solver
 
-Searches for Minecraft Java Edition redstone circuits that satisfy a truth table over signal
-strengths, within a time window and a build volume. The core is a game-tick simulator of vanilla
-redstone (classic dust update order) used to verify candidates, and OR-Tools CP-SAT as the solver.
-The solver encoding and UI are in progress.
+Finds Minecraft Java Edition redstone circuits that satisfy a truth table over signal strengths,
+within a time window and a build volume. A CP-SAT model (OR-Tools) proposes the circuit with the
+fewest blocks; a game-tick simulator of vanilla redstone (classic dust update order) then checks it
+at 8 orientations and several world positions, and any counterexample is fed back into the model.
 
 ## Setup
 
@@ -24,6 +24,20 @@ Other platforms: install OR-Tools, put it on `CMAKE_PREFIX_PATH`, and configure 
 ## Usage
 
 ```
-ctest --preset release                          # run the test suite
-build/msvc/Release/redstone_solver.exe --help
+build/msvc/Release/redstone_solver.exe examples/and_gate.txt --time-limit 60
+ctest --preset release
+```
+
+A spec file describes the volume, the ports, the timing and the truth table (see `examples/` and
+`--help` for every keyword):
+
+```
+size 4 3 3                          # x y z
+input IN1 strong 0 1 0 east         # comparator-like source facing east
+input IN2 strong 0 1 2 east
+output OUT1 dust 3 1 1              # output read from this dust
+timing 4                            # correct within 4 game ticks ("2rt" = redstone ticks)
+row IN1(ss1..15),IN2(ss1..15) -> OUT1(ss1..15)
+row IN1(ss0) -> OUT1(ss0)
+row IN2(ss0) -> OUT1(ss0)
 ```

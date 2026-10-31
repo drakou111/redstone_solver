@@ -39,7 +39,13 @@ add_library(redstone_core STATIC
         src/redstone/block.cpp
         src/redstone/world.cpp
         src/redstone/update_order.cpp
-        src/redstone/simulator.cpp)
+        src/redstone/simulator.cpp
+        src/redstone/spec.cpp
+        src/redstone/cp_builder.cpp
+        src/redstone/encoder.cpp
+        src/redstone/verifier.cpp
+        src/redstone/solver.cpp
+        src/redstone/report.cpp)
 target_include_directories(redstone_core PUBLIC src)
 target_compile_options(redstone_core PRIVATE ${REDSTONE_WARNINGS})
 target_link_libraries(redstone_core PUBLIC ortools::ortools)
@@ -73,7 +79,10 @@ if (REDSTONE_BUILD_TESTS)
             tests/test_world.cpp
             tests/test_update_order.cpp
             tests/test_simulator.cpp
-            tests/test_cp_sat.cpp)
+            tests/test_cp_sat.cpp
+            tests/test_spec.cpp
+            tests/test_encoder.cpp
+            tests/test_solver.cpp)
     target_link_libraries(redstone_tests PRIVATE redstone_core Catch2::Catch2WithMain)
     target_compile_options(redstone_tests PRIVATE ${REDSTONE_WARNINGS})
     redstone_copy_runtime_dlls(redstone_tests)
