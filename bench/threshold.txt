@@ -1,0 +1,7 @@
+# Output on when the input strength is at least 8 (needs a comparator).
+size 5 2 3
+input IN1 comparator 0 1 1 east
+output OUT1 dust 4 1 1
+horizon 10
+row IN1(ss8..15) -> OUT1(ss1..15)
+row IN1(ss0..7) -> OUT1(ss0)

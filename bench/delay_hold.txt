@@ -1,0 +1,7 @@
+size 4 2 1
+input IN1 comparator 0 1 0 east
+output OUT1 dust 3 1 0
+timing 4 4
+hold_previous on
+row IN1(ss1..15) -> OUT1(ss1..15)
+row IN1(ss0) -> OUT1(ss0)

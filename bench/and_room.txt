@@ -1,0 +1,8 @@
+size 5 3 5
+input IN1 comparator 0 1 0 east
+input IN2 comparator 0 1 4 east
+output OUT1 dust 4 1 2
+horizon 12
+row IN1(ss1..15),IN2(ss1..15) -> OUT1(ss1..15)
+row IN1(ss0) -> OUT1(ss0)
+row IN2(ss0) -> OUT1(ss0)
