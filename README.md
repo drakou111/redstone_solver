@@ -7,38 +7,37 @@ at 8 orientations and several world positions, and any counterexample is fed bac
 
 ## Setup
 
-Windows: Visual Studio 2022 (MSVC) and CMake 3.25+. Use a CMake build with working TLS (the one
-bundled with Visual Studio or CLion; MSYS2/MinGW CMake cannot verify GitHub's certificate).
-OR-Tools 9.15 and Catch2 are downloaded automatically on first configure.
+Windows: Visual Studio 2022 (MSVC), CMake 3.25+ and Node.js 20+. Use a CMake build with working
+TLS (the one bundled with Visual Studio or CLion; MSYS2/MinGW CMake cannot verify GitHub's
+certificate). OR-Tools, the web UI's npm packages and the other libraries are downloaded on the
+first build.
 
 ```
 cmake --preset msvc
 cmake --build --preset release
 ```
 
-Only `Release` and `RelWithDebInfo` exist: the prebuilt OR-Tools is release-only, so a Debug
-runtime cannot link against it. In CLion, select the Visual Studio toolchain and the `msvc` preset.
-
-Other platforms: install OR-Tools, put it on `CMAKE_PREFIX_PATH`, and configure normally.
+Only `Release` and `RelWithDebInfo` exist: the prebuilt OR-Tools is release-only.
 
 ## Usage
 
-Desktop app: run `build/msvc/Release/redstone_solver.exe`. Edit the volume, ports, truth table,
-timing and allowed blocks on the left, press Solve, then inspect the circuit in 3D or layer by
-layer, step it in the built-in simulator, and copy it as `/setblock` commands. Block textures are
-read at runtime from your own Minecraft client jar (found automatically for Prism and the vanilla
-launcher, or chosen with "jar..."); nothing from Minecraft is bundled.
+Run `build/msvc/Release/redstone_solver.exe`. Describe the circuit on the left (volume, inputs and
+outputs with their block type, truth table, timing, allowed blocks), or directly in the 3D view
+with the tools at its top: add or move ports, pre-place blocks the solver must keep, and mark cells
+it must leave empty. Press Solve, then explore the circuit: switch inputs by clicking them or with
+the sliders, step the simulator, edit blocks (every edit is re-checked) and export `/setblock`
+commands. Block textures are read from your own Minecraft client jar (found automatically for
+Prism and the vanilla launcher); nothing from Minecraft is bundled.
 
-Command line:
+Command line and tests:
 
 ```
 build/msvc/Release/redstone_cli.exe examples/and_gate.txt --time-limit 60
-build/msvc/Release/redstone_cli.exe examples/and_gate.txt --first   # stop at the first verified circuit
-ctest --preset release
+ctest --preset release                        # C++ tests
+cd web && npm test && npx playwright test     # UI unit and end-to-end tests
 ```
 
-A spec file describes the volume, the ports, the timing and the truth table (see `examples/` and
-`--help` for every keyword):
+A spec file (see `examples/` and `redstone_cli --help`):
 
 ```
 size 4 3 3                          # x y z
@@ -46,6 +45,8 @@ input IN1 comparator 0 1 0 east     # comparator input facing east (needs a bloc
 input IN2 comparator 0 1 2 east
 output OUT1 dust 3 1 1              # output read from this dust
 timing 4                            # correct within 4 game ticks ("2rt" = redstone ticks)
+keep 1 0 1 solid                    # optional: block the solver must keep
+empty 2 2 1                         # optional: cell the solver must leave empty
 row IN1(ss1..15),IN2(ss1..15) -> OUT1(ss1..15)
 row IN1(ss0) -> OUT1(ss0)
 row IN2(ss0) -> OUT1(ss0)
