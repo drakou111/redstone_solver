@@ -11,7 +11,6 @@
 #include "ortools/sat/cp_model_solver.h"
 #include "ortools/sat/model.h"
 #include "ortools/sat/sat_parameters.pb.h"
-#include "ortools/util/time_limit.h"
 #include "redstone/report.hpp"
 
 namespace rs {
@@ -23,6 +22,7 @@ namespace {
 using Clock = std::chrono::steady_clock;
 // A solver round never gets less than this unless it is the last one.
 constexpr double kMinRoundSeconds = 5.0;
+constexpr std::chrono::milliseconds kCancelPollInterval{50};
 // Transitions make the model several times larger, so a misbehaving input
 // change is first answered by banning layouts; only once it has caused this
 // many rejections is it added to the model.
@@ -32,12 +32,15 @@ constexpr int kRejectionsBeforeTransition = 3;
 // Cheap compared to solving, and it cleans up first-found solutions.
 int prune_layout(World &layout, const Spec &spec,
                  const std::vector<InputVector> &vectors,
-                 const VerificationOptions &options) {
+                 const VerificationOptions &options,
+                 const std::atomic<bool> *cancel) {
   int removed = 0;
   bool changed = true;
   while (changed) {
     changed = false;
     for (int i = 0; i < layout.volume(); ++i) {
+      if (cancel && cancel->load())
+        return removed;
       Vec3 p = layout.position_of(i);
       Block block = layout.at(p);
       if (block.type == BlockType::Air || block.type == BlockType::Input ||
@@ -159,8 +162,9 @@ SolveReport solve(const Spec &spec, const SolverOptions &options,
     report.status = status;
     if (report.solution && status != SolveStatus::Optimal) {
       report.status = SolveStatus::Feasible;
-      int removed = prune_layout(report.solution->layout, spec,
-                                 verification_vectors, options.verification);
+      int removed =
+          prune_layout(report.solution->layout, spec, verification_vectors,
+                       options.verification, options.cancel);
       report.solution->block_count -= removed;
       if (removed > 0)
         report_progress(std::format("removed {} unneeded blocks", removed));
@@ -190,8 +194,8 @@ SolveReport solve(const Spec &spec, const SolverOptions &options,
     sat::SatParameters parameters;
     // A round that found nothing gets no second chance to restart from
     // scratch: the next one gets all the remaining time.
-    bool last_chance =
-        previous_round_found_nothing || remaining < kMinRoundSeconds * 2;
+    bool last_chance = options.stop_at_first || previous_round_found_nothing ||
+                       remaining < kMinRoundSeconds * 2;
     parameters.set_max_time_in_seconds(
         last_chance ? remaining : std::max(kMinRoundSeconds, remaining / 2));
     parameters.set_num_workers(threads);
@@ -199,10 +203,22 @@ SolveReport solve(const Spec &spec, const SolverOptions &options,
     parameters.set_stop_after_first_solution(options.stop_at_first);
     sat::Model solver_model;
     solver_model.Add(sat::NewSatParameters(parameters));
+    // CP-SAT's parallel workers only stop through StopSearch, so a watcher
+    // forwards the cancel flag while the round runs.
+    std::atomic<bool> round_done = false;
+    std::thread watcher;
     if (options.cancel)
-      solver_model.GetOrCreate<operations_research::TimeLimit>()
-          ->RegisterExternalBooleanAsLimit(options.cancel);
+      watcher = std::thread([&] {
+        while (!round_done.load()) {
+          if (options.cancel->load())
+            sat::StopSearch(&solver_model);
+          std::this_thread::sleep_for(kCancelPollInterval);
+        }
+      });
     sat::CpSolverResponse response = sat::SolveCpModel(proto, &solver_model);
+    round_done = true;
+    if (watcher.joinable())
+      watcher.join();
     report.refinements = iteration;
 
     switch (response.status()) {
