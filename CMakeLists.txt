@@ -45,7 +45,8 @@ add_library(redstone_core STATIC
         src/redstone/encoder.cpp
         src/redstone/verifier.cpp
         src/redstone/solver.cpp
-        src/redstone/report.cpp)
+        src/redstone/report.cpp
+        src/redstone/solve_job.cpp)
 target_include_directories(redstone_core PUBLIC src)
 target_compile_options(redstone_core PRIVATE ${REDSTONE_WARNINGS})
 target_link_libraries(redstone_core PUBLIC ortools::ortools)
@@ -104,14 +105,79 @@ add_library(imgui STATIC
 target_include_directories(imgui PUBLIC ${imgui_SOURCE_DIR} ${imgui_SOURCE_DIR}/backends ${imgui_SOURCE_DIR}/misc/cpp)
 target_link_libraries(imgui PUBLIC glfw OpenGL::GL)
 
-add_executable(redstone_solver WIN32
+# Old Dear ImGui front end, kept until the web UI covers everything.
+add_executable(redstone_imgui WIN32
         src/gui/main.cpp
         src/gui/app.cpp
         src/gui/views.cpp
-        src/gui/solve_job.cpp
         src/gui/textures.cpp)
-target_include_directories(redstone_solver PRIVATE ${stb_SOURCE_DIR})
-target_link_libraries(redstone_solver PRIVATE redstone_core imgui miniz)
+target_include_directories(redstone_imgui PRIVATE ${stb_SOURCE_DIR})
+target_link_libraries(redstone_imgui PRIVATE redstone_core imgui miniz)
+target_compile_options(redstone_imgui PRIVATE ${REDSTONE_WARNINGS})
+if (MSVC)
+    target_link_options(redstone_imgui PRIVATE /ENTRY:mainCRTStartup)
+endif ()
+redstone_copy_runtime_dlls(redstone_imgui)
+
+# --- Desktop app: native window (webview) showing the web UI from web/,
+# served with its JSON API from 127.0.0.1.
+# A localhost server needs no TLS or compression; probing for them would pick
+# up unrelated toolchains' libraries (e.g. MSYS2's zlib).
+foreach (feature OPENSSL ZLIB BROTLI ZSTD)
+    set(HTTPLIB_USE_${feature}_IF_AVAILABLE OFF CACHE BOOL "" FORCE)
+endforeach ()
+FetchContent_Declare(httplib
+        GIT_REPOSITORY https://github.com/yhirose/cpp-httplib.git
+        GIT_TAG v0.60.1
+        GIT_SHALLOW TRUE)
+set(JSON_BuildTests OFF CACHE INTERNAL "")
+FetchContent_Declare(nlohmann_json
+        GIT_REPOSITORY https://github.com/nlohmann/json.git
+        GIT_TAG v3.12.0
+        GIT_SHALLOW TRUE)
+set(WEBVIEW_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+set(WEBVIEW_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+set(WEBVIEW_BUILD_DOCS OFF CACHE BOOL "" FORCE)
+set(WEBVIEW_ENABLE_CLANG_FORMAT OFF CACHE BOOL "" FORCE)
+set(WEBVIEW_ENABLE_CLANG_TIDY OFF CACHE BOOL "" FORCE)
+set(WEBVIEW_INSTALL_TARGETS OFF CACHE BOOL "" FORCE)
+FetchContent_Declare(webview
+        GIT_REPOSITORY https://github.com/webview/webview.git
+        GIT_TAG 0.12.0
+        GIT_SHALLOW TRUE)
+FetchContent_MakeAvailable(httplib nlohmann_json webview)
+
+find_program(NPM_EXECUTABLE NAMES npm.cmd npm REQUIRED)
+set(WEB_DIR ${CMAKE_SOURCE_DIR}/web)
+set(WEB_DIST ${CMAKE_BINARY_DIR}/web_dist)
+file(GLOB_RECURSE WEB_SOURCES CONFIGURE_DEPENDS ${WEB_DIR}/src/*)
+add_custom_command(OUTPUT ${CMAKE_BINARY_DIR}/web_node_modules.stamp
+        COMMAND ${NPM_EXECUTABLE} ci --no-audit --no-fund
+        COMMAND ${CMAKE_COMMAND} -E touch ${CMAKE_BINARY_DIR}/web_node_modules.stamp
+        DEPENDS ${WEB_DIR}/package-lock.json
+        WORKING_DIRECTORY ${WEB_DIR}
+        COMMENT "Installing web UI packages")
+add_custom_command(OUTPUT ${WEB_DIST}/index.html
+        COMMAND ${NPM_EXECUTABLE} run build -- --outDir ${WEB_DIST}
+        DEPENDS ${CMAKE_BINARY_DIR}/web_node_modules.stamp ${WEB_SOURCES}
+        ${WEB_DIR}/index.html ${WEB_DIR}/vite.config.ts ${WEB_DIR}/tsconfig.json
+        WORKING_DIRECTORY ${WEB_DIR}
+        COMMENT "Building the web UI")
+set(EMBEDDED_CPP ${CMAKE_BINARY_DIR}/generated/embedded_files.cpp)
+add_custom_command(OUTPUT ${EMBEDDED_CPP}
+        COMMAND ${CMAKE_COMMAND} -DINPUT_DIR=${WEB_DIST} -DOUTPUT=${EMBEDDED_CPP}
+        -P ${CMAKE_SOURCE_DIR}/cmake/EmbedFiles.cmake
+        DEPENDS ${WEB_DIST}/index.html ${CMAKE_SOURCE_DIR}/cmake/EmbedFiles.cmake
+        COMMENT "Embedding the web UI")
+
+add_executable(redstone_solver WIN32
+        src/host/main.cpp
+        src/host/api.cpp
+        src/host/json_io.cpp
+        src/host/minecraft_assets.cpp
+        ${EMBEDDED_CPP})
+target_link_libraries(redstone_solver PRIVATE redstone_core miniz httplib::httplib
+        nlohmann_json::nlohmann_json webview::core_static)
 target_compile_options(redstone_solver PRIVATE ${REDSTONE_WARNINGS})
 if (MSVC)
     # Keep the standard main() entry point for a windowed (no console) app.

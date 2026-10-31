@@ -11,7 +11,7 @@
 #include "redstone/solver.hpp"
 #include "redstone/spec.hpp"
 
-namespace rs::gui {
+namespace rs {
 
 // Runs the solver on a background thread and collects its progress log.
 class SolveJob {
@@ -46,4 +46,4 @@ private:
   std::thread thread_; // last, so everything above exists when it starts
 };
 
-} // namespace rs::gui
+} // namespace rs

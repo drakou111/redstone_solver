@@ -1,6 +1,6 @@
-#include "gui/solve_job.hpp"
+#include "redstone/solve_job.hpp"
 
-namespace rs::gui {
+namespace rs {
 
 SolveJob::SolveJob(Spec spec, SolverOptions options)
     : spec_(std::move(spec)), options_(options),
@@ -53,4 +53,4 @@ void SolveJob::run() {
   this->done_ = true;
 }
 
-} // namespace rs::gui
+} // namespace rs

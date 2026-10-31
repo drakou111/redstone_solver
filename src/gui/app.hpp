@@ -6,7 +6,7 @@
 #include <string>
 #include <vector>
 
-#include "gui/solve_job.hpp"
+#include "redstone/solve_job.hpp"
 #include "gui/textures.hpp"
 #include "gui/views.hpp"
 #include "redstone/simulator.hpp"
