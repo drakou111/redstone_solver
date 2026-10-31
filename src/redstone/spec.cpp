@@ -526,4 +526,83 @@ Spec parse_spec(std::string_view text) {
   return spec;
 }
 
+SignalRange parse_signal_range(std::string_view text) {
+  text = trim(text);
+  if (text.empty() || text == "*")
+    return SignalRange{};
+  if (text.starts_with("ss"))
+    return parse_range(text);
+  return parse_range(std::string("ss") + std::string(text));
+}
+
+std::string short_range_text(SignalRange range) {
+  if (range == SignalRange{})
+    return "*";
+  if (range.min == range.max)
+    return std::to_string(range.min);
+  return std::format("{}..{}", range.min, range.max);
+}
+
+std::string format_spec(const Spec &spec) {
+  std::string text;
+  text += std::format("size {} {} {}\n", spec.size.x, spec.size.y, spec.size.z);
+  for (std::size_t i = 0; i < spec.inputs.size(); ++i) {
+    const InputPort &port = spec.inputs[i];
+    Vec3 p = port.position;
+    if (port.kind == InputKind::Strong)
+      text += std::format("input IN{} strong {} {} {} {}\n", i + 1, p.x, p.y,
+                          p.z, to_string(port.facing));
+    else
+      text +=
+          std::format("input IN{} container {} {} {}\n", i + 1, p.x, p.y, p.z);
+  }
+  for (std::size_t i = 0; i < spec.outputs.size(); ++i) {
+    const OutputPort &port = spec.outputs[i];
+    Vec3 p = port.position;
+    if (port.kind == OutputKind::Component)
+      text += std::format("output OUT{} component {} {} {} {}\n", i + 1, p.x,
+                          p.y, p.z, to_string(port.facing));
+    else
+      text += std::format("output OUT{} dust {} {} {}\n", i + 1, p.x, p.y, p.z);
+  }
+
+  const TimingSpec &t = spec.timing;
+  if (t.earliest && t.latest)
+    text += std::format("timing {} {}\n", *t.earliest, *t.latest);
+  else if (t.latest)
+    text += std::format("timing {}\n", *t.latest);
+  else
+    text += "timing none\n";
+  text += std::format("hold_previous {}\n", t.hold_previous ? "on" : "off");
+  text +=
+      std::format("settle {}\nhorizon {}\n", t.settle_ticks, t.horizon_ticks);
+  text += std::format("feedback {}\n", spec.allow_feedback ? "on" : "off");
+  std::string axes;
+  for (int axis = 0; axis < 3; ++axis)
+    if (spec.tiled[axis])
+      axes += std::format(" {}", static_cast<char>('x' + axis));
+  text += "tile" + (axes.empty() ? std::string(" none") : axes) + "\n";
+  text += "palette";
+  for (BlockType type : spec.palette)
+    text += std::format(" {}", palette_name(type));
+  text += "\n";
+
+  for (const TruthRow &row : spec.rows) {
+    auto side = [](const std::vector<SignalRange> &ranges,
+                   std::string_view prefix) {
+      std::string out;
+      for (std::size_t i = 0; i < ranges.size(); ++i) {
+        if (ranges[i] == SignalRange{})
+          continue;
+        out += std::format("{}{}{}({})", out.empty() ? "" : ",", prefix, i + 1,
+                           to_string(ranges[i]));
+      }
+      return out;
+    };
+    text += std::format("row {} -> {}\n", side(row.inputs, "IN"),
+                        side(row.outputs, "OUT"));
+  }
+  return text;
+}
+
 } // namespace rs

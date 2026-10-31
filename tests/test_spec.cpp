@@ -116,3 +116,37 @@ TEST_CASE("tile and feedback settings parse") {
   CHECK(spec.allow_feedback);
   CHECK_THROWS_AS(parse_spec("size 2 2 2\ntile w\n"), std::invalid_argument);
 }
+
+TEST_CASE("format_spec round-trips through parse_spec") {
+  Spec spec = parse_spec(kAndSpec);
+  spec.tiled = {false, false, true};
+  spec.allow_feedback = true;
+  Spec again = parse_spec(format_spec(spec));
+  CHECK(again.size == spec.size);
+  CHECK(again.inputs.size() == spec.inputs.size());
+  CHECK(again.inputs[1].position == spec.inputs[1].position);
+  CHECK(again.outputs[0].kind == spec.outputs[0].kind);
+  CHECK(again.timing.earliest == spec.timing.earliest);
+  CHECK(again.timing.latest == spec.timing.latest);
+  CHECK(again.timing.hold_previous == spec.timing.hold_previous);
+  CHECK(again.palette == spec.palette);
+  CHECK(again.tiled == spec.tiled);
+  CHECK(again.allow_feedback);
+  REQUIRE(again.rows.size() == spec.rows.size());
+  for (std::size_t r = 0; r < spec.rows.size(); ++r) {
+    CHECK(again.rows[r].inputs == spec.rows[r].inputs);
+    CHECK(again.rows[r].outputs == spec.rows[r].outputs);
+  }
+}
+
+TEST_CASE("signal ranges parse from editor text") {
+  CHECK(parse_signal_range("") == SignalRange{0, 15});
+  CHECK(parse_signal_range(" * ") == SignalRange{0, 15});
+  CHECK(parse_signal_range("7") == SignalRange{7, 7});
+  CHECK(parse_signal_range("1..15") == SignalRange{1, 15});
+  CHECK(parse_signal_range("ss2..3") == SignalRange{2, 3});
+  CHECK_THROWS_AS(parse_signal_range("abc"), std::invalid_argument);
+  CHECK(short_range_text({0, 15}) == "*");
+  CHECK(short_range_text({4, 4}) == "4");
+  CHECK(short_range_text({1, 15}) == "1..15");
+}

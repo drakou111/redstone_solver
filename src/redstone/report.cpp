@@ -2,6 +2,8 @@
 
 #include <format>
 
+#include "redstone/simulator.hpp"
+
 namespace rs {
 
 namespace {
@@ -98,6 +100,113 @@ std::string list_blocks(const World &world) {
     const Block &b = world.at(p);
     if (b.type != BlockType::Air)
       text += std::format("({}, {}, {}) {}\n", p.x, p.y, p.z, to_string(b));
+  }
+  return text;
+}
+
+std::string block_code(const Block &block) { return code(block); }
+
+namespace {
+
+std::string state_name(Dir d) { return std::string(to_string(d)); }
+
+// Java block id with state for one block; empty for ports without a block.
+std::string java_block(const Block &b, const Simulator &sim, Vec3 p) {
+  switch (b.type) {
+  case BlockType::Solid:
+    return "cyan_wool";
+  case BlockType::Glass:
+    return "cyan_stained_glass";
+  case BlockType::RedstoneBlock:
+    return "redstone_block";
+  case BlockType::Target:
+    return "target";
+  case BlockType::NoteBlock:
+    return "note_block";
+  case BlockType::Hopper:
+    return "hopper[facing=down]";
+  case BlockType::Barrel:
+    return "barrel[facing=up]";
+  case BlockType::Chest:
+    return "chest[facing=north]";
+  case BlockType::Observer:
+    return std::format("observer[facing={}]", state_name(b.facing));
+  case BlockType::Torch:
+    if (b.facing == Dir::Down)
+      return "redstone_torch";
+    return std::format("redstone_wall_torch[facing={}]",
+                       state_name(opposite(b.facing)));
+  // Java's diode "facing" points at the input, opposite to the signal.
+  case BlockType::Repeater:
+    return std::format("repeater[facing={},delay={}]",
+                       state_name(opposite(b.facing)), b.repeater_delay());
+  case BlockType::Comparator:
+    return std::format(
+        "comparator[facing={},mode={}]", state_name(opposite(b.facing)),
+        b.comparator_mode() == ComparatorMode::Subtract ? "subtract"
+                                                        : "compare");
+  case BlockType::Dust:
+  case BlockType::Output:
+    if (!is_dust(b))
+      return "";
+    return std::format("redstone_wire[north={},south={},east={},west={}]",
+                       sim.dust_points(p, Dir::North) ? "side" : "none",
+                       sim.dust_points(p, Dir::South) ? "side" : "none",
+                       sim.dust_points(p, Dir::East) ? "side" : "none",
+                       sim.dust_points(p, Dir::West) ? "side" : "none");
+  case BlockType::Input:
+    return is_container_input(b) ? "barrel[facing=up]" : "";
+  case BlockType::Air:
+    return "";
+  }
+  return "";
+}
+
+bool needs_support(const Block &b) {
+  return is_dust(b) || b.type == BlockType::Torch ||
+         b.type == BlockType::Repeater || b.type == BlockType::Comparator;
+}
+
+} // namespace
+
+std::string setblock_commands(const World &world) {
+  Simulator sim(world);
+  std::string text =
+      "# Run from the layout's origin corner (lowest x, y, z).\n"
+      "# Afterwards toggle the inputs once so every component updates.\n";
+  for (int i = 0; i < world.volume(); ++i) {
+    Vec3 p = world.position_of(i);
+    const Block &b = world.at(p);
+    if (b.type == BlockType::Input)
+      text += std::format(
+          "# IN{} at ~{} ~{} ~{}: {}\n", b.channel + 1, p.x, p.y, p.z,
+          is_strong_input(b)
+              ? std::format("strong source facing {}", to_string(b.facing))
+              : std::string("barrel whose fill sets the "
+                            "signal"));
+    if (b.type == BlockType::Output)
+      text += std::format("# OUT{} at ~{} ~{} ~{}: {}\n", b.channel + 1, p.x,
+                          p.y, p.z,
+                          is_dust(b) ? std::string("read this dust")
+                                     : std::format("read like a repeater "
+                                                   "facing {}",
+                                                   to_string(b.facing)));
+    if (b.type == BlockType::Hopper || b.type == BlockType::Barrel ||
+        b.type == BlockType::Chest)
+      text += std::format("# fill the {} at ~{} ~{} ~{} to comparator "
+                          "signal {}\n",
+                          to_string(b), p.x, p.y, p.z, b.stored_signal());
+  }
+  for (bool supported_pass : {false, true}) {
+    for (int i = 0; i < world.volume(); ++i) {
+      Vec3 p = world.position_of(i);
+      const Block &b = world.at(p);
+      if (needs_support(b) != supported_pass)
+        continue;
+      std::string id = java_block(b, sim, p);
+      if (!id.empty())
+        text += std::format("setblock ~{} ~{} ~{} {}\n", p.x, p.y, p.z, id);
+    }
   }
   return text;
 }

@@ -107,5 +107,12 @@ TruthRow parse_truth_row(std::string_view text, int input_count,
 
 // Line-based spec file; see README for the format.
 Spec parse_spec(std::string_view text);
+// Inverse of parse_spec (times are written in game ticks).
+std::string format_spec(const Spec &spec);
+
+// "", "*" (anything), "5", "1..15", "ss5" or "ss1..15".
+SignalRange parse_signal_range(std::string_view text);
+// Short form used by the editor: "*", "5" or "1..15".
+std::string short_range_text(SignalRange range);
 
 } // namespace rs

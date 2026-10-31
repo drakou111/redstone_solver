@@ -66,6 +66,8 @@ public:
   // Signal a component would read from the block at `p` in direction `d` (Java
   // Level.getSignal).
   int signal_from(Vec3 p, Dir d) const { return this->signal(p, d, true); }
+  // Does dust at `p` point towards horizontal side `d` (its visible shape)?
+  bool dust_points(Vec3 p, Dir d) const;
 
 private:
   struct NeighborUpdate {

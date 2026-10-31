@@ -23,9 +23,17 @@ Other platforms: install OR-Tools, put it on `CMAKE_PREFIX_PATH`, and configure 
 
 ## Usage
 
+Desktop app: run `build/msvc/Release/redstone_solver.exe`. Edit the volume, ports, truth table,
+timing and allowed blocks on the left, press Solve, then inspect the circuit in 3D or layer by
+layer, step it in the built-in simulator, and copy it as `/setblock` commands. Block textures are
+read at runtime from your own Minecraft client jar (found automatically for Prism and the vanilla
+launcher, or chosen with "jar..."); nothing from Minecraft is bundled.
+
+Command line:
+
 ```
-build/msvc/Release/redstone_solver.exe examples/and_gate.txt --time-limit 60
-build/msvc/Release/redstone_solver.exe examples/and_gate.txt --first   # stop at the first verified circuit
+build/msvc/Release/redstone_cli.exe examples/and_gate.txt --time-limit 60
+build/msvc/Release/redstone_cli.exe examples/and_gate.txt --first   # stop at the first verified circuit
 ctest --preset release
 ```
 

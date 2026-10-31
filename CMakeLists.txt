@@ -60,11 +60,66 @@ function(redstone_copy_runtime_dlls target)
     endif ()
 endfunction()
 
-# --- Application
-add_executable(redstone_solver src/app/main.cpp)
-target_link_libraries(redstone_solver PRIVATE redstone_core)
+# --- Command line tool
+add_executable(redstone_cli src/app/main.cpp)
+target_link_libraries(redstone_cli PRIVATE redstone_core)
+target_compile_options(redstone_cli PRIVATE ${REDSTONE_WARNINGS})
+redstone_copy_runtime_dlls(redstone_cli)
+
+# --- GUI (GLFW + Dear ImGui)
+set(GLFW_BUILD_DOCS OFF CACHE BOOL "" FORCE)
+set(GLFW_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+set(GLFW_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+set(GLFW_INSTALL OFF CACHE BOOL "" FORCE)
+FetchContent_Declare(glfw
+        GIT_REPOSITORY https://github.com/glfw/glfw.git
+        GIT_TAG 3.4
+        GIT_SHALLOW TRUE)
+FetchContent_Declare(imgui
+        GIT_REPOSITORY https://github.com/ocornut/imgui.git
+        GIT_TAG v1.91.8
+        GIT_SHALLOW TRUE
+        SOURCE_SUBDIR no_cmake_project_here)
+# miniz reads the Minecraft jar, stb_image decodes its PNG textures.
+FetchContent_Declare(miniz
+        GIT_REPOSITORY https://github.com/richgel999/miniz.git
+        GIT_TAG 3.1.2
+        GIT_SHALLOW TRUE)
+FetchContent_Declare(stb
+        GIT_REPOSITORY https://github.com/nothings/stb.git
+        GIT_TAG 2c980bb59875b0d32144a71867fbdebb2f77cd20
+        SOURCE_SUBDIR no_cmake_project_here)
+FetchContent_MakeAvailable(glfw imgui miniz stb)
+find_package(OpenGL REQUIRED)
+
+add_library(imgui STATIC
+        ${imgui_SOURCE_DIR}/imgui.cpp
+        ${imgui_SOURCE_DIR}/imgui_draw.cpp
+        ${imgui_SOURCE_DIR}/imgui_tables.cpp
+        ${imgui_SOURCE_DIR}/imgui_widgets.cpp
+        ${imgui_SOURCE_DIR}/imgui_demo.cpp
+        ${imgui_SOURCE_DIR}/misc/cpp/imgui_stdlib.cpp
+        ${imgui_SOURCE_DIR}/backends/imgui_impl_glfw.cpp
+        ${imgui_SOURCE_DIR}/backends/imgui_impl_opengl3.cpp)
+target_include_directories(imgui PUBLIC ${imgui_SOURCE_DIR} ${imgui_SOURCE_DIR}/backends ${imgui_SOURCE_DIR}/misc/cpp)
+target_link_libraries(imgui PUBLIC glfw OpenGL::GL)
+
+add_executable(redstone_solver WIN32
+        src/gui/main.cpp
+        src/gui/app.cpp
+        src/gui/views.cpp
+        src/gui/solve_job.cpp
+        src/gui/textures.cpp)
+target_include_directories(redstone_solver PRIVATE ${stb_SOURCE_DIR})
+target_link_libraries(redstone_solver PRIVATE redstone_core imgui miniz)
 target_compile_options(redstone_solver PRIVATE ${REDSTONE_WARNINGS})
+if (MSVC)
+    # Keep the standard main() entry point for a windowed (no console) app.
+    target_link_options(redstone_solver PRIVATE /ENTRY:mainCRTStartup)
+endif ()
 redstone_copy_runtime_dlls(redstone_solver)
+add_custom_command(TARGET redstone_solver POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_directory ${CMAKE_SOURCE_DIR}/examples $<TARGET_FILE_DIR:redstone_solver>/examples)
 
 # --- Tests
 if (REDSTONE_BUILD_TESTS)
@@ -83,7 +138,8 @@ if (REDSTONE_BUILD_TESTS)
             tests/test_spec.cpp
             tests/test_encoder.cpp
             tests/test_solver.cpp
-            tests/test_verifier.cpp)
+            tests/test_verifier.cpp
+            tests/test_report.cpp)
     target_link_libraries(redstone_tests PRIVATE redstone_core Catch2::Catch2WithMain)
     target_compile_options(redstone_tests PRIVATE ${REDSTONE_WARNINGS})
     redstone_copy_runtime_dlls(redstone_tests)

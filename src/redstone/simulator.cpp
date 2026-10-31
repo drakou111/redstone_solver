@@ -144,6 +144,12 @@ CellState Simulator::state_at(Vec3 p) const {
   return this->states_[this->cell(p)];
 }
 
+bool Simulator::dust_points(Vec3 p, Dir d) const {
+  if (!this->in_bounds(p) || !is_dust(this->block(p)) || !is_horizontal(d))
+    return false;
+  return (this->dust_sides_[this->cell(p)] & bit(d)) != 0;
+}
+
 int Simulator::comparator_output_at(Vec3 p) const {
   if (!this->in_bounds(p))
     return 0;
