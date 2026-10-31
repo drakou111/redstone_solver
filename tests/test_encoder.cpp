@@ -71,8 +71,10 @@ void apply(Simulator &sim, const InputVector &inputs) {
 // states are reached by visiting the vectors in order, as a player would.
 void check_model_matches_simulator(
     const World &layout, const std::vector<InputVector> &vectors,
-    const std::vector<TransitionCase> &transitions) {
+    const std::vector<TransitionCase> &transitions,
+    bool allow_feedback = false) {
   Spec spec = spec_for(layout);
+  spec.allow_feedback = allow_feedback;
   ModelPlan plan;
   for (const InputVector &v : vectors)
     plan.steady.push_back({v, std::nullopt});
@@ -204,8 +206,9 @@ TEST_CASE("model matches simulator: repeater lock with one input changing at a "
   w.set({2, 1, 3}, Block::input(1, InputKind::Strong, Dir::North));
   w.set({2, 1, 2}, Block::repeater(Dir::North, 1));
   // [0 0] -> [1 0] -> [1 1]: the main repeater is on before the lock engages.
+  // Locks are memory, which truth-table mode forbids, so allow feedback.
   check_model_matches_simulator(w, {{0, 0}, {15, 0}, {15, 15}},
-                                {{0, 1}, {1, 0}, {1, 2}, {2, 1}});
+                                {{0, 1}, {1, 0}, {1, 2}, {2, 1}}, true);
 }
 
 TEST_CASE("model matches simulator: torch AND gate") {

@@ -1,6 +1,7 @@
 #include "redstone/verifier.hpp"
 
 #include <format>
+#include <functional>
 #include <future>
 #include <stdexcept>
 
@@ -12,81 +13,160 @@ namespace {
 
 constexpr std::array<Vec3, 3> kOrigins{Vec3{0, 0, 0}, Vec3{5, 1, 3},
                                        Vec3{-7, 64, 12}};
+constexpr int kCopiesPerTiledAxis = 3;
+constexpr int kMaxChannel = 255;
 
-std::vector<int> read_outputs(const Simulator &sim, std::size_t count) {
-  std::vector<int> values;
-  for (std::size_t o = 0; o < count; ++o)
-    values.push_back(sim.output(static_cast<int>(o)));
-  return values;
+// The layout repeated along every tiled axis. Port channels are renumbered so
+// copy k owns channels k * port_count .. k * port_count + port_count - 1.
+struct Tiling {
+  World world{{1, 1, 1}};
+  int copies = 1;
+  int center = 0;
+};
+
+Tiling make_tiling(const World &layout, const Spec &spec) {
+  Vec3 size = layout.size();
+  Vec3 counts{spec.tiled[0] ? kCopiesPerTiledAxis : 1,
+              spec.tiled[1] ? kCopiesPerTiledAxis : 1,
+              spec.tiled[2] ? kCopiesPerTiledAxis : 1};
+  Tiling tiling;
+  tiling.world =
+      World({size.x * counts.x, size.y * counts.y, size.z * counts.z});
+  tiling.copies = counts.x * counts.y * counts.z;
+  auto copy_index = [&](int cx, int cy, int cz) {
+    return (cy * counts.z + cz) * counts.x + cx;
+  };
+  tiling.center = copy_index(counts.x / 2, counts.y / 2, counts.z / 2);
+
+  int inputs = static_cast<int>(spec.inputs.size());
+  int outputs = static_cast<int>(spec.outputs.size());
+  if (tiling.copies * std::max(inputs, outputs) > kMaxChannel + 1)
+    throw std::invalid_argument("too many ports to verify the tiled layout");
+
+  for (int cx = 0; cx < counts.x; ++cx)
+    for (int cy = 0; cy < counts.y; ++cy)
+      for (int cz = 0; cz < counts.z; ++cz) {
+        int copy = copy_index(cx, cy, cz);
+        Vec3 corner{cx * size.x, cy * size.y, cz * size.z};
+        for (int i = 0; i < layout.volume(); ++i) {
+          Vec3 p = layout.position_of(i);
+          Block block = layout.at(p);
+          if (block.type == BlockType::Input)
+            block.channel =
+                static_cast<std::uint8_t>(copy * inputs + block.channel);
+          if (block.type == BlockType::Output)
+            block.channel =
+                static_cast<std::uint8_t>(copy * outputs + block.channel);
+          tiling.world.set(corner + p, block);
+        }
+      }
+  return tiling;
 }
 
-void apply_inputs(Simulator &sim, const InputVector &inputs) {
-  for (std::size_t i = 0; i < inputs.size(); ++i)
-    sim.set_input(static_cast<int>(i), inputs[i]);
-}
+class Harness {
+public:
+  Harness(const Spec &spec, const Tiling &tiling,
+          const VerificationOptions &options)
+      : spec_(spec), tiling_(tiling), options_(options) {}
 
-std::optional<std::string>
-outside_range(const std::vector<int> &outputs,
-              const std::vector<SignalRange> &expected, int tick) {
-  for (std::size_t o = 0; o < outputs.size(); ++o)
-    if (!expected[o].contains(outputs[o]))
-      return std::format("OUT{} is {} at tick {}, expected {}", o + 1,
-                         outputs[o], tick, to_string(expected[o]));
-  return std::nullopt;
-}
-
-// Switches a settled simulator to `to` and checks the output timeline.
-std::optional<std::string>
-check_transition(Simulator sim, const Spec &spec, const InputVector &to,
-                 const std::vector<SignalRange> &expected,
-                 const VerificationOptions &options) {
-  const TimingSpec &timing = spec.timing;
-  const int horizon = timing.horizon();
-  const int deadline = timing.latest ? *timing.latest : horizon;
-  std::vector<int> previous = read_outputs(sim, spec.outputs.size());
-  apply_inputs(sim, to);
-
-  for (int t = 0; t <= horizon + options.max_extra_ticks; ++t) {
-    if (t > 0)
-      sim.tick();
-    if (t > horizon && !sim.has_pending_ticks())
-      return std::nullopt;
-    std::vector<int> outputs = read_outputs(sim, spec.outputs.size());
-    if (t >= deadline)
-      if (auto problem = outside_range(outputs, expected, t))
-        return problem;
-    if (timing.hold_previous && timing.earliest && t < *timing.earliest &&
-        outputs != previous)
-      return std::format(
-          "outputs changed at tick {}, before the earliest allowed tick {}", t,
-          *timing.earliest);
+  void set_inputs(Simulator &sim, int copy, const InputVector &inputs) const {
+    int base = copy * static_cast<int>(this->spec_.inputs.size());
+    for (std::size_t i = 0; i < inputs.size(); ++i)
+      sim.set_input(base + static_cast<int>(i), inputs[i]);
   }
-  return std::format("still active {} ticks after the horizon",
-                     options.max_extra_ticks);
-}
+
+  std::vector<int> outputs(const Simulator &sim, int copy) const {
+    int count = static_cast<int>(this->spec_.outputs.size());
+    std::vector<int> values;
+    for (int o = 0; o < count; ++o)
+      values.push_back(sim.output(copy * count + o));
+    return values;
+  }
+
+  std::optional<std::string> outside(const std::vector<int> &values,
+                                     const std::vector<SignalRange> &expected,
+                                     int tick, int copy) const {
+    for (std::size_t o = 0; o < values.size(); ++o)
+      if (!expected[o].contains(values[o]))
+        return std::format("{}OUT{} is {} at tick {}, expected {}",
+                           this->copy_name(copy), o + 1, values[o], tick,
+                           to_string(expected[o]));
+    return std::nullopt;
+  }
+
+  // Rules for a copy whose inputs just switched: correct from the deadline
+  // on, and unchanged before the earliest tick if requested.
+  std::optional<std::string>
+  check_switched(const std::vector<int> &values, const std::vector<int> &before,
+                 const std::vector<SignalRange> &expected, int tick,
+                 int copy) const {
+    const TimingSpec &timing = this->spec_.timing;
+    int deadline = timing.latest ? *timing.latest : timing.horizon();
+    if (tick >= deadline)
+      if (auto problem = this->outside(values, expected, tick, copy))
+        return problem;
+    if (timing.hold_previous && timing.earliest && tick < *timing.earliest &&
+        values != before)
+      return std::format(
+          "{}outputs changed at tick {}, before the earliest allowed tick {}",
+          this->copy_name(copy), tick, *timing.earliest);
+    return std::nullopt;
+  }
+
+  using TickCheck =
+      std::function<std::optional<std::string>(const Simulator &, int)>;
+
+  // Ticks until the circuit is at rest after the horizon, checking each tick.
+  std::optional<std::string> run(Simulator &sim, const TickCheck &check) const {
+    int horizon = this->spec_.timing.horizon();
+    for (int t = 0; t <= horizon + this->options_.max_extra_ticks; ++t) {
+      if (t > 0)
+        sim.tick();
+      if (auto problem = check(sim, t))
+        return problem;
+      if (t >= horizon && !sim.has_pending_ticks())
+        return std::nullopt;
+    }
+    return std::format("still active {} ticks after the horizon",
+                       this->options_.max_extra_ticks);
+  }
+
+  std::string copy_name(int copy) const {
+    if (this->tiling_.copies == 1)
+      return "";
+    return copy == this->tiling_.center ? "center copy: "
+                                        : std::format("copy {}: ", copy);
+  }
+
+private:
+  const Spec &spec_;
+  const Tiling &tiling_;
+  const VerificationOptions &options_;
+};
 
 std::optional<VerificationFailure>
-check_placement(const World &layout, const Spec &spec,
+check_placement(const Tiling &tiling, const Spec &spec,
                 const std::vector<InputVector> &vectors,
+                const std::vector<InputVector> &backgrounds,
                 const VerificationOptions &options, Placement placement) {
+  Harness h(spec, tiling, options);
   auto fail = [&](std::optional<InputVector> from, InputVector to,
-                  std::string reason) {
+                  std::string reason, bool interference) {
     return VerificationFailure{placement, std::move(from), std::move(to),
-                               std::move(reason)};
+                               std::move(reason), interference};
   };
 
   std::optional<Simulator> built;
   try {
-    built.emplace(layout, placement);
+    built.emplace(tiling.world, placement);
   } catch (const std::invalid_argument &error) {
     return fail(std::nullopt, vectors.front(),
-                std::string("invalid layout: ") + error.what());
+                std::string("invalid layout: ") + error.what(), false);
   }
   if (!built->run_until_quiet(options.max_settle_ticks))
     return fail(std::nullopt, vectors.front(),
-                "does not settle after being built");
+                "does not settle after being built", false);
 
-  std::vector<Simulator> settled;
   std::vector<std::vector<SignalRange>> expected;
   for (const InputVector &vector : vectors) {
     std::optional<std::vector<SignalRange>> wanted =
@@ -94,24 +174,96 @@ check_placement(const World &layout, const Spec &spec,
     if (!wanted)
       throw std::invalid_argument("verification vector " + to_string(vector) +
                                   " has no row");
-    Simulator sim = *built;
-    apply_inputs(sim, vector);
-    if (!sim.run_until_quiet(options.max_settle_ticks))
-      return fail(std::nullopt, vector, "does not settle");
-    if (auto problem =
-            outside_range(read_outputs(sim, spec.outputs.size()), *wanted, 0))
-      return fail(std::nullopt, vector, "settled state wrong: " + *problem);
-    settled.push_back(std::move(sim));
     expected.push_back(std::move(*wanted));
   }
 
-  for (std::size_t from = 0; from < vectors.size(); ++from) {
-    for (std::size_t to = 0; to < vectors.size(); ++to) {
-      if (from == to)
+  // Every copy gets the same inputs (the only case without tiling).
+  std::vector<Simulator> settled;
+  for (std::size_t u = 0; u < vectors.size(); ++u) {
+    Simulator sim = *built;
+    for (int copy = 0; copy < tiling.copies; ++copy)
+      h.set_inputs(sim, copy, vectors[u]);
+    if (!sim.run_until_quiet(options.max_settle_ticks))
+      return fail(std::nullopt, vectors[u], "does not settle", false);
+    for (int copy = 0; copy < tiling.copies; ++copy)
+      if (auto problem = h.outside(h.outputs(sim, copy), expected[u], 0, copy))
+        return fail(std::nullopt, vectors[u],
+                    "settled state wrong: " + *problem, false);
+    settled.push_back(std::move(sim));
+  }
+  for (std::size_t u = 0; u < vectors.size(); ++u) {
+    for (std::size_t v = 0; v < vectors.size(); ++v) {
+      if (u == v)
         continue;
-      if (auto problem = check_transition(settled[from], spec, vectors[to],
-                                          expected[to], options))
-        return fail(vectors[from], vectors[to], *problem);
+      Simulator sim = settled[u];
+      std::vector<std::vector<int>> before;
+      for (int copy = 0; copy < tiling.copies; ++copy) {
+        before.push_back(h.outputs(sim, copy));
+        h.set_inputs(sim, copy, vectors[v]);
+      }
+      auto problem = h.run(sim, [&](const Simulator &s, int t) {
+        for (int copy = 0; copy < tiling.copies; ++copy)
+          if (auto p = h.check_switched(h.outputs(s, copy), before[copy],
+                                        expected[v], t, copy))
+            return p;
+        return std::optional<std::string>{};
+      });
+      if (problem)
+        return fail(vectors[u], vectors[v], *problem, false);
+    }
+  }
+
+  if (tiling.copies == 1)
+    return std::nullopt;
+
+  // The center copy switches while its neighbours hold other inputs; the
+  // neighbours' outputs must not move at all.
+  for (const InputVector &background : backgrounds) {
+    for (std::size_t u = 0; u < vectors.size(); ++u) {
+      Simulator base = *built;
+      for (int copy = 0; copy < tiling.copies; ++copy)
+        h.set_inputs(base, copy,
+                     copy == tiling.center ? vectors[u] : background);
+      if (!base.run_until_quiet(options.max_settle_ticks))
+        return fail(
+            std::nullopt, vectors[u],
+            "does not settle next to copies at " + to_string(background), true);
+      if (auto problem = h.outside(h.outputs(base, tiling.center), expected[u],
+                                   0, tiling.center))
+        return fail(std::nullopt, vectors[u],
+                    "settled state wrong next to copies at " +
+                        to_string(background) + ": " + *problem,
+                    true);
+
+      for (std::size_t v = 0; v < vectors.size(); ++v) {
+        if (u == v)
+          continue;
+        Simulator sim = base;
+        std::vector<std::vector<int>> before;
+        for (int copy = 0; copy < tiling.copies; ++copy)
+          before.push_back(h.outputs(sim, copy));
+        h.set_inputs(sim, tiling.center, vectors[v]);
+        auto problem = h.run(sim, [&](const Simulator &s, int t) {
+          for (int copy = 0; copy < tiling.copies; ++copy) {
+            std::vector<int> now = h.outputs(s, copy);
+            if (copy == tiling.center) {
+              if (auto p =
+                      h.check_switched(now, before[copy], expected[v], t, copy))
+                return p;
+            } else if (now != before[copy]) {
+              return std::optional<std::string>{std::format(
+                  "{}output changed at tick {} although its inputs did not",
+                  h.copy_name(copy), t)};
+            }
+          }
+          return std::optional<std::string>{};
+        });
+        if (problem)
+          return fail(vectors[u], vectors[v],
+                      *problem + " (neighbours at " + to_string(background) +
+                          ")",
+                      true);
+      }
     }
   }
   return std::nullopt;
@@ -141,12 +293,15 @@ verify_layout(const World &layout, const Spec &spec,
     throw std::invalid_argument("nothing to verify: no input vectors");
   std::vector<Placement> placements =
       options.placements.empty() ? standard_placements() : options.placements;
+  Tiling tiling = make_tiling(layout, spec);
+  std::vector<InputVector> backgrounds = spec.representative_vectors();
 
   std::vector<std::future<std::optional<VerificationFailure>>> checks;
   for (const Placement &placement : placements)
-    checks.push_back(std::async(
-        std::launch::async, check_placement, std::cref(layout), std::cref(spec),
-        std::cref(vectors), std::cref(options), placement));
+    checks.push_back(std::async(std::launch::async, check_placement,
+                                std::cref(tiling), std::cref(spec),
+                                std::cref(vectors), std::cref(backgrounds),
+                                std::cref(options), placement));
 
   std::optional<VerificationFailure> first;
   for (auto &check : checks) {

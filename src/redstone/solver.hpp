@@ -16,6 +16,7 @@ struct SolverOptions {
   int threads = 0; // 0: all hardware threads
   int max_refinements = 100;
   bool log_search = false;    // CP-SAT's own progress log
+  bool stop_at_first = false; // accept the first verified circuit
   bool show_rejected = false; // include rejected layouts in progress messages
   VerificationOptions verification;
 };

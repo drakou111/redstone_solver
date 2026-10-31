@@ -19,6 +19,33 @@ namespace {
 
 using Clock = std::chrono::steady_clock;
 
+// Removes blocks one at a time while the layout still passes verification.
+// Cheap compared to solving, and it cleans up first-found solutions.
+int prune_layout(World &layout, const Spec &spec,
+                 const std::vector<InputVector> &vectors,
+                 const VerificationOptions &options) {
+  int removed = 0;
+  bool changed = true;
+  while (changed) {
+    changed = false;
+    for (int i = 0; i < layout.volume(); ++i) {
+      Vec3 p = layout.position_of(i);
+      Block block = layout.at(p);
+      if (block.type == BlockType::Air || block.type == BlockType::Input ||
+          block.type == BlockType::Output)
+        continue;
+      layout.set(p, Block::air());
+      if (verify_layout(layout, spec, vectors, options)) {
+        layout.set(p, block);
+        continue;
+      }
+      ++removed;
+      changed = true;
+    }
+  }
+  return removed;
+}
+
 int find_or_add_steady(ModelPlan &plan, const Spec &spec,
                        const InputVector &inputs) {
   for (std::size_t i = 0; i < plan.steady.size(); ++i)
@@ -49,7 +76,7 @@ bool add_transition(ModelPlan &plan, TransitionCase transition) {
 
 bool refine_plan(ModelPlan &plan, const Spec &spec,
                  const VerificationFailure &failure) {
-  if (!failure.at_identity_placement())
+  if (!failure.at_identity_placement() || failure.tiling_interference)
     return false;
   std::size_t steady_before = plan.steady.size();
   int to = find_or_add_steady(plan, spec, failure.to);
@@ -127,6 +154,7 @@ SolveReport solve(const Spec &spec, const SolverOptions &options,
     parameters.set_max_time_in_seconds(remaining);
     parameters.set_num_workers(threads);
     parameters.set_log_search_progress(options.log_search);
+    parameters.set_stop_after_first_solution(options.stop_at_first);
     sat::CpSolverResponse response =
         sat::SolveWithParameters(proto, parameters);
     report.refinements = iteration;
@@ -156,9 +184,15 @@ SolveReport solve(const Spec &spec, const SolverOptions &options,
     std::optional<VerificationFailure> failure = verify_layout(
         candidate.layout, spec, verification_vectors, options.verification);
     if (!failure) {
-      report.status = response.status() == sat::CpSolverStatus::OPTIMAL
-                          ? SolveStatus::Optimal
-                          : SolveStatus::Feasible;
+      bool optimal = response.status() == sat::CpSolverStatus::OPTIMAL;
+      if (!optimal) {
+        int removed = prune_layout(candidate.layout, spec, verification_vectors,
+                                   options.verification);
+        candidate.block_count -= removed;
+        if (removed > 0)
+          report_progress(std::format("removed {} unneeded blocks", removed));
+      }
+      report.status = optimal ? SolveStatus::Optimal : SolveStatus::Feasible;
       report.solution = std::move(candidate);
       report.seconds = elapsed();
       return report;

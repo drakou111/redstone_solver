@@ -66,6 +66,47 @@ row IN1(ss0) -> OUT1(ss0)
   CHECK(timeline[6] > 0);
 }
 
+TEST_CASE("solver respects tiling: touching dust outputs are impossible, "
+          "torches are fine") {
+  const char *base = R"(
+size 4 3 1
+input IN1 strong 0 1 0 east
+tile z
+horizon 8
+row IN1(ss1..15) -> OUT1(ss0)
+row IN1(ss0) -> OUT1(ss1..15)
+)";
+  Spec dust = parse_spec(std::string(base) + "output OUT1 dust 3 1 0\n");
+  CHECK(solve(dust, test_options()).status == SolveStatus::Infeasible);
+
+  Spec component =
+      parse_spec(std::string(base) + "output OUT1 component 3 1 0 east\n");
+  SolveReport report = solve(component, test_options());
+  REQUIRE(report.status == SolveStatus::Optimal);
+  CHECK(report.solution->block_count == 2);
+}
+
+TEST_CASE("stop at first returns a verified circuit") {
+  Spec spec = parse_spec(R"(
+size 4 3 3
+input IN1 strong 0 1 0 east
+input IN2 strong 0 1 2 east
+output OUT1 dust 3 1 1
+horizon 10
+row IN1(ss1..15),IN2(ss1..15) -> OUT1(ss1..15)
+row IN1(ss0) -> OUT1(ss0)
+row IN2(ss0) -> OUT1(ss0)
+)");
+  SolverOptions options = test_options();
+  options.stop_at_first = true;
+  SolveReport report = solve(spec, options);
+  REQUIRE(report.solution);
+  CHECK((report.status == SolveStatus::Feasible ||
+         report.status == SolveStatus::Optimal));
+  CHECK_FALSE(verify_layout(report.solution->layout, spec,
+                            spec.verification_vectors()));
+}
+
 TEST_CASE("solver reports infeasible when the volume cannot work") {
   // Output dust on the bottom layer has nothing to stand on.
   Spec spec = parse_spec(R"(

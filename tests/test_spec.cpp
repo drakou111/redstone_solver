@@ -85,11 +85,11 @@ TEST_CASE("verification vectors cover min, middle and max of each range") {
   CHECK(has({15, 0}));
 }
 
-TEST_CASE(
-    "representative vectors take each row's minimum, without duplicates") {
+TEST_CASE("representative vectors take each row's minimum and maximum, "
+          "without duplicates") {
   Spec spec = parse_spec(kAndSpec);
   CHECK(spec.representative_vectors() ==
-        std::vector<InputVector>{{1, 1}, {0, 0}});
+        std::vector<InputVector>{{1, 1}, {15, 15}, {0, 0}, {0, 15}, {15, 0}});
 }
 
 TEST_CASE("spec validation reports contradictions and bad ports") {
@@ -105,4 +105,14 @@ TEST_CASE("spec validation reports contradictions and bad ports") {
                              "dust 1 0 0\nrow -> OUT1(ss0)\n"),
                   std::invalid_argument);
   CHECK_THROWS_AS(parse_spec("size 2 1 1\nbogus 1\n"), std::invalid_argument);
+}
+
+TEST_CASE("tile and feedback settings parse") {
+  Spec spec = parse_spec("size 2 2 2\ninput IN1 strong 0 1 0 east\n"
+                         "output OUT1 dust 1 1 0\ntile x z\nfeedback on\n"
+                         "row -> OUT1(ss0..15)\n");
+  CHECK(spec.tiled == std::array{true, false, true});
+  CHECK(spec.is_tiled());
+  CHECK(spec.allow_feedback);
+  CHECK_THROWS_AS(parse_spec("size 2 2 2\ntile w\n"), std::invalid_argument);
 }

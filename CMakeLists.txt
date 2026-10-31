@@ -82,7 +82,8 @@ if (REDSTONE_BUILD_TESTS)
             tests/test_cp_sat.cpp
             tests/test_spec.cpp
             tests/test_encoder.cpp
-            tests/test_solver.cpp)
+            tests/test_solver.cpp
+            tests/test_verifier.cpp)
     target_link_libraries(redstone_tests PRIVATE redstone_core Catch2::Catch2WithMain)
     target_compile_options(redstone_tests PRIVATE ${REDSTONE_WARNINGS})
     redstone_copy_runtime_dlls(redstone_tests)

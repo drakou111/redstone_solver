@@ -1,0 +1,8 @@
+# NOT gate that can be stacked side by side along z with no gap.
+size 4 3 1
+input IN1 strong 0 1 0 east
+output OUT1 component 3 1 0 east
+tile z
+horizon 8
+row IN1(ss1..15) -> OUT1(ss0)
+row IN1(ss0) -> OUT1(ss1..15)

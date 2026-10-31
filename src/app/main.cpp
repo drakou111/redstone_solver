@@ -22,7 +22,9 @@ constexpr std::string_view kUsage =
     "Options:\n"
     "  --time-limit <seconds>  total time budget (default 60)\n"
     "  --threads <n>           solver threads (default: all)\n"
+    "  --first                 stop at the first verified circuit\n"
     "  --log-search            print CP-SAT's search log\n"
+    "  --show-rejected         print layouts the simulator rejected\n"
     "  --help                  show this help\n"
     "\n"
     "Spec file lines (# starts a comment):\n"
@@ -39,7 +41,9 @@ constexpr std::string_view kUsage =
     "                                               for redstone ticks, "
     "default game ticks\n"
     "  hold_previous on|off   outputs keep their old value before <earliest>\n"
-    "  feedback on|off        allow loops through components (memory, clocks); "
+    "  tile none|<axes>       copies placed side by side along x/y/z must not "
+    "interfere\n"
+    "  feedback on|off       allow loops through components (memory, clocks); "
     "default off\n"
     "  settle <ticks>         extra ticks after <latest> to come to rest "
     "(default 4)\n"
@@ -83,6 +87,8 @@ CliOptions parse_args(int argc, char **argv) {
       options.solver.threads = static_cast<int>(parse_number(value(), arg));
     else if (arg == "--log-search")
       options.solver.log_search = true;
+    else if (arg == "--first")
+      options.solver.stop_at_first = true;
     else if (arg == "--show-rejected")
       options.solver.show_rejected = true;
     else if (arg.starts_with("--"))

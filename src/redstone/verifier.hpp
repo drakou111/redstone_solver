@@ -21,6 +21,7 @@ struct VerificationFailure {
   std::optional<InputVector> from; // nullopt: settling under `to` failed
   InputVector to;
   std::string reason;
+  bool tiling_interference = false; // copies influenced each other
 
   bool at_identity_placement() const;
 };

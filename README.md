@@ -25,6 +25,7 @@ Other platforms: install OR-Tools, put it on `CMAKE_PREFIX_PATH`, and configure 
 
 ```
 build/msvc/Release/redstone_solver.exe examples/and_gate.txt --time-limit 60
+build/msvc/Release/redstone_solver.exe examples/and_gate.txt --first   # stop at the first verified circuit
 ctest --preset release
 ```
 
@@ -41,3 +42,6 @@ row IN1(ss1..15),IN2(ss1..15) -> OUT1(ss1..15)
 row IN1(ss0) -> OUT1(ss0)
 row IN2(ss0) -> OUT1(ss0)
 ```
+
+`tile z` asks for a circuit whose copies can sit side by side along z without influencing each
+other. `feedback off` (the default) rules out loops and repeater locks, which would act as memory.

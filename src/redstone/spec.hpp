@@ -1,5 +1,6 @@
 #pragma once
 
+#include <array>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -69,11 +70,18 @@ struct Spec {
   // clocks; truth tables do not need them and forbidding them keeps every
   // input's settled state unique.
   bool allow_feedback = false;
+  // Axes (x, y, z) along which copies are placed side by side. Copies must
+  // not influence each other whatever their inputs are.
+  std::array<bool, 3> tiled{};
+
+  bool is_tiled() const {
+    return this->tiled[0] || this->tiled[1] || this->tiled[2];
+  }
 
   // Output ranges required for an input vector, or nullopt if no row covers it.
   std::optional<std::vector<SignalRange>>
   expected_outputs(const InputVector &vector) const;
-  // One vector per row, used to seed the solver model.
+  // Each row's lowest and highest inputs, used to seed the solver model.
   std::vector<InputVector> representative_vectors() const;
   // Min, middle and max of every range, combined per row; used for
   // verification.

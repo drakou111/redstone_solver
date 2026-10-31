@@ -209,10 +209,14 @@ std::vector<InputVector> Spec::representative_vectors() const {
   std::vector<InputVector> vectors;
   std::set<InputVector> seen;
   for (const TruthRow &row : this->rows) {
-    InputVector vector;
-    for (SignalRange range : row.inputs)
-      vector.push_back(range.min);
-    append_unique(vectors, seen, vector);
+    InputVector lowest;
+    InputVector highest;
+    for (SignalRange range : row.inputs) {
+      lowest.push_back(range.min);
+      highest.push_back(range.max);
+    }
+    append_unique(vectors, seen, lowest);
+    append_unique(vectors, seen, highest);
   }
   return vectors;
 }
@@ -456,6 +460,17 @@ Spec parse_spec(std::string_view text) {
         if (w[1] != "on" && w[1] != "off")
           throw std::invalid_argument("feedback is on or off");
         spec.allow_feedback = w[1] == "on";
+      } else if (key == "tile") {
+        need(2, 4);
+        spec.tiled = {};
+        for (std::size_t i = 1; i < w.size(); ++i) {
+          if (w[i] == "none" && w.size() == 2)
+            break;
+          if (w[i] != "x" && w[i] != "y" && w[i] != "z")
+            throw std::invalid_argument(
+                std::format("tile axes are x, y, z or none, got '{}'", w[i]));
+          spec.tiled[w[i][0] - 'x'] = true;
+        }
       } else if (key == "settle") {
         need(2, 2);
         spec.timing.settle_ticks = parse_ticks(w[1]);

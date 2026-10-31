@@ -158,8 +158,8 @@ struct CircuitEncoder::Impl {
     this->base = spec.base_world();
     this->build_cells();
     this->add_static_constraints();
-    if (!spec.allow_feedback)
-      this->forbid_feedback();
+    if (!spec.allow_feedback || spec.is_tiled())
+      this->add_dependency_constraints();
 
     for (const SteadyCase &steady : plan.steady) {
       if (steady.inputs.size() != spec.inputs.size())
@@ -186,7 +186,17 @@ struct CircuitEncoder::Impl {
 
   // ---------------------------------------------------------------- cells
 
+  // Tiled axes wrap around: the neighbour across the edge is the same cell
+  // of the next copy.
   int cell_index(Vec3 p) const {
+    Vec3 size = this->base.size();
+    auto wrap = [](int v, int n) { return ((v % n) + n) % n; };
+    if (this->spec.tiled[0])
+      p.x = wrap(p.x, size.x);
+    if (this->spec.tiled[1])
+      p.y = wrap(p.y, size.y);
+    if (this->spec.tiled[2])
+      p.z = wrap(p.z, size.z);
     return this->base.in_bounds(p) ? this->base.index_of(p) : -1;
   }
 
@@ -371,6 +381,19 @@ struct CircuitEncoder::Impl {
         this->b.require(!c.facing[index_of(Dir::Up)], {k[diode]});
         this->b.require(!c.facing[index_of(Dir::Down)], {k[diode]});
       }
+      // A locked repeater holds a stale value, which is memory just like a
+      // loop; truth-table mode forbids diodes feeding a repeater's side.
+      if (!this->spec.allow_feedback && c.may(kRepeater)) {
+        for (Dir d : kHorizontalDirs)
+          for (Dir side : {rotate_clockwise(d), rotate_counter_clockwise(d)}) {
+            const Cell &n = this->cell_at(p + offset(side));
+            Lit n_diode = this->b.any_exclusive(
+                {n.kind[kRepeater], n.kind[kComparator], n.kind[kInputStrong]});
+            this->b.require_any({!k[kRepeater], !c.facing[index_of(d)],
+                                 !n_diode,
+                                 !n.facing[index_of(opposite(side))]});
+          }
+      }
       this->b.require(!c.facing[index_of(Dir::Up)], {k[kTorch]});
       this->b.require(below.top_support,
                       {k[kTorch], c.facing[index_of(Dir::Down)]});
@@ -417,20 +440,34 @@ struct CircuitEncoder::Impl {
     return this->b.any_exclusive(ways);
   }
 
-  // Every cell gets a rank. Components rank strictly above what they read and
-  // everything else at least as high as what powers it, so no signal loop can
-  // pass through a component.
-  void forbid_feedback() {
+  // Every signal dependency between neighbouring cells is an edge from the
+  // cell read (q) to the cell reading it (p).
+  //  - Without feedback, every cell gets a rank: components rank strictly
+  //    above what they read and everything else at least as high as what
+  //    powers it, so no signal loop can pass through a component.
+  //  - With tiling, no edge may cross into a neighbouring copy, so copies
+  //    cannot influence each other whatever their inputs are.
+  void add_dependency_constraints() {
     const int n = static_cast<int>(this->cells.size());
+    const bool ranked = !this->spec.allow_feedback;
     std::vector<Int> rank;
-    rank.reserve(n);
-    for (int i = 0; i < n; ++i)
-      rank.push_back(this->b.new_int(0, n));
+    if (ranked)
+      for (int i = 0; i < n; ++i)
+        rank.push_back(this->b.new_int(0, n));
 
-    auto at_least = [&](int p, int q, int gap, std::vector<Lit> when) {
+    auto edge = [&](int p, Vec3 q_position, int gap, std::vector<Lit> when) {
+      int q = this->cell_index(q_position);
       if (q < 0)
         return;
-      this->b.require_in_range(rank[p] - rank[q], gap, n, when);
+      if (!this->base.in_bounds(q_position)) {
+        when.push_back(!this->cells[q].kind[kAir]);
+        for (Lit &lit : when)
+          lit = !lit;
+        this->b.require_any(when);
+        return;
+      }
+      if (ranked)
+        this->b.require_in_range(rank[p] - rank[q], gap, n, when);
     };
 
     for (int p = 0; p < n; ++p) {
@@ -439,41 +476,34 @@ struct CircuitEncoder::Impl {
       const auto &k = c.kind;
 
       for (Dir d : kAllDirs) {
-        int q = this->cell_index(pos + offset(d));
-        if (q < 0)
-          continue;
-        const Cell &neighbor = this->cells[q];
+        Vec3 q = pos + offset(d);
+        const Cell &neighbor = this->cell_at(q);
         Dir toward_p = opposite(d);
-        at_least(p, q, 0, {c.dust, this->may_emit(neighbor, toward_p, false)});
-        at_least(p, q, 0,
-                 {k[kHopper], this->may_emit(neighbor, toward_p, false)});
-        at_least(p, q, 0,
-                 {c.conductor, this->may_emit(neighbor, toward_p, true)});
+        Lit weak = this->may_emit(neighbor, toward_p, false);
+        edge(p, q, 0, {c.dust, weak});
+        edge(p, q, 0, {k[kHopper], weak});
+        edge(p, q, 0, {c.conductor, this->may_emit(neighbor, toward_p, true)});
       }
       if (!c.dust.is_false()) {
         for (Dir d : kHorizontalDirs)
           for (Dir vertical : {Dir::Up, Dir::Down}) {
-            int q = this->cell_index(pos + offset(d) + offset(vertical));
-            if (q >= 0)
-              at_least(p, q, 0, {c.dust, this->cells[q].dust});
+            Vec3 q = pos + offset(d) + offset(vertical);
+            edge(p, q, 0, {c.dust, this->cell_at(q).dust});
           }
       }
 
       for (Dir d : kTorchAttachments)
-        at_least(p, this->cell_index(pos + offset(d)), 1,
-                 {k[kTorch], c.facing[index_of(d)]});
+        edge(p, pos + offset(d), 1, {k[kTorch], c.facing[index_of(d)]});
       for (Dir d : kAllDirs)
-        at_least(p, this->cell_index(pos + offset(d)), 1,
-                 {k[kObserver], c.facing[index_of(d)]});
+        edge(p, pos + offset(d), 1, {k[kObserver], c.facing[index_of(d)]});
+      Lit diode = this->b.any_exclusive({k[kRepeater], k[kComparator]});
       for (Dir d : kHorizontalDirs) {
         Lit facing = c.facing[index_of(d)];
         Vec3 behind = pos + offset(opposite(d));
-        Lit diode = this->b.any_exclusive({k[kRepeater], k[kComparator]});
-        at_least(p, this->cell_index(behind), 1, {diode, facing});
-        at_least(p, this->cell_index(behind + offset(opposite(d))), 1,
-                 {k[kComparator], facing});
+        edge(p, behind, 1, {diode, facing});
+        edge(p, behind + offset(opposite(d)), 1, {k[kComparator], facing});
         for (Dir side : {rotate_clockwise(d), rotate_counter_clockwise(d)})
-          at_least(p, this->cell_index(pos + offset(side)), 1, {diode, facing});
+          edge(p, pos + offset(side), 1, {diode, facing});
       }
     }
   }
