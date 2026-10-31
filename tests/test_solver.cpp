@@ -100,6 +100,7 @@ row IN2(ss0) -> OUT1(ss0)
   SolverOptions options = test_options();
   options.stop_at_first = true;
   SolveReport report = solve(spec, options);
+  INFO("status: " << to_string(report.status));
   REQUIRE(report.solution);
   CHECK((report.status == SolveStatus::Feasible ||
          report.status == SolveStatus::Optimal));

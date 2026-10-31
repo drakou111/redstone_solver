@@ -74,8 +74,10 @@ bool add_transition(ModelPlan &plan, TransitionCase transition) {
   return true;
 }
 
+// Transitions make the model several times larger; when only a first
+// solution is wanted, banning the layout is the cheaper response.
 bool refine_plan(ModelPlan &plan, const Spec &spec,
-                 const VerificationFailure &failure) {
+                 const VerificationFailure &failure, bool allow_transitions) {
   if (!failure.at_identity_placement() || failure.tiling_interference)
     return false;
   std::size_t steady_before = plan.steady.size();
@@ -85,8 +87,10 @@ bool refine_plan(ModelPlan &plan, const Spec &spec,
 
   if (failure.from) {
     int from = find_or_add_steady(plan, spec, *failure.from);
-    return add_transition(plan, {from, to});
+    return allow_transitions && add_transition(plan, {from, to});
   }
+  if (!allow_transitions)
+    return false;
   // The circuit settled somewhere other than the model's state for `to`; make
   // the model prove that state is reached from every other one.
   bool added = false;
@@ -204,7 +208,7 @@ SolveReport solve(const Spec &spec, const SolverOptions &options,
         failure->from ? std::format("{} -> {}", to_string(*failure->from),
                                     to_string(failure->to))
                       : std::format("settling at {}", to_string(failure->to));
-    if (refine_plan(plan, spec, *failure)) {
+    if (refine_plan(plan, spec, *failure, !options.stop_at_first)) {
       report_progress(
           std::format("rejected ({}: {}); adding that case to the model", where,
                       failure->reason));
