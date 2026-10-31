@@ -46,6 +46,8 @@ export interface Spec {
   palette: string[];
   feedback: boolean;
   tiled: [boolean, boolean, boolean];
+  fixed: PlacedBlock[]; // blocks the solver must keep
+  forbidden: Vec3[]; // cells the solver must leave empty
 }
 
 export type BlockType =

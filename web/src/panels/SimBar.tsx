@@ -10,10 +10,19 @@ const MAX_SIGNAL = 15;
 export function SimBar() {
   const sim = useStore((s) => s.sim);
   const result = useStore((s) => s.result);
+  const view = useStore((s) => s.view);
+  const error = useStore((s) => s.simError);
   const setSim = useStore((s) => s.setSim);
+  const setError = useStore((s) => s.setSimError);
   const [settle, setSettle] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-  if (!sim || !result) return null;
+  if (view !== 'result' || !result) return null;
+  if (!sim)
+    return (
+      <div className="simbar">
+        <span className="sim-title">Simulator</span>
+        <span className="bad">{error ?? 'Loading...'}</span>
+      </div>
+    );
 
   const run = (request: Promise<typeof sim>) =>
     request.then(setSim).catch((e: unknown) => setError(e instanceof Error ? e.message : String(e)));

@@ -488,3 +488,112 @@ input[type='checkbox'] {
   padding: 40px;
   color: var(--bad);
 }
+
+.canvas-wrap {
+  position: absolute;
+  inset: 0;
+}
+
+.toolbar {
+  position: absolute;
+  top: 12px;
+  left: 14px;
+  right: 14px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+  pointer-events: none;
+}
+.toolbar > * {
+  pointer-events: auto;
+}
+.tools {
+  display: inline-flex;
+  background: rgba(26, 29, 35, 0.9);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 3px;
+  gap: 2px;
+}
+.tools button {
+  border: none;
+  background: transparent;
+  color: var(--muted);
+  display: inline-flex;
+  gap: 6px;
+  align-items: center;
+}
+.tools button.active {
+  background: var(--accent);
+  color: #fff;
+}
+.tools button.active kbd {
+  color: rgba(255, 255, 255, 0.75);
+  border-color: rgba(255, 255, 255, 0.4);
+}
+kbd {
+  font-family: Consolas, monospace;
+  font-size: 10px;
+  color: var(--muted);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  padding: 0 4px;
+}
+.brush {
+  display: inline-flex;
+  gap: 6px;
+  align-items: center;
+  background: rgba(26, 29, 35, 0.9);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 4px 6px;
+}
+.tool-help {
+  color: var(--muted);
+  font-size: 12px;
+  background: rgba(18, 20, 24, 0.7);
+  padding: 4px 8px;
+  border-radius: 6px;
+}
+.toolbar > select {
+  background: rgba(26, 29, 35, 0.9);
+}
+
+.hover-info {
+  position: absolute;
+  top: 60px;
+  right: 14px;
+  min-width: 200px;
+  background: rgba(26, 29, 35, 0.92);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 8px 12px;
+  pointer-events: none;
+  line-height: 1.5;
+}
+
+.edit-badge {
+  position: absolute;
+  top: 60px;
+  left: 14px;
+  padding: 6px 12px;
+  border-radius: var(--radius);
+  border: 1px solid;
+  font-weight: 600;
+}
+.edit-badge.ok {
+  color: var(--good);
+  border-color: rgba(99, 208, 126, 0.5);
+  background: rgba(99, 208, 126, 0.1);
+}
+.edit-badge.fail {
+  color: var(--bad);
+  border-color: rgba(255, 116, 104, 0.5);
+  background: rgba(255, 116, 104, 0.1);
+}
+.edit-badge.checking {
+  color: #f0c060;
+  border-color: rgba(240, 192, 96, 0.5);
+  background: rgba(240, 192, 96, 0.08);
+}

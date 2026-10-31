@@ -19,6 +19,8 @@ export function SolveBar() {
   let status: React.ReactNode = <span className="muted">Set up the spec on the left, then solve.</span>;
   if (solving) status = <span className="running">Solving... {seconds.toFixed(0)}s {log.length > 0 && `- ${log[log.length - 1]}`}</span>;
   else if (solveError) status = <span className="bad">{solveError}</span>;
+  else if (result?.edited)
+    status = <span className="muted">Edited by hand: {result.blockCount} blocks (see the check result in the view)</span>;
   else if (result)
     status = (
       <span className="good">

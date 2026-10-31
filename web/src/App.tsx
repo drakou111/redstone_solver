@@ -1,34 +1,43 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 
+import { HoverInfo } from './panels/HoverInfo';
 import { SimBar } from './panels/SimBar';
 import { SolveBar } from './panels/SolveBar';
 import { SpecPanel } from './panels/SpecPanel';
-import { Scene } from './scene/Scene';
-import { useStore } from './store';
+import { TOOL_INFO, Toolbar } from './panels/Toolbar';
+import { type GhostStyle, Scene } from './scene/Scene';
+import { specWorld } from './specEdit';
+import { RESULT_TOOLS, SPEC_TOOLS, useStore } from './store';
 
 function ViewControls() {
-  const world = useStore((s) => s.result?.layout ?? s.preview);
+  const spec = useStore((s) => s.spec);
   const topLayer = useStore((s) => s.topLayer);
   const setTopLayer = useStore((s) => s.setTopLayer);
   const texturesJar = useStore((s) => s.texturesJar);
   const textureError = useStore((s) => s.textureError);
   const loadTextures = useStore((s) => s.loadTextures);
   const result = useStore((s) => s.result);
-  const clearResult = useStore((s) => s.clearResult);
+  const view = useStore((s) => s.view);
+  const setView = useStore((s) => s.setView);
   const [jar, setJar] = useState<string | null>(null);
-  if (!world) return null;
-  const top = world.size[1] - 1;
+  if (!spec) return null;
+  const top = spec.size[1] - 1;
   return (
     <div className="view-controls">
+      {result && (
+        <div className="segmented">
+          <button className={view === 'spec' ? 'active' : ''} onClick={() => setView('spec')}>
+            Spec
+          </button>
+          <button className={view === 'result' ? 'active' : ''} onClick={() => setView('result')}>
+            Circuit
+          </button>
+        </div>
+      )}
       <label className="field">
         <span>Layers 0-{Math.min(topLayer, top)}</span>
         <input type="range" min={0} max={top} value={Math.min(topLayer, top)} onChange={(e) => setTopLayer(Number(e.target.value))} />
       </label>
-      {result && (
-        <button className="ghost" onClick={clearResult}>
-          Back to ports
-        </button>
-      )}
       <details className="textures">
         <summary>{texturesJar ? 'Minecraft textures' : 'No textures'}</summary>
         <div className="popover-body">
@@ -42,13 +51,90 @@ function ViewControls() {
   );
 }
 
-export function App() {
-  const init = useStore((s) => s.init);
-  const world = useStore((s) => s.result?.layout ?? s.preview);
-  const sim = useStore((s) => (s.result ? s.sim : null));
+function EditBadge() {
+  const result = useStore((s) => s.result);
+  const verification = useStore((s) => s.verification);
+  const view = useStore((s) => s.view);
+  if (view !== 'result' || !result?.edited || !verification) return null;
+  if (verification.checking) return <div className="edit-badge checking">Edited - checking in the simulator...</div>;
+  return verification.ok ? (
+    <div className="edit-badge ok">Edited - still meets the spec ({result.blockCount} blocks)</div>
+  ) : (
+    <div className="edit-badge fail">Edited - fails: {verification.reason}</div>
+  );
+}
+
+function isTyping(target: EventTarget | null): boolean {
+  return target instanceof HTMLInputElement || target instanceof HTMLSelectElement || target instanceof HTMLTextAreaElement;
+}
+
+function useShortcuts() {
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      if (isTyping(event.target) || event.ctrlKey || event.altKey || event.metaKey) return;
+      const state = useStore.getState();
+      const k = event.key.toLowerCase();
+      if (k === 'r') state.rotate();
+      else if (k === 'delete' || k === 'backspace') state.deleteSelected();
+      else if (k === 'escape') {
+        state.setTool('select');
+        state.select(null);
+      } else {
+        const tools = state.view === 'result' ? RESULT_TOOLS : SPEC_TOOLS;
+        const tool = tools.find((t) => TOOL_INFO[t].key.toLowerCase() === k);
+        if (tool) state.setTool(tool);
+        else return;
+      }
+      event.preventDefault();
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, []);
+}
+
+function Viewport() {
+  const spec = useStore((s) => s.spec);
+  const result = useStore((s) => s.result);
+  const view = useStore((s) => s.view);
+  const sim = useStore((s) => s.sim);
   const textures = useStore((s) => s.textures);
   const topLayer = useStore((s) => s.topLayer);
+  const tool = useStore((s) => s.tool);
+  const selected = useStore((s) => s.selected);
+  const hover = useStore((s) => s.hover);
+  const setHover = useStore((s) => s.setHover);
+  const click = useStore((s) => s.click);
+  const showResult = view === 'result' && result !== null;
+  const world = useMemo(() => (showResult ? result.layout : spec ? specWorld(spec) : null), [showResult, result, spec]);
+  if (!spec || !world) return <div className="muted center">Loading...</div>;
+
+  const selectedPort = selected ? (selected.input ? spec.inputs[selected.index] : spec.outputs[selected.index]) : undefined;
+  let ghost: GhostStyle = null;
+  if (tool === 'remove') ghost = 'remove';
+  else if (tool === 'select') ghost = !showResult && selectedPort ? 'move' : null;
+  else ghost = 'place';
+
+  return (
+    <Scene
+      world={world}
+      sim={showResult ? sim : null}
+      textures={textures}
+      topLayer={topLayer}
+      forbidden={showResult ? [] : spec.forbidden}
+      kept={showResult ? [] : spec.fixed.map((b) => b.position)}
+      selected={showResult ? null : (selectedPort?.position ?? null)}
+      hover={hover}
+      ghost={ghost}
+      onHover={setHover}
+      onClick={click}
+    />
+  );
+}
+
+export function App() {
+  const init = useStore((s) => s.init);
   const [fatal, setFatal] = useState<string | null>(null);
+  useShortcuts();
 
   useEffect(() => {
     init().catch((e: unknown) => setFatal(e instanceof Error ? e.message : String(e)));
@@ -62,7 +148,10 @@ export function App() {
         <SolveBar />
         <SimBar />
         <div className="viewport">
-          {world ? <Scene world={world} sim={sim} textures={textures} topLayer={topLayer} /> : <div className="muted center">Loading...</div>}
+          <Viewport />
+          <Toolbar />
+          <HoverInfo />
+          <EditBadge />
           <ViewControls />
         </div>
       </main>

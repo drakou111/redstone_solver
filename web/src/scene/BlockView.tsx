@@ -47,11 +47,11 @@ interface Props {
   state: CellState | undefined;
   portValue?: number;
   textures: TextureMap;
-  onPointerDown?: (event: ThreeEvent<PointerEvent>) => void;
   onPointerMove?: (event: ThreeEvent<PointerEvent>) => void;
+  onClick?: (event: ThreeEvent<MouseEvent>) => void;
 }
 
-export function BlockView({ block, position, state, portValue, textures, onPointerDown, onPointerMove }: Props) {
+export function BlockView({ block, position, state, portValue, textures, onPointerMove, onClick }: Props) {
   const parts = useMemo(() => blockParts(block, state, portValue), [block, state, portValue]);
   const groups = useMemo(() => {
     const byLook = new Map<string, { look: Look; quads: QuadPart[] }>();
@@ -74,7 +74,7 @@ export function BlockView({ block, position, state, portValue, textures, onPoint
   useEffect(() => () => groups.forEach(({ geometry }) => geometry.dispose()), [groups]);
 
   return (
-    <group position={position} onPointerDown={onPointerDown} onPointerMove={onPointerMove}>
+    <group position={position} onPointerMove={onPointerMove} onClick={onClick}>
       {groups.map(({ look, geometry }) => (
         <mesh key={lookKey(look)} geometry={geometry} material={material(look, textures)} renderOrder={look.transparent ? 1 : 0} />
       ))}

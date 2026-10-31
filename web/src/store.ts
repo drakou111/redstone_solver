@@ -2,22 +2,54 @@ import * as THREE from 'three';
 import { create } from 'zustand';
 
 import { api } from './api';
-import type { SimState, Session, SolveResult, Spec, World } from './types';
+import {
+  addPort,
+  blockAt,
+  editWorld,
+  inside,
+  movePort,
+  occupantAt,
+  type PortRef,
+  removePort,
+  rotateBlock,
+  rotatePort,
+  setFixed,
+  toggleForbidden,
+} from './specEdit';
+import type { Block, InputKind, OutputKind, SimState, Session, SolveResult, Spec, Vec3, World } from './types';
 
 const CHECK_DELAY_MS = 250;
 const POLL_INTERVAL_MS = 400;
+const FULL_SIGNAL = 15;
 export const DEFAULT_TIME_LIMIT = 60;
+
+export type Tool = 'select' | 'input' | 'output' | 'keep' | 'empty' | 'place' | 'remove';
+export const SPEC_TOOLS: readonly Tool[] = ['select', 'input', 'output', 'keep', 'empty'];
+export const RESULT_TOOLS: readonly Tool[] = ['select', 'place', 'remove'];
+
+// Where the pointer is: the cell under it (if it hit a block or marker) and
+// the empty cell a placement would fill.
+export interface Hover {
+  hit: Vec3 | null;
+  place: Vec3 | null;
+}
 
 export interface Result extends SolveResult {
   layout: World;
   spec: Spec;
+  edited: boolean;
+}
+
+export interface Verification {
+  checking: boolean;
+  ok?: boolean;
+  reason?: string;
 }
 
 interface State {
   session: Session | null;
   spec: Spec | null;
   specPath: string;
-  preview: World | null;
   specError: string | null;
   notice: string | null;
 
@@ -32,8 +64,18 @@ interface State {
   log: string[];
   solveError: string | null;
   result: Result | null;
+  verification: Verification | null;
   sim: SimState | null;
+  simError: string | null;
+
+  view: 'spec' | 'result';
   topLayer: number;
+  tool: Tool;
+  selected: PortRef | null;
+  newInputKind: InputKind;
+  newOutputKind: OutputKind;
+  brush: Block;
+  hover: Hover | null;
 
   init: () => Promise<void>;
   loadSpec: (path: string) => Promise<void>;
@@ -46,7 +88,17 @@ interface State {
   cancelSolve: () => Promise<void>;
   setTopLayer: (y: number) => void;
   setSim: (sim: SimState) => void;
-  clearResult: () => void;
+  setSimError: (error: string | null) => void;
+  setView: (view: 'spec' | 'result') => void;
+  setTool: (tool: Tool) => void;
+  setNewInputKind: (kind: InputKind) => void;
+  setNewOutputKind: (kind: OutputKind) => void;
+  setBrush: (block: Block) => void;
+  setHover: (hover: Hover | null) => void;
+  select: (port: PortRef | null) => void;
+  click: (hover: Hover) => void;
+  rotate: () => void;
+  deleteSelected: () => void;
 }
 
 let checkTimer: ReturnType<typeof setTimeout> | undefined;
@@ -73,10 +125,18 @@ function makeTextures(urls: Record<string, string>): Map<string, THREE.Texture> 
 export const useStore = create<State>((set, get) => {
   async function checkSpec(spec: Spec) {
     try {
-      const { world } = await api.checkSpec(spec);
-      if (get().spec === spec) set({ preview: world, specError: null });
+      await api.checkSpec(spec);
+      if (get().spec === spec) set({ specError: null });
     } catch (error) {
       if (get().spec === spec) set({ specError: errorText(error) });
+    }
+  }
+
+  async function loadIntoSimulator(layout: World, inputs: number[]) {
+    try {
+      set({ sim: await api.resetSim(layout, inputs), simError: null });
+    } catch (error) {
+      set({ sim: null, simError: errorText(error) });
     }
   }
 
@@ -91,18 +151,105 @@ export const useStore = create<State>((set, get) => {
         return;
       }
       const result = status.result;
-      if (!result?.layout) {
+      const spec = get().spec;
+      if (!result?.layout || !spec) {
         set({ solveError: result ? `No circuit: ${result.status}` : 'The solver stopped without a result.' });
         return;
       }
-      const spec = get().spec;
-      if (!spec) return;
-      set({ result: { ...result, layout: result.layout, spec }, topLayer: result.layout.size[1] - 1 });
-      const sim = await api.resetSim(result.layout, spec.inputs.map(() => 0));
-      set({ sim });
+      set({
+        result: { ...result, layout: result.layout, spec, edited: false },
+        verification: { checking: false, ok: true },
+        view: 'result',
+        tool: 'select',
+        selected: null,
+        topLayer: result.layout.size[1] - 1,
+      });
+      await loadIntoSimulator(
+        result.layout,
+        spec.inputs.map(() => 0),
+      );
     } catch (error) {
       clearInterval(pollTimer);
       set({ solving: false, solveError: errorText(error) });
+    }
+  }
+
+  // Changes a solved layout, then re-checks it and reloads the simulator.
+  async function editResult(position: Vec3, block: Block | null) {
+    const result = get().result;
+    if (!result) return;
+    const layout = editWorld(result.layout, position, block);
+    const blockCount = layout.blocks.filter((b) => b.type !== 'input' && b.type !== 'output').length;
+    set({ result: { ...result, layout, blockCount, edited: true }, verification: { checking: true } });
+    await loadIntoSimulator(layout, get().sim?.inputs ?? result.spec.inputs.map(() => 0));
+    try {
+      const check = await api.verify(result.spec, layout);
+      if (get().result?.layout !== layout) return;
+      set({ verification: { checking: false, ok: check.ok, reason: check.failure?.reason } });
+    } catch (error) {
+      set({ verification: { checking: false, ok: false, reason: errorText(error) } });
+    }
+  }
+
+  async function toggleInput(channel: number) {
+    const sim = get().sim;
+    if (!sim) return;
+    const value = (sim.inputs[channel] ?? 0) > 0 ? 0 : FULL_SIGNAL;
+    try {
+      set({ sim: await api.setInput(channel, value, true) });
+    } catch (error) {
+      set({ simError: errorText(error) });
+    }
+  }
+
+  function clickSpec(spec: Spec, { hit, place }: Hover) {
+    const { tool, selected, newInputKind, newOutputKind, brush, updateSpec } = get();
+    const free = (p: Vec3 | null): p is Vec3 => p !== null && inside(spec.size, p) && occupantAt(spec, p) === null;
+    const occupant = hit ? occupantAt(spec, hit) : null;
+    switch (tool) {
+      case 'select':
+        if (occupant?.kind === 'port') set({ selected: occupant.port });
+        else if (selected && free(place)) updateSpec((s) => movePort(s, selected, place));
+        else set({ selected: null });
+        return;
+      case 'input':
+      case 'output': {
+        if (!free(place)) return;
+        const input = tool === 'input';
+        updateSpec((s) => addPort(s, input, place, input ? newInputKind : newOutputKind, 'east'));
+        const count = input ? spec.inputs.length : spec.outputs.length;
+        set({ selected: { input, index: count } });
+        return;
+      }
+      case 'keep':
+        if (hit && occupant?.kind === 'fixed') updateSpec((s) => setFixed(s, hit, null));
+        else if (free(place)) updateSpec((s) => setFixed(s, place, brush));
+        return;
+      case 'empty':
+        if (hit && occupant?.kind === 'forbidden') updateSpec((s) => toggleForbidden(s, hit));
+        else if (free(place)) updateSpec((s) => toggleForbidden(s, place));
+        return;
+      default:
+        return;
+    }
+  }
+
+  function clickResult(result: Result, { hit, place }: Hover) {
+    const { tool, brush } = get();
+    const hitBlock = hit ? blockAt(result.layout, hit) : undefined;
+    switch (tool) {
+      case 'select':
+        if (hitBlock?.type === 'input') void toggleInput(hitBlock.channel ?? 0);
+        return;
+      case 'place':
+        if (place && inside(result.layout.size, place) && !blockAt(result.layout, place))
+          void editResult(place, brush);
+        return;
+      case 'remove':
+        if (hit && hitBlock && hitBlock.type !== 'input' && hitBlock.type !== 'output') void editResult(hit, null);
+        return;
+      default:
+        return;
     }
   }
 
@@ -110,7 +257,6 @@ export const useStore = create<State>((set, get) => {
     session: null,
     spec: null,
     specPath: '',
-    preview: null,
     specError: null,
     notice: null,
     textures: new Map(),
@@ -123,8 +269,17 @@ export const useStore = create<State>((set, get) => {
     log: [],
     solveError: null,
     result: null,
+    verification: null,
     sim: null,
+    simError: null,
+    view: 'spec',
     topLayer: 64,
+    tool: 'select',
+    selected: null,
+    newInputKind: 'comparator',
+    newOutputKind: 'dust',
+    brush: { type: 'solid' },
+    hover: null,
 
     init: async () => {
       const session = await api.session();
@@ -136,7 +291,16 @@ export const useStore = create<State>((set, get) => {
     loadSpec: async (path) => {
       try {
         const { spec } = await api.loadSpec(path);
-        set({ spec, specPath: path, notice: `Loaded ${path}`, result: null, sim: null, topLayer: spec.size[1] - 1 });
+        set({
+          spec,
+          specPath: path,
+          notice: `Loaded ${path}`,
+          result: null,
+          sim: null,
+          view: 'spec',
+          selected: null,
+          topLayer: spec.size[1] - 1,
+        });
         await checkSpec(spec);
       } catch (error) {
         set({ notice: `Could not load: ${errorText(error)}` });
@@ -158,7 +322,7 @@ export const useStore = create<State>((set, get) => {
       const current = get().spec;
       if (!current) return;
       const spec = change(current);
-      set({ spec });
+      set({ spec, view: 'spec' });
       clearTimeout(checkTimer);
       checkTimer = setTimeout(() => void checkSpec(spec), CHECK_DELAY_MS);
     },
@@ -193,7 +357,43 @@ export const useStore = create<State>((set, get) => {
     },
 
     setTopLayer: (y) => set({ topLayer: y }),
-    setSim: (sim) => set({ sim }),
-    clearResult: () => set({ result: null, sim: null }),
+    setSim: (sim) => set({ sim, simError: null }),
+    setSimError: (error) => set({ simError: error }),
+    setView: (view) => set({ view, tool: 'select', selected: null }),
+    setTool: (tool) => set({ tool, selected: tool === 'select' ? get().selected : null }),
+    setNewInputKind: (kind) => set({ newInputKind: kind }),
+    setNewOutputKind: (kind) => set({ newOutputKind: kind }),
+    setBrush: (block) => set({ brush: block }),
+    setHover: (hover) => set({ hover }),
+    select: (port) => set({ selected: port }),
+
+    click: (hover) => {
+      const { view, spec, result } = get();
+      if (view === 'result' && result) clickResult(result, hover);
+      else if (spec) clickSpec(spec, hover);
+    },
+
+    rotate: () => {
+      const { selected, view, hover, result, updateSpec } = get();
+      if (view === 'spec' && selected) {
+        updateSpec((s) => rotatePort(s, selected));
+        return;
+      }
+      if (view === 'result' && result && hover?.hit) {
+        const block = blockAt(result.layout, hover.hit);
+        if (block && block.type !== 'input' && block.type !== 'output') {
+          void editResult(hover.hit, rotateBlock(block));
+          return;
+        }
+      }
+      set({ brush: rotateBlock(get().brush) });
+    },
+
+    deleteSelected: () => {
+      const { selected, updateSpec } = get();
+      if (!selected) return;
+      updateSpec((s) => removePort(s, selected));
+      set({ selected: null });
+    },
   };
 });
