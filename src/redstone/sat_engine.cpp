@@ -72,6 +72,12 @@ SatPortfolio::~SatPortfolio() {
     worker->solver.disconnect_terminator();
 }
 
+void SatPortfolio::prefer(const std::vector<int> &lits) {
+  for (auto &worker : this->workers_)
+    for (int lit : lits)
+      worker->solver.phase(lit);
+}
+
 void SatPortfolio::add(const std::vector<std::vector<int>> &clauses,
                        std::size_t from) {
   auto add_to = [&](Worker &worker) {

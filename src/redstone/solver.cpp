@@ -349,6 +349,8 @@ SolveReport solve_sat(const Spec &spec, const SolverOptions &options,
     if (cancelled())
       return finish_sat(SolveStatus::Cancelled);
     portfolio.add(encoder.clauses(), clauses_sent);
+    if (clauses_sent == 0)
+      portfolio.prefer(encoder.preferred_literals());
     clauses_sent = encoder.clauses().size();
 
     SatPortfolio::Outcome outcome = portfolio.solve(deadline, options.cancel);

@@ -21,6 +21,8 @@ public:
   SatPortfolio(const SatPortfolio &) = delete;
   SatPortfolio &operator=(const SatPortfolio &) = delete;
 
+  // Makes every solver try these literals true first.
+  void prefer(const std::vector<int> &lits);
   // Adds clauses[from..] (DIMACS literals) to every solver.
   void add(const std::vector<std::vector<int>> &clauses, std::size_t from);
   Outcome solve(std::chrono::steady_clock::time_point deadline,

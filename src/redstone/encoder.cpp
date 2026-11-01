@@ -1603,6 +1603,14 @@ void CircuitEncoder::limit_blocks(int max_blocks) {
   this->impl_->limit_blocks(max_blocks);
 }
 
+std::vector<int> CircuitEncoder::preferred_literals() const {
+  std::vector<int> lits;
+  for (const Impl::Cell &c : this->impl_->cells)
+    if (!c.fixed && !c.kind[kAir].is_constant())
+      lits.push_back(c.kind[kAir].dimacs());
+  return lits;
+}
+
 int CircuitEncoder::variable_count() const {
   return this->impl_->b.variable_count();
 }

@@ -23,6 +23,9 @@ public:
   sat::BoolVar var() const { return this->var_; }
   sat::LinearExpr expr() const;
   Lit operator!() const;
+  // DIMACS literal (variable index + 1, negative when negated); variables
+  // only.
+  int dimacs() const;
 
 private:
   sat::BoolVar var_;

@@ -86,6 +86,9 @@ public:
   // The model as CNF (DIMACS literals: variable index + 1, negative = not).
   const std::vector<std::vector<int>> &clauses() const;
   int variable_count() const;
+  // Literals a SAT solver should try first: "this cell is air" for every
+  // cell the solver fills, so first circuits come out sparse.
+  std::vector<int> preferred_literals() const;
 
 private:
   struct Impl;

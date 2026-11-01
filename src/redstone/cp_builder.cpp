@@ -19,6 +19,8 @@ sat::LinearExpr Lit::expr() const {
   return sat::LinearExpr(this->var_);
 }
 
+int Lit::dimacs() const { return rs::cp::dimacs(this->var_); }
+
 Lit Lit::operator!() const {
   std::optional<bool> negated;
   if (this->constant_)
