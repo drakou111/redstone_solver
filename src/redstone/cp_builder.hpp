@@ -29,64 +29,63 @@ private:
   std::optional<bool> constant_;
 };
 
-// An integer linear expression with known bounds; constant when lo == hi.
+// A bounded integer in order encoding: ge(k) is the literal "x >= k".
+// Every constraint on it is a clause, so the whole model is plain CNF.
 class Int {
 public:
   Int() = default;
-  Int(sat::LinearExpr expr, int lo, int hi)
-      : expr_(std::move(expr)), lo_(lo), hi_(hi) {}
-  static Int constant(int value) {
-    return {sat::LinearExpr(value), value, value};
-  }
+  static Int constant(int value) { return Int(value, {}); }
+  Int(int lo, std::vector<Lit> levels) : lo_(lo), ge_(std::move(levels)) {}
 
-  bool is_constant() const { return this->lo_ == this->hi_; }
   int lo() const { return this->lo_; }
-  int hi() const { return this->hi_; }
-  const sat::LinearExpr &expr() const { return this->expr_; }
-
-  Int operator+(const Int &other) const;
-  Int operator-(const Int &other) const;
-  Int plus(int offset) const;
-  // Narrows the bounds when the caller knows more than interval arithmetic.
-  Int clamped(int lo, int hi) const;
+  int hi() const { return this->lo_ + static_cast<int>(this->ge_.size()); }
+  bool is_constant() const { return this->ge_.empty(); }
+  // Constant outside the range; callers fold it.
+  Lit ge(int k) const;
+  Int plus(int offset) const { return {this->lo_ + offset, this->ge_}; }
+  const std::vector<Lit> &levels() const { return this->ge_; }
 
 private:
-  sat::LinearExpr expr_{0};
   int lo_ = 0;
-  int hi_ = 0;
+  std::vector<Lit> ge_; // ge_[i] means x >= lo + 1 + i
 };
 
-// Builds reified helper constraints, folding constants so impossible cases
-// add nothing to the model.
+// Builds the model as clauses, folding constants so impossible cases add
+// nothing.
 class Builder {
 public:
   explicit Builder(sat::CpModelBuilder &model);
 
   sat::CpModelBuilder &model() { return this->model_; }
+  const std::vector<std::vector<int>> &clauses() const {
+    return this->clauses_;
+  }
 
   Lit constant(bool value) const;
   Lit new_bool();
   Int new_int(int lo, int hi);
-  // value * lit
+  // value * lit, value >= 0
   Int scaled(Lit lit, int value);
 
   Lit all(std::vector<Lit> lits);
   Lit any(std::vector<Lit> lits);
-  // OR of literals of which at most one can be true (a linear sum).
-  Lit any_exclusive(const std::vector<Lit> &lits);
+  Lit any_exclusive(const std::vector<Lit> &lits) { return this->any(lits); }
   Lit exclusive_or(Lit a, Lit b);
   Lit equal(Lit a, Lit b) { return !this->exclusive_or(a, b); }
-  Lit positive(const Int &x); // x > 0, for x >= 0
+  Lit positive(const Int &x) { return x.ge(1); }
   Lit greater(const Int &a, const Int &b);
   Lit not_equal(const Int &a, const Int &b);
   Lit equals_value(const Int &x, int value);
 
   Int select(Lit condition, const Int &x); // condition ? x : 0
   Int if_else(Lit condition, const Int &yes, const Int &no);
-  Int max_of(std::vector<Int> xs);
-  // Sum of terms of which at most one is non-zero.
-  static Int exclusive_sum(const std::vector<Int> &terms);
+  Int max_of(const std::vector<Int> &xs);
+  // Sum of non-negative terms of which at most one is non-zero.
+  Int exclusive_sum(const std::vector<Int> &terms) {
+    return this->max_of(terms);
+  }
 
+  void exactly_one(const std::vector<Lit> &lits);
   // The `when` literals form a conjunction; constants are folded.
   void require(Lit lit, const std::vector<Lit> &when = {});
   void require_equal(const Int &a, const Int &b,
@@ -94,18 +93,23 @@ public:
   void require_equal(Lit a, Lit b, const std::vector<Lit> &when = {});
   void require_in_range(const Int &x, int lo, int hi,
                         const std::vector<Lit> &when = {});
+  // a - b >= gap
+  void require_gap(const Int &a, const Int &b, int gap,
+                   const std::vector<Lit> &when = {});
+  // result == a - b, given a >= b
+  void require_difference(const Int &result, const Int &a, const Int &b,
+                          const std::vector<Lit> &when = {});
   // At least one of `lits` holds.
   void require_any(const std::vector<Lit> &lits);
 
 private:
-  // Returns false if some literal is constant false (constraint vacuous).
-  bool enforcement(const std::vector<Lit> &when,
-                   std::vector<sat::BoolVar> &out) const;
+  void clause(const std::vector<Lit> &lits);
 
   sat::CpModelBuilder &model_;
   Lit true_;
   Lit false_;
   std::map<std::vector<int>, Lit> and_cache_;
+  std::vector<std::vector<int>> clauses_; // DIMACS literals
 };
 
 } // namespace rs::cp

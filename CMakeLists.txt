@@ -73,6 +73,10 @@ target_link_libraries(redstone_bench PRIVATE redstone_core)
 target_compile_options(redstone_bench PRIVATE ${REDSTONE_WARNINGS})
 redstone_copy_runtime_dlls(redstone_bench)
 
+add_executable(redstone_satbench src/bench/sat_main.cpp)
+target_link_libraries(redstone_satbench PRIVATE redstone_core)
+redstone_copy_runtime_dlls(redstone_satbench)
+
 # miniz reads block textures from the user's Minecraft jar.
 FetchContent_Declare(miniz
         GIT_REPOSITORY https://github.com/richgel999/miniz.git

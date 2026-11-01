@@ -275,7 +275,7 @@ struct CircuitEncoder::Impl {
       } else {
         for (Lit &lit : c.kind)
           lit = this->b.constant(false);
-        std::vector<sat::BoolVar> kind_vars;
+        std::vector<Lit> kind_vars;
         for (Kind k : palette) {
           // Optional build style: the bottom layer only holds supports,
           // which removes many choices the search would otherwise explore.
@@ -283,28 +283,28 @@ struct CircuitEncoder::Impl {
               k != kSolid && k != kGlass)
             continue;
           c.kind[k] = this->b.new_bool();
-          kind_vars.push_back(c.kind[k].var());
+          kind_vars.push_back(c.kind[k]);
         }
-        this->model.AddExactlyOne(kind_vars);
+        this->b.exactly_one(kind_vars);
 
         if (any_directional) {
-          std::vector<sat::BoolVar> facing_vars;
+          std::vector<Lit> facing_vars;
           for (Dir d : kAllDirs) {
             c.facing[index_of(d)] = this->b.new_bool();
-            facing_vars.push_back(c.facing[index_of(d)].var());
+            facing_vars.push_back(c.facing[index_of(d)]);
           }
-          this->model.AddExactlyOne(facing_vars);
+          this->b.exactly_one(facing_vars);
         } else {
           c.facing = this->constant_facing(Dir::Down);
         }
 
         if (c.may(kRepeater)) {
-          std::vector<sat::BoolVar> delay_vars;
+          std::vector<Lit> delay_vars;
           for (Lit &lit : c.delay) {
             lit = this->b.new_bool();
-            delay_vars.push_back(lit.var());
+            delay_vars.push_back(lit);
           }
-          this->model.AddExactlyOne(delay_vars);
+          this->b.exactly_one(delay_vars);
         } else {
           c.delay = this->constant_delay();
         }
@@ -527,7 +527,7 @@ struct CircuitEncoder::Impl {
         return;
       }
       if (ranked)
-        this->b.require_in_range(rank[p] - rank[q], gap, n, when);
+        this->b.require_gap(rank[p], rank[q], gap, when);
     };
 
     for (int p = 0; p < n; ++p) {
@@ -648,7 +648,7 @@ struct CircuitEncoder::Impl {
             diode.push_back(
                 Int::constant(this->input_value(s, c) > 0 ? kMaxSignal : 0));
         }
-        Int diode_sum = cp::Builder::exclusive_sum(diode);
+        Int diode_sum = this->b.exclusive_sum(diode);
 
         std::vector<Int> weak{
             diode_sum, this->b.scaled(c.kind[kRedstoneBlock], kMaxSignal)};
@@ -659,8 +659,8 @@ struct CircuitEncoder::Impl {
           if (d == Dir::Up)
             strong.push_back(this->b.scaled(k.lit, kMaxSignal));
         }
-        x.weak[i][di] = cp::Builder::exclusive_sum(weak);
-        x.strong[i][di] = cp::Builder::exclusive_sum(strong);
+        x.weak[i][di] = this->b.exclusive_sum(weak);
+        x.strong[i][di] = this->b.exclusive_sum(strong);
 
         if (d == Dir::Down)
           x.dust_emit[i][di] = s.dust[i];
@@ -700,13 +700,13 @@ struct CircuitEncoder::Impl {
     auto signal_without_dust = [&](int j, Dir d) {
       if (j < 0)
         return Int::constant(0);
-      return cp::Builder::exclusive_sum(
+      return this->b.exclusive_sum(
           {x.weak[j][index_of(d)], x.conducted_without_dust[j]});
     };
     auto signal = [&](int j, Dir d) {
       if (j < 0)
         return Int::constant(0);
-      return cp::Builder::exclusive_sum({x.weak[j][index_of(d)],
+      return this->b.exclusive_sum({x.weak[j][index_of(d)],
                                          x.dust_emit[j][index_of(d)],
                                          x.conducted[j]});
     };
@@ -828,16 +828,16 @@ struct CircuitEncoder::Impl {
                this->control_signal(s, x, from_side(p, left), opposite(left))});
           side_terms.push_back(this->b.select(facing, side));
         }
-        Int rear = cp::Builder::exclusive_sum(rear_terms);
-        Int side = cp::Builder::exclusive_sum(side_terms);
+        Int rear = this->b.exclusive_sum(rear_terms);
+        Int side = this->b.exclusive_sum(side_terms);
         Int calc = this->b.new_int(0, kMaxSignal);
         Lit is_comparator = c.kind[kComparator];
         Lit passes =
             this->b.all({this->b.positive(rear), !this->b.greater(side, rear)});
         this->b.require_equal(calc, Int::constant(0), {!is_comparator});
         this->b.require_equal(calc, Int::constant(0), {is_comparator, !passes});
-        this->b.require_equal(calc, rear - side,
-                              {is_comparator, passes, c.subtract});
+        this->b.require_difference(calc, rear, side,
+                                   {is_comparator, passes, c.subtract});
         this->b.require_equal(calc, rear, {is_comparator, passes, !c.subtract});
         s.calc[i] = calc;
       }
@@ -884,7 +884,7 @@ struct CircuitEncoder::Impl {
     if (j < 0)
       return Int::constant(0);
     const Cell &c = this->cells[j];
-    return cp::Builder::exclusive_sum(
+    return this->b.exclusive_sum(
         {x.strong[j][index_of(d)],
          this->b.scaled(c.kind[kRedstoneBlock], kMaxSignal), s.dust[j]});
   }
@@ -1174,7 +1174,10 @@ struct CircuitEncoder::Impl {
                                : sat::SolutionBooleanValue(response, lit.var());
     };
     auto int_value = [&](const Int &x) {
-      return static_cast<int>(sat::SolutionIntegerValue(response, x.expr()));
+      int result = x.lo();
+      for (const Lit &level : x.levels())
+        result += value(level) ? 1 : 0;
+      return result;
     };
 
     EncodedSolution solution{this->base, 0, {}, {}, {}};
@@ -1296,5 +1299,9 @@ CircuitEncoder::decode(const sat::CpSolverResponse &response) const {
 }
 
 int CircuitEncoder::horizon() const { return this->impl_->horizon; }
+
+const std::vector<std::vector<int>> &CircuitEncoder::clauses() const {
+  return this->impl_->b.clauses();
+}
 
 } // namespace rs

@@ -70,6 +70,8 @@ public:
   EncodedSolution
   decode(const operations_research::sat::CpSolverResponse &response) const;
   int horizon() const;
+  // The model as CNF (DIMACS literals: variable index + 1, negative = not).
+  const std::vector<std::vector<int>> &clauses() const;
 
 private:
   struct Impl;
