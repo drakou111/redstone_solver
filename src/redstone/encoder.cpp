@@ -184,7 +184,11 @@ struct CircuitEncoder::Impl {
 
   // Scratch values that only live while one slice is being built.
   struct SliceScratch {
-    std::vector<std::array<Int, kDirCount>> weak, strong, dust_emit;
+    // Weak and strong power are kept as the list of their parts (at most
+    // one non-zero): every reader takes a max anyway, so building them as
+    // values would only add helper variables.
+    std::vector<std::array<std::vector<Int>, kDirCount>> weak, strong;
+    std::vector<std::array<Int, kDirCount>> dust_emit;
     std::vector<Int> conducted_without_dust, conducted;
     std::vector<std::array<std::optional<Lit>, kDirCount>> signal_positive;
   };
@@ -767,8 +771,8 @@ struct CircuitEncoder::Impl {
           if (d == Dir::Up)
             strong.push_back(this->b.scaled(k.lit, kMaxSignal));
         }
-        x.weak[i][di] = this->b.exclusive_sum(weak);
-        x.strong[i][di] = this->b.exclusive_sum(strong);
+        x.weak[i][di] = std::move(weak);
+        x.strong[i][di] = std::move(strong);
 
         if (d == Dir::Down)
           x.dust_emit[i][di] = s.dust[i];
@@ -779,39 +783,47 @@ struct CircuitEncoder::Impl {
       }
     }
 
-    auto neighbor_value =
-        [&](const std::vector<std::array<Int, kDirCount>> &table, Vec3 p,
-            Dir k) {
-          int j = this->cell_index(p + offset(k));
-          return j < 0 ? Int::constant(0) : table[j][index_of(opposite(k))];
-        };
-
     // Power held by conductors (Java getDirectSignalTo), with and without dust.
     for (int i = 0; i < n; ++i) {
       const Cell &c = this->cells[i];
       if (c.conductor.is_false())
         continue;
-      std::vector<Int> strong_in{Int::constant(0)};
+      std::vector<Int> strong_in;
       std::vector<Int> dust_in;
       for (Dir k : kAllDirs) {
-        strong_in.push_back(neighbor_value(x.strong, c.position, k));
-        dust_in.push_back(neighbor_value(x.dust_emit, c.position, k));
+        int j = this->cell_index(c.position + offset(k));
+        if (j < 0)
+          continue;
+        const std::vector<Int> &parts = x.strong[j][index_of(opposite(k))];
+        strong_in.insert(strong_in.end(), parts.begin(), parts.end());
+        dust_in.push_back(x.dust_emit[j][index_of(opposite(k))]);
       }
-      Int without_dust = this->b.max_of(strong_in);
+      Int without_dust = this->b.new_int(0, kMaxSignal);
+      this->b.require_equal_max(without_dust, strong_in, {c.conductor});
+      this->b.require_in_range(without_dust, 0, 0, {!c.conductor});
       dust_in.push_back(without_dust);
-      Int with_dust = this->b.max_of(dust_in);
-      x.conducted_without_dust[i] = this->b.select(c.conductor, without_dust);
-      x.conducted[i] = this->b.select(c.conductor, with_dust);
+      Int with_dust = this->b.new_int(0, kMaxSignal);
+      this->b.require_equal_max(with_dust, dust_in, {c.conductor});
+      this->b.require_in_range(with_dust, 0, 0, {!c.conductor});
+      x.conducted_without_dust[i] = without_dust;
+      x.conducted[i] = with_dust;
     }
+
+    // The parts of Java Level.getSignal from cell j towards d.
+    auto signal_parts = [&](int j, Dir d) {
+      std::vector<Int> parts;
+      if (j < 0)
+        return parts;
+      parts = x.weak[j][index_of(d)];
+      parts.push_back(x.dust_emit[j][index_of(d)]);
+      parts.push_back(x.conducted[j]);
+      return parts;
+    };
 
     // Java Level.getSignal from cell j towards d (dust reads the same without
     // dust's own contributions: weak and conducted_without_dust).
     auto signal = [&](int j, Dir d) {
-      if (j < 0)
-        return Int::constant(0);
-      return this->b.exclusive_sum({x.weak[j][index_of(d)],
-                                    x.dust_emit[j][index_of(d)],
-                                    x.conducted[j]});
+      return this->b.exclusive_sum(signal_parts(j, d));
     };
     auto signal_positive = [&](int j, Dir d) {
       if (j < 0)
@@ -819,10 +831,12 @@ struct CircuitEncoder::Impl {
       std::optional<Lit> &cached = x.signal_positive[j][index_of(d)];
       // signal(j, d) > 0 without building the whole signal: its parts are
       // all non-negative, so it is positive when any part is.
-      if (!cached)
-        cached = this->b.any({x.weak[j][index_of(d)].ge(1),
-                              x.dust_emit[j][index_of(d)].ge(1),
-                              x.conducted[j].ge(1)});
+      if (!cached) {
+        std::vector<Lit> positive;
+        for (const Int &part : signal_parts(j, d))
+          positive.push_back(part.ge(1));
+        cached = this->b.any(positive);
+      }
       return *cached;
     };
     auto from_side = [&](Vec3 p, Dir k) {
@@ -841,7 +855,8 @@ struct CircuitEncoder::Impl {
         int j = from_side(p, k);
         if (j < 0)
           continue;
-        candidates.push_back(x.weak[j][index_of(opposite(k))]);
+        const std::vector<Int> &weak = x.weak[j][index_of(opposite(k))];
+        candidates.insert(candidates.end(), weak.begin(), weak.end());
         candidates.push_back(x.conducted_without_dust[j]);
       }
       Lit covered = this->cell_at(p + offset(Dir::Up)).conductor;
@@ -898,10 +913,7 @@ struct CircuitEncoder::Impl {
         w.insert(w.end(), extra);
         return w;
       };
-      std::vector<Int> parts;
-      if (behind >= 0)
-        parts = {x.weak[behind][index_of(d)], x.dust_emit[behind][index_of(d)],
-                 x.conducted[behind]};
+      std::vector<Int> parts = signal_parts(behind, d);
       std::vector<Lit> full;
       for (const Int &part : parts)
         full.push_back(part.ge(kMaxSignal));
@@ -1083,8 +1095,10 @@ struct CircuitEncoder::Impl {
     if (j < 0)
       return {};
     const Cell &c = this->cells[j];
-    return {x.strong[j][index_of(d)],
-            this->b.scaled(c.kind[kRedstoneBlock], kMaxSignal), s.dust[j]};
+    std::vector<Int> parts = x.strong[j][index_of(d)];
+    parts.push_back(this->b.scaled(c.kind[kRedstoneBlock], kMaxSignal));
+    parts.push_back(s.dust[j]);
+    return parts;
   }
 
   // analog(s, j) == r under `when`, as clauses only.
