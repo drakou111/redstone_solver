@@ -1,0 +1,17 @@
+# 1-bit full adder: IN1 + IN2 + IN3 (carry in) -> OUT1 (sum), OUT2 (carry out).
+# Repeater inputs give clean on/off signals (strength 15 when on).
+size 7 4 5
+input IN1 repeater 0 1 0 east
+input IN2 repeater 0 1 2 east
+input IN3 repeater 0 1 4 east
+output OUT1 dust 6 1 1
+output OUT2 dust 6 1 3
+timing 12
+row IN1(ss0),IN2(ss0),IN3(ss0) -> OUT1(ss0),OUT2(ss0)
+row IN1(ss15),IN2(ss0),IN3(ss0) -> OUT1(ss1..15),OUT2(ss0)
+row IN1(ss0),IN2(ss15),IN3(ss0) -> OUT1(ss1..15),OUT2(ss0)
+row IN1(ss0),IN2(ss0),IN3(ss15) -> OUT1(ss1..15),OUT2(ss0)
+row IN1(ss15),IN2(ss15),IN3(ss0) -> OUT1(ss0),OUT2(ss1..15)
+row IN1(ss15),IN2(ss0),IN3(ss15) -> OUT1(ss0),OUT2(ss1..15)
+row IN1(ss0),IN2(ss15),IN3(ss15) -> OUT1(ss0),OUT2(ss1..15)
+row IN1(ss15),IN2(ss15),IN3(ss15) -> OUT1(ss1..15),OUT2(ss1..15)
