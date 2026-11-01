@@ -182,3 +182,45 @@ row IN1(ss0) -> OUT1(ss1..15)
     CHECK(report.solution->block_count == 4);
   }
 }
+
+TEST_CASE("both solver engines place free ports inside their regions") {
+  Spec spec = parse_spec(R"(
+size 4 2 3
+input IN1 repeater free
+output OUT1 dust free
+region IN1 0 1 0..2
+region OUT1 3 1 0..2
+palette solid glass dust torch repeater comparator
+row IN1(ss15) -> OUT1(ss0)
+row IN1(ss0) -> OUT1(ss1..15)
+)");
+  for (SolverEngine engine : {SolverEngine::Sat, SolverEngine::CpSat}) {
+    SolverOptions options;
+    options.engine = engine;
+    options.time_limit_seconds = 60.0;
+    SolveReport report = solve(spec, options);
+    REQUIRE(report.status == SolveStatus::Optimal);
+    // Torch and its block plus supports under the input and output.
+    CHECK(report.solution->block_count == 4);
+
+    const World &layout = report.solution->layout;
+    int inputs = 0;
+    int outputs = 0;
+    for (int i = 0; i < layout.volume(); ++i) {
+      Vec3 p = layout.position_of(i);
+      const Block &block = layout.at(p);
+      if (block.type == BlockType::Input) {
+        ++inputs;
+        CHECK(p.x == 0);
+        CHECK(p.y == 1);
+      }
+      if (block.type == BlockType::Output) {
+        ++outputs;
+        CHECK(p.x == 3);
+      }
+    }
+    CHECK(inputs == 1);
+    CHECK(outputs == 1);
+    CHECK_FALSE(verify_layout(layout, spec, spec.verification_vectors()));
+  }
+}

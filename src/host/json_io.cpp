@@ -78,6 +78,14 @@ SignalRange range_from(const Json &json) {
   return r;
 }
 
+// Cells a free port may occupy; missing or empty for a fixed port.
+std::vector<Vec3> region_from(const Json &port) {
+  std::vector<Vec3> cells;
+  for (const Json &cell : port.value("region", Json::array()))
+    cells.push_back(vec3_from(cell, "region cell"));
+  return cells;
+}
+
 Json optional_int(const std::optional<int> &value) {
   return value ? Json(*value) : Json(nullptr);
 }
@@ -91,16 +99,24 @@ std::optional<int> optional_int_from(const Json &json, const char *what) {
 } // namespace
 
 Json to_json(const Spec &spec) {
+  auto region = [](const std::vector<Vec3> &cells) {
+    Json out = Json::array();
+    for (Vec3 p : cells)
+      out.push_back(vec3(p));
+    return out;
+  };
   Json inputs = Json::array();
   for (const InputPort &port : spec.inputs)
     inputs.push_back({{"kind", input_kind_name(port.kind)},
                       {"position", vec3(port.position)},
-                      {"facing", to_string(port.facing)}});
+                      {"facing", to_string(port.facing)},
+                      {"region", region(port.region)}});
   Json outputs = Json::array();
   for (const OutputPort &port : spec.outputs)
     outputs.push_back({{"kind", output_kind_name(port.kind)},
                        {"position", vec3(port.position)},
-                       {"facing", to_string(port.facing)}});
+                       {"facing", to_string(port.facing)},
+                       {"region", region(port.region)}});
   Json rows = Json::array();
   for (const TruthRow &row : spec.rows) {
     Json in = Json::array();
@@ -153,16 +169,16 @@ Spec spec_from_json(const Json &json) {
       fail("unknown input kind");
     spec.inputs.push_back({*kind,
                            vec3_from(field(port, "position"), "position"),
-                           dir_from(field(port, "facing"))});
+                           dir_from(field(port, "facing")), region_from(port)});
   }
   for (const Json &port : field(json, "outputs")) {
     std::optional<OutputKind> kind =
         parse_output_kind(field(port, "kind").get<std::string>());
     if (!kind)
       fail("unknown output kind");
-    spec.outputs.push_back({*kind,
-                            vec3_from(field(port, "position"), "position"),
-                            dir_from(field(port, "facing"))});
+    spec.outputs.push_back(
+        {*kind, vec3_from(field(port, "position"), "position"),
+         dir_from(field(port, "facing")), region_from(port)});
   }
   for (const Json &row : field(json, "rows")) {
     TruthRow truth;

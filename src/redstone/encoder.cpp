@@ -113,9 +113,29 @@ Kind kind_of(const Block &block) {
   }
 }
 
+Kind input_port_kind(InputKind kind) {
+  return kind_of(Block::input(0, kind, Dir::North));
+}
+
+Kind output_port_kind(OutputKind kind) {
+  return kind_of(Block::output(0, kind, Dir::North));
+}
+
+constexpr std::array<Kind, 4> kInputPortKinds{kInputComparator, kInputContainer,
+                                              kInputRepeater, kInputDust};
+constexpr std::array<Kind, 3> kOutputPortKinds{kOutputDust, kOutputRepeater,
+                                               kOutputComparator};
+constexpr std::array<Kind, 4> kDiodePortKinds{
+    kInputComparator, kInputRepeater, kOutputRepeater, kOutputComparator};
+
 bool is_directional(Kind kind) {
   return kind == kTorch || kind == kRepeater || kind == kComparator ||
          kind == kObserver;
+}
+
+bool is_directional_port(Kind kind) {
+  return kind == kInputComparator || kind == kInputRepeater ||
+         kind == kOutputRepeater || kind == kOutputComparator;
 }
 
 bool has_stored_signal(Kind kind) {
@@ -127,8 +147,11 @@ bool has_stored_signal(Kind kind) {
 struct CircuitEncoder::Impl {
   struct Cell {
     Vec3 position{};
+    int index = -1;
     bool fixed = false;
     int channel = kNoChannel; // port channel for fixed cells
+    // Ports the solver may put here: (channel, "the port is here").
+    std::vector<std::pair<int, Lit>> free_inputs, free_outputs;
     std::array<Lit, kKindCount> kind;
     std::array<Lit, kDirCount> facing;
     std::array<Lit, kRepeaterDelays> delay; // delay[k]: repeater delay k + 1
@@ -211,7 +234,9 @@ struct CircuitEncoder::Impl {
       std::vector<Lit> placed;
       for (const Cell &c : this->cells)
         if (!c.fixed)
-          placed.push_back(!c.kind[kAir]);
+          placed.push_back(
+              !this->b.any({c.kind[kAir], this->any_kind(c, kInputPortKinds),
+                            this->any_kind(c, kOutputPortKinds)}));
       this->placed_count = this->b.count_for_upper_bound(placed);
     }
     this->b.require(!this->placed_count->ge(max_blocks + 1));
@@ -253,6 +278,26 @@ struct CircuitEncoder::Impl {
       any_stored |= has_stored_signal(k);
     }
 
+    // Channels whose region includes each cell.
+    std::vector<std::vector<int>> region_inputs(this->base.volume());
+    std::vector<std::vector<int>> region_outputs(this->base.volume());
+    this->input_at.resize(this->spec.inputs.size());
+    this->output_at.resize(this->spec.outputs.size());
+    for (std::size_t ch = 0; ch < this->spec.inputs.size(); ++ch) {
+      const InputPort &port = this->spec.inputs[ch];
+      for (Vec3 p : port.region)
+        region_inputs[this->base.index_of(p)].push_back(static_cast<int>(ch));
+      if (port.is_free())
+        any_directional |= is_directional_port(input_port_kind(port.kind));
+    }
+    for (std::size_t ch = 0; ch < this->spec.outputs.size(); ++ch) {
+      const OutputPort &port = this->spec.outputs[ch];
+      for (Vec3 p : port.region)
+        region_outputs[this->base.index_of(p)].push_back(static_cast<int>(ch));
+      if (port.is_free())
+        any_directional |= is_directional_port(output_port_kind(port.kind));
+    }
+
     for (int i = 0; i < this->base.volume(); ++i) {
       Vec3 p = this->base.position_of(i);
       const Block &block = this->base.at(p);
@@ -288,7 +333,22 @@ struct CircuitEncoder::Impl {
           c.kind[k] = this->b.new_bool();
           kind_vars.push_back(c.kind[k]);
         }
+        auto port_option = [&](Kind k, int channel, bool input) {
+          if (c.kind[k].is_false()) {
+            c.kind[k] = this->b.new_bool();
+            kind_vars.push_back(c.kind[k]);
+          }
+          Lit at = this->b.new_bool();
+          (input ? c.free_inputs : c.free_outputs).push_back({channel, at});
+          (input ? this->input_at : this->output_at)[channel].push_back(
+              {i, at});
+        };
+        for (int ch : region_inputs[i])
+          port_option(input_port_kind(this->spec.inputs[ch].kind), ch, true);
+        for (int ch : region_outputs[i])
+          port_option(output_port_kind(this->spec.outputs[ch].kind), ch, false);
         this->b.exactly_one(kind_vars);
+        this->link_free_ports(c);
 
         if (any_directional) {
           std::vector<Lit> facing_vars;
@@ -317,13 +377,49 @@ struct CircuitEncoder::Impl {
             any_stored ? this->b.new_int(0, kMaxSignal) : Int::constant(0);
       }
       c.position = p;
+      c.index = i;
     }
+    for (const auto &options : this->input_at)
+      if (!options.empty())
+        this->exactly_one_at(options);
+    for (const auto &options : this->output_at)
+      if (!options.empty())
+        this->exactly_one_at(options);
 
     for (Cell &c : this->cells)
       this->derive(c);
     this->derive(this->air_cell);
     for (Cell &c : this->cells)
       this->derive_dust_shape(c);
+  }
+
+  // A port kind holds in a cell exactly when one of the ports of that kind
+  // is placed there, and at most one port is.
+  void link_free_ports(const Cell &c) {
+    std::vector<Lit> all_ats;
+    for (int k = kInputComparator; k <= kOutputComparator; ++k) {
+      std::vector<Lit> ats;
+      for (const auto &[ch, at] : c.free_inputs)
+        if (input_port_kind(this->spec.inputs[ch].kind) == k)
+          ats.push_back(at);
+      for (const auto &[ch, at] : c.free_outputs)
+        if (output_port_kind(this->spec.outputs[ch].kind) == k)
+          ats.push_back(at);
+      if (ats.empty())
+        continue;
+      this->b.require_equal(c.kind[k], this->b.any(ats));
+      all_ats.insert(all_ats.end(), ats.begin(), ats.end());
+    }
+    for (std::size_t a = 0; a < all_ats.size(); ++a)
+      for (std::size_t z = a + 1; z < all_ats.size(); ++z)
+        this->b.require_any({!all_ats[a], !all_ats[z]});
+  }
+
+  void exactly_one_at(const std::vector<std::pair<int, Lit>> &options) {
+    std::vector<Lit> lits;
+    for (const auto &[cell, at] : options)
+      lits.push_back(at);
+    this->b.exactly_one(lits);
   }
 
   Cell constant_cell(Kind kind) const {
@@ -435,7 +531,8 @@ struct CircuitEncoder::Impl {
       // Placement rules apply to kept blocks too (their literals are
       // constants, so this costs nothing for them).
       const auto &k = c.kind;
-      for (Kind diode : {kRepeater, kComparator}) {
+      for (Kind diode : {kRepeater, kComparator, kInputComparator,
+                         kInputRepeater, kOutputRepeater, kOutputComparator}) {
         this->b.require(below.top_support, {k[diode]});
         this->b.require(!c.facing[index_of(Dir::Up)], {k[diode]});
         this->b.require(!c.facing[index_of(Dir::Down)], {k[diode]});
@@ -463,7 +560,8 @@ struct CircuitEncoder::Impl {
 
       if (!c.fixed) {
         // Symmetry breaking: unused settings take a fixed value.
-        this->b.require(c.facing[index_of(Dir::Down)], {!c.directional});
+        this->b.require(c.facing[index_of(Dir::Down)],
+                        {!c.directional, !this->any_kind(c, kDiodePortKinds)});
         this->b.require(c.delay[0], {!k[kRepeater]});
         this->b.require(!c.subtract, {!k[kComparator]});
         Lit stores = this->b.any_exclusive({k[kHopper], k[kBarrel], k[kChest]});
@@ -644,13 +742,15 @@ struct CircuitEncoder::Impl {
           diode.push_back(this->b.scaled(
               this->b.all({k.obs_on, c.facing[index_of(opposite(d))]}),
               kMaxSignal));
-        if (c.facing[di].is_true()) {
-          if (c.kind[kInputComparator].is_true())
-            diode.push_back(Int::constant(this->input_value(s, c)));
-          if (c.kind[kInputRepeater].is_true())
-            diode.push_back(
-                Int::constant(this->input_value(s, c) > 0 ? kMaxSignal : 0));
-        }
+        if (c.may(kInputComparator))
+          diode.push_back(this->b.select(
+              this->b.all({c.kind[kInputComparator], c.facing[di]}),
+              this->input_signal(s, c)));
+        if (c.may(kInputRepeater))
+          diode.push_back(
+              this->b.scaled(this->b.all({c.kind[kInputRepeater], c.facing[di],
+                                          this->input_signal(s, c).ge(1)}),
+                             kMaxSignal));
         Int diode_sum = this->b.exclusive_sum(diode);
 
         std::vector<Int> weak{
@@ -754,8 +854,12 @@ struct CircuitEncoder::Impl {
                 .plus(-1));
       }
       Int strongest = this->b.max_of(candidates);
-      this->b.require_equal(s.dust[i], strongest, {c.dust});
+      this->b.require_equal(s.dust[i], strongest,
+                            {c.dust, !c.kind[kInputDust]});
       this->b.require_equal(s.dust[i], Int::constant(0), {!c.dust});
+      if (c.may(kInputDust))
+        this->b.require_equal(s.dust[i], this->input_signal(s, c),
+                              {c.kind[kInputDust]});
     }
 
     // What a comparator at p sending towards d reads from behind, including
@@ -847,7 +951,29 @@ struct CircuitEncoder::Impl {
     }
 
     s.outputs.clear();
-    for (const OutputPort &port : this->spec.outputs) {
+    for (std::size_t o = 0; o < this->spec.outputs.size(); ++o) {
+      const OutputPort &port = this->spec.outputs[o];
+      if (port.is_free()) {
+        std::vector<Int> readings;
+        for (const auto &[cell, at] : this->output_at[o]) {
+          Vec3 p = this->cells[cell].position;
+          if (port.kind == OutputKind::Dust) {
+            readings.push_back(this->b.select(at, s.dust[cell]));
+            continue;
+          }
+          for (Dir d : kHorizontalDirs) {
+            Lit here = this->b.all({at, this->cells[cell].facing[index_of(d)]});
+            if (here.is_false())
+              continue;
+            readings.push_back(this->b.select(
+                here, port.kind == OutputKind::Comparator
+                          ? rear_reading(p, d)
+                          : signal(this->cell_index(p - offset(d)), d)));
+          }
+        }
+        s.outputs.push_back(this->b.exclusive_sum(readings));
+        continue;
+      }
       int j = this->cell_index(port.position);
       if (port.kind == OutputKind::Dust)
         s.outputs.push_back(s.dust[j]);
@@ -861,13 +987,39 @@ struct CircuitEncoder::Impl {
   }
 
   // Comparator analog reading of a container (or a container-like input).
-  Int analog(const Slice &s, int j) const {
+  Int analog(const Slice &s, int j) {
     if (j < 0)
       return Int::constant(0);
     const Cell &c = this->cells[j];
-    if (c.kind[kInputContainer].is_true())
-      return Int::constant(this->input_value(s, c));
-    return c.stored;
+    return this->b.if_else(c.kind[kInputContainer], this->input_signal(s, c),
+                           c.stored);
+  }
+
+  // Signal of the input port in cell c (0 if none is there).
+  Int input_signal(const Slice &s, const Cell &c) {
+    if (c.fixed) {
+      bool input = this->any_kind(c, kInputPortKinds).is_true();
+      return Int::constant(input ? this->input_value(s, c) : 0);
+    }
+    if (c.free_inputs.empty())
+      return Int::constant(0);
+    std::vector<Lit> levels;
+    for (int k = 1; k <= kMaxSignal; ++k) {
+      std::vector<Lit> placed;
+      for (const auto &[ch, at] : c.free_inputs)
+        if (s.inputs[ch] >= k)
+          placed.push_back(at);
+      levels.push_back(this->b.any(placed));
+    }
+    return {0, std::move(levels)};
+  }
+
+  template <std::size_t N>
+  Lit any_kind(const Cell &c, const std::array<Kind, N> &kinds) {
+    std::vector<Lit> lits;
+    for (Kind k : kinds)
+      lits.push_back(c.kind[k]);
+    return this->b.any(lits);
   }
 
   // A repeater, comparator or strong input at j pointing towards d with output.
@@ -876,10 +1028,11 @@ struct CircuitEncoder::Impl {
       return this->b.constant(false);
     const Cell &c = this->cells[j];
     Lit facing = c.facing[index_of(d)];
-    if (c.kind[kInputComparator].is_true() || c.kind[kInputRepeater].is_true())
-      return this->b.constant(facing.is_true() && this->input_value(s, c) > 0);
-    return this->b.any_exclusive({this->b.all({s.comp[j].rep_on, facing}),
-                                  this->b.all({s.comp_positive[j], facing})});
+    Lit port = this->b.all(
+        {this->b.any({c.kind[kInputComparator], c.kind[kInputRepeater]}),
+         facing, this->input_signal(s, c).ge(1)});
+    return this->b.any({this->b.all({s.comp[j].rep_on, facing}),
+                        this->b.all({s.comp_positive[j], facing}), port});
   }
 
   // Comparator side input from j towards d (Java getControlInputSignal).
@@ -1112,9 +1265,20 @@ struct CircuitEncoder::Impl {
         continue;
       const Block &block = layout.at(c.position);
       Kind kind = kind_of(block);
-      if (block.type == BlockType::Input || block.type == BlockType::Output)
-        throw std::invalid_argument(
-            "layout has a port where the spec has none");
+      if (block.type == BlockType::Input || block.type == BlockType::Output) {
+        bool input = block.type == BlockType::Input;
+        std::optional<Lit> at;
+        for (const auto &[ch, lit] : input ? c.free_inputs : c.free_outputs)
+          if (ch == block.channel)
+            at = lit;
+        if (!at)
+          throw std::invalid_argument(
+              "layout has a port where the spec allows none");
+        lits.push_back(*at);
+        if (is_directional_port(kind))
+          lits.push_back(c.facing[index_of(block.facing)]);
+        continue;
+      }
       lits.push_back(c.kind[kind]);
       if (is_directional(kind))
         lits.push_back(c.facing[index_of(block.facing)]);
@@ -1161,7 +1325,12 @@ struct CircuitEncoder::Impl {
     for (const Cell &c : this->cells) {
       if (c.fixed)
         continue;
-      cost += kBlockCost * (sat::LinearExpr(1) - c.kind[kAir].expr());
+      sat::LinearExpr empty = c.kind[kAir].expr();
+      for (Kind k : kInputPortKinds)
+        empty += c.kind[k].expr();
+      for (Kind k : kOutputPortKinds)
+        empty += c.kind[k].expr();
+      cost += kBlockCost * (sat::LinearExpr(1) - empty);
       for (auto [kind, penalty] : kPreference)
         cost += penalty * c.kind[kind].expr();
       cost += 3 * c.kind[kChest].expr();
@@ -1248,11 +1417,34 @@ struct CircuitEncoder::Impl {
       case kChest:
         block = Block::chest(stored);
         break;
+      case kInputComparator:
+      case kInputContainer:
+      case kInputRepeater:
+      case kInputDust:
+      case kOutputDust:
+      case kOutputRepeater:
+      case kOutputComparator: {
+        bool input = kind <= kInputDust;
+        int channel = -1;
+        for (const auto &[ch, at] : input ? c.free_inputs : c.free_outputs)
+          if (value(at))
+            channel = ch;
+        if (channel < 0)
+          throw std::logic_error("port kind without a placed port");
+        Dir port_facing =
+            is_directional_port(static_cast<Kind>(kind)) ? facing : Dir::North;
+        block = input ? Block::input(channel, this->spec.inputs[channel].kind,
+                                     port_facing)
+                      : Block::output(channel, this->spec.outputs[channel].kind,
+                                      port_facing);
+        break;
+      }
       default:
         throw std::logic_error(
             std::format("cell has no block kind (kind {})", kind));
       }
-      if (block.type != BlockType::Air)
+      if (block.type != BlockType::Air && block.type != BlockType::Input &&
+          block.type != BlockType::Output)
         ++solution.block_count;
       solution.layout.set(c.position, block);
     }
@@ -1284,6 +1476,8 @@ struct CircuitEncoder::Impl {
   int horizon;
   World base{{1, 1, 1}};
   std::vector<Cell> cells;
+  // Free ports: [channel] -> (cell index, "the port is there").
+  std::vector<std::vector<std::pair<int, Lit>>> input_at, output_at;
   Cell air_cell;
   std::vector<Slice> steady_slices;
   std::vector<TransitionData> transitions;

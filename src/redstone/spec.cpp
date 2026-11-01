@@ -4,6 +4,7 @@
 #include <array>
 #include <charconv>
 #include <format>
+#include <map>
 #include <set>
 #include <stdexcept>
 #include <utility>
@@ -88,6 +89,21 @@ Dir parse_dir(std::string_view token) {
 }
 
 // "IN3" -> 2 for prefix "IN".
+// "3" or "1..4" (inclusive).
+std::pair<int, int> parse_span(std::string_view token) {
+  std::size_t dots = token.find("..");
+  if (dots == std::string_view::npos) {
+    int value = parse_int(token, "coordinate");
+    return {value, value};
+  }
+  int lo = parse_int(token.substr(0, dots), "coordinate");
+  int hi = parse_int(token.substr(dots + 2), "coordinate");
+  if (lo > hi)
+    throw std::invalid_argument(
+        std::format("coordinate range '{}' is backwards", token));
+  return {lo, hi};
+}
+
 int parse_port_name(std::string_view token, std::string_view prefix) {
   if (!token.starts_with(prefix))
     throw std::invalid_argument(
@@ -253,11 +269,15 @@ World Spec::base_world() const {
   World world(this->size);
   for (std::size_t i = 0; i < this->inputs.size(); ++i) {
     const InputPort &port = this->inputs[i];
+    if (port.is_free())
+      continue;
     world.set(port.position,
               Block::input(static_cast<int>(i), port.kind, port.facing));
   }
   for (std::size_t i = 0; i < this->outputs.size(); ++i) {
     const OutputPort &port = this->outputs[i];
+    if (port.is_free())
+      continue;
     world.set(port.position,
               Block::output(static_cast<int>(i), port.kind, port.facing));
   }
@@ -294,9 +314,11 @@ void Spec::validate() const {
                       name));
   };
   for (std::size_t i = 0; i < this->inputs.size(); ++i)
-    check_position(this->inputs[i].position, std::format("IN{}", i + 1));
+    if (!this->inputs[i].is_free())
+      check_position(this->inputs[i].position, std::format("IN{}", i + 1));
   for (std::size_t i = 0; i < this->outputs.size(); ++i)
-    check_position(this->outputs[i].position, std::format("OUT{}", i + 1));
+    if (!this->outputs[i].is_free())
+      check_position(this->outputs[i].position, std::format("OUT{}", i + 1));
   for (const auto &[position, block] : this->fixed) {
     check_position(position,
                    std::format("kept {} at ({}, {}, {})", to_string(block),
@@ -308,6 +330,28 @@ void Spec::validate() const {
   for (Vec3 position : this->forbidden)
     check_position(position, std::format("empty cell ({}, {}, {})", position.x,
                                          position.y, position.z));
+
+  // Regions may overlap each other but not fixed cells.
+  auto check_region = [&](const std::vector<Vec3> &region,
+                          std::string_view name) {
+    std::set<std::tuple<int, int, int>> seen;
+    for (Vec3 p : region) {
+      if (p.x < 0 || p.y < 0 || p.z < 0 || p.x >= this->size.x ||
+          p.y >= this->size.y || p.z >= this->size.z)
+        throw std::invalid_argument(
+            std::format("{}'s region is outside the volume", name));
+      if (occupied.contains({p.x, p.y, p.z}))
+        throw std::invalid_argument(std::format(
+            "{}'s region includes a fixed port or a kept/empty cell", name));
+      if (!seen.insert({p.x, p.y, p.z}).second)
+        throw std::invalid_argument(
+            std::format("{}'s region lists a cell twice", name));
+    }
+  };
+  for (std::size_t i = 0; i < this->inputs.size(); ++i)
+    check_region(this->inputs[i].region, std::format("IN{}", i + 1));
+  for (std::size_t i = 0; i < this->outputs.size(); ++i)
+    check_region(this->outputs[i].region, std::format("OUT{}", i + 1));
 
   for (const TruthRow &row : this->rows) {
     if (row.inputs.size() != this->inputs.size() ||
@@ -392,6 +436,9 @@ Spec parse_spec(std::string_view text) {
   Spec spec;
   spec.palette = default_palette();
   std::vector<std::pair<int, std::string_view>> row_lines;
+  // (input?, channel) of ports declared "free" and their region cells.
+  std::set<std::pair<bool, int>> free_ports;
+  std::map<std::pair<bool, int>, std::vector<Vec3>> region_cells;
   std::vector<std::optional<InputPort>> inputs;
   std::vector<std::optional<OutputPort>> outputs;
 
@@ -417,7 +464,9 @@ Spec parse_spec(std::string_view text) {
         need(4, 4);
         spec.size = {coordinate(1), coordinate(2), coordinate(3)};
       } else if (key == "input") {
-        need(6, 7);
+        bool free = w.size() == 4 && w[3] == "free";
+        if (!free)
+          need(6, 7);
         int channel = parse_port_name(w[1], "IN");
         InputPort port;
         std::optional<InputKind> kind = parse_input_kind(w[2]);
@@ -426,6 +475,15 @@ Spec parse_spec(std::string_view text) {
               "unknown input kind '{}' (comparator, repeater, dust, container)",
               w[2]));
         port.kind = *kind;
+        if (free) {
+          free_ports.insert({true, channel});
+          if (static_cast<int>(inputs.size()) <= channel)
+            inputs.resize(channel + 1);
+          if (inputs[channel])
+            throw std::invalid_argument(std::format("{} defined twice", w[1]));
+          inputs[channel] = port;
+          continue;
+        }
         port.position = {coordinate(3), coordinate(4), coordinate(5)};
         bool directional = port.kind == InputKind::Comparator ||
                            port.kind == InputKind::Repeater;
@@ -440,7 +498,9 @@ Spec parse_spec(std::string_view text) {
           throw std::invalid_argument(std::format("{} defined twice", w[1]));
         inputs[channel] = port;
       } else if (key == "output") {
-        need(6, 7);
+        bool free = w.size() == 4 && w[3] == "free";
+        if (!free)
+          need(6, 7);
         int channel = parse_port_name(w[1], "OUT");
         OutputPort port;
         std::optional<OutputKind> kind = parse_output_kind(w[2]);
@@ -448,6 +508,15 @@ Spec parse_spec(std::string_view text) {
           throw std::invalid_argument(std::format(
               "unknown output kind '{}' (dust, repeater, comparator)", w[2]));
         port.kind = *kind;
+        if (free) {
+          free_ports.insert({false, channel});
+          if (static_cast<int>(outputs.size()) <= channel)
+            outputs.resize(channel + 1);
+          if (outputs[channel])
+            throw std::invalid_argument(std::format("{} defined twice", w[1]));
+          outputs[channel] = port;
+          continue;
+        }
         port.position = {coordinate(3), coordinate(4), coordinate(5)};
         if (port.kind != OutputKind::Dust && w.size() != 7)
           throw std::invalid_argument(
@@ -518,6 +587,20 @@ Spec parse_spec(std::string_view text) {
         Vec3 position{coordinate(1), coordinate(2), coordinate(3)};
         spec.fixed.emplace_back(position,
                                 parse_block_words({w.begin() + 4, w.end()}));
+      } else if (key == "region") {
+        need(5, 5);
+        bool input = w[1].starts_with("IN");
+        int channel = parse_port_name(w[1], input ? "IN" : "OUT");
+        std::array<std::pair<int, int>, 3> span;
+        for (int axis = 0; axis < 3; ++axis)
+          span[axis] = parse_span(w[2 + axis]);
+        std::vector<Vec3> &cells = region_cells[{input, channel}];
+        for (int x = span[0].first; x <= span[0].second; ++x)
+          for (int y = span[1].first; y <= span[1].second; ++y)
+            for (int z = span[2].first; z <= span[2].second; ++z)
+              if (std::find(cells.begin(), cells.end(), Vec3{x, y, z}) ==
+                  cells.end())
+                cells.push_back({x, y, z});
       } else if (key == "empty") {
         need(4, 4);
         spec.forbidden.push_back({coordinate(1), coordinate(2), coordinate(3)});
@@ -544,6 +627,25 @@ Spec parse_spec(std::string_view text) {
     if (!outputs[i])
       throw std::invalid_argument(std::format("OUT{} is missing", i + 1));
     spec.outputs.push_back(*outputs[i]);
+  }
+  for (const auto &[port, cells] : region_cells) {
+    std::string name =
+        std::format("{}{}", port.first ? "IN" : "OUT", port.second + 1);
+    if (!free_ports.contains(port))
+      throw std::invalid_argument(
+          std::format("region for {}, which is not declared free", name));
+  }
+  for (const auto &port : free_ports) {
+    auto it = region_cells.find(port);
+    std::string name =
+        std::format("{}{}", port.first ? "IN" : "OUT", port.second + 1);
+    if (it == region_cells.end())
+      throw std::invalid_argument(
+          std::format("{} is free but has no region lines", name));
+    if (port.first)
+      spec.inputs[port.second].region = it->second;
+    else
+      spec.outputs[port.second].region = it->second;
   }
   for (auto [number, row_text] : row_lines) {
     try {
@@ -581,6 +683,11 @@ std::string format_spec(const Spec &spec) {
   text += std::format("size {} {} {}\n", spec.size.x, spec.size.y, spec.size.z);
   for (std::size_t i = 0; i < spec.inputs.size(); ++i) {
     const InputPort &port = spec.inputs[i];
+    if (port.is_free()) {
+      text += std::format("input IN{} {} free\n", i + 1,
+                          input_kind_name(port.kind));
+      continue;
+    }
     Vec3 p = port.position;
     bool directional =
         port.kind == InputKind::Comparator || port.kind == InputKind::Repeater;
@@ -591,6 +698,11 @@ std::string format_spec(const Spec &spec) {
   }
   for (std::size_t i = 0; i < spec.outputs.size(); ++i) {
     const OutputPort &port = spec.outputs[i];
+    if (port.is_free()) {
+      text += std::format("output OUT{} {} free\n", i + 1,
+                          output_kind_name(port.kind));
+      continue;
+    }
     Vec3 p = port.position;
     text += std::format("output OUT{} {} {} {} {}{}\n", i + 1,
                         output_kind_name(port.kind), p.x, p.y, p.z,
@@ -621,6 +733,12 @@ std::string format_spec(const Spec &spec) {
         std::format("keep {} {} {} {}\n", p.x, p.y, p.z, block_words(block));
   for (Vec3 p : spec.forbidden)
     text += std::format("empty {} {} {}\n", p.x, p.y, p.z);
+  for (std::size_t i = 0; i < spec.inputs.size(); ++i)
+    for (Vec3 p : spec.inputs[i].region)
+      text += std::format("region IN{} {} {} {}\n", i + 1, p.x, p.y, p.z);
+  for (std::size_t i = 0; i < spec.outputs.size(); ++i)
+    for (Vec3 p : spec.outputs[i].region)
+      text += std::format("region OUT{} {} {} {}\n", i + 1, p.x, p.y, p.z);
   text += "palette";
   for (BlockType type : spec.palette)
     text += std::format(" {}", palette_name(type));

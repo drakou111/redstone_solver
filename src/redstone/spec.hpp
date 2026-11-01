@@ -34,16 +34,24 @@ struct TruthRow {
   std::vector<SignalRange> outputs; // by output channel
 };
 
+// A port either sits at `position` facing `facing`, or (with a non-empty
+// `region`) the solver picks one of the region's cells and a facing.
 struct InputPort {
   InputKind kind = InputKind::Comparator;
   Vec3 position{};
   Dir facing = Dir::North;
+  std::vector<Vec3> region;
+
+  bool is_free() const { return !this->region.empty(); }
 };
 
 struct OutputPort {
   OutputKind kind = OutputKind::Dust;
   Vec3 position{};
   Dir facing = Dir::North;
+  std::vector<Vec3> region;
+
+  bool is_free() const { return !this->region.empty(); }
 };
 
 // All times are game ticks after the inputs change.
@@ -94,7 +102,8 @@ struct Spec {
   // Min, middle and max of every range, combined per row; used for
   // verification.
   std::vector<InputVector> verification_vectors() const;
-  // Empty world with the ports and fixed blocks placed.
+  // Empty world with the fixed ports and kept blocks placed (ports the
+  // solver places are left out).
   World base_world() const;
   bool palette_contains(BlockType type) const;
 

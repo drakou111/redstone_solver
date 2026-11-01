@@ -12,16 +12,20 @@ export type OutputKind = 'dust' | 'repeater' | 'comparator';
 export const INPUT_KINDS: readonly InputKind[] = ['comparator', 'repeater', 'dust', 'container'];
 export const OUTPUT_KINDS: readonly OutputKind[] = ['dust', 'repeater', 'comparator'];
 
+// A port with a non-empty region is placed by the solver in one of those
+// cells (position and facing are then ignored).
 export interface InputPort {
   kind: InputKind;
   position: Vec3;
   facing: Dir;
+  region: Vec3[];
 }
 
 export interface OutputPort {
   kind: OutputKind;
   position: Vec3;
   facing: Dir;
+  region: Vec3[];
 }
 
 export interface TruthRow {

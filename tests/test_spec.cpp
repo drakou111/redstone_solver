@@ -1,5 +1,8 @@
 #include <catch2/catch_test_macros.hpp>
 
+#include <string>
+#include <vector>
+
 #include "redstone/spec.hpp"
 
 using namespace rs;
@@ -195,4 +198,40 @@ TEST_CASE("kept and empty cells parse, validate and round-trip") {
                              "output OUT1 dust 1 1 0\nkeep 0 0 0 repeater\n"
                              "row -> OUT1(ss0)\n"),
                   std::invalid_argument);
+}
+
+TEST_CASE("free ports take their cells from region lines") {
+  Spec spec = parse_spec(R"(
+size 4 2 3
+input IN1 repeater free
+output OUT1 dust 3 1 1
+region IN1 0 1 0..2
+region IN1 0 1 1
+palette solid dust torch
+row IN1(ss15) -> OUT1(ss0)
+row IN1(ss0) -> OUT1(ss1..15)
+)");
+  REQUIRE(spec.inputs[0].is_free());
+  CHECK(spec.inputs[0].region ==
+        std::vector<Vec3>{{0, 1, 0}, {0, 1, 1}, {0, 1, 2}});
+  CHECK_FALSE(spec.outputs[0].is_free());
+  // Free ports are not part of the base world.
+  CHECK(spec.base_world().at({0, 1, 0}).type == BlockType::Air);
+
+  Spec again = parse_spec(format_spec(spec));
+  CHECK(again.inputs[0].region == spec.inputs[0].region);
+  CHECK(again.inputs[0].kind == InputKind::Repeater);
+}
+
+TEST_CASE("free port regions are checked") {
+  auto spec_with = [](const std::string &lines) {
+    return "size 4 2 3\ninput IN1 dust free\noutput OUT1 dust 3 1 1\n" + lines +
+           "\nrow IN1(ss0) -> OUT1(ss0)\n";
+  };
+  CHECK_THROWS(parse_spec(spec_with("")));                    // no region
+  CHECK_THROWS(parse_spec(spec_with("region IN1 4 1 0")));    // outside
+  CHECK_THROWS(parse_spec(spec_with("region IN1 3 1 1")));    // on OUT1
+  CHECK_THROWS(parse_spec(spec_with("region IN1 2..1 1 0"))); // backwards
+  CHECK_THROWS(parse_spec(spec_with("region IN1 0 1 0\nregion OUT1 0 1 1")));
+  CHECK_NOTHROW(parse_spec(spec_with("region IN1 0..1 1 0..2")));
 }

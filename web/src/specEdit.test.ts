@@ -9,15 +9,18 @@ import {
   rotateBlock,
   rotatePort,
   setFixed,
+  setPortFree,
+  specWorld,
   toggleForbidden,
+  toggleRegionCell,
 } from './specEdit';
 import type { Spec } from './types';
 
 function spec(): Spec {
   return {
     size: [4, 2, 2],
-    inputs: [{ kind: 'comparator', position: [0, 1, 0], facing: 'east' }],
-    outputs: [{ kind: 'dust', position: [3, 1, 0], facing: 'north' }],
+    inputs: [{ kind: 'comparator', position: [0, 1, 0], facing: 'east', region: [] }],
+    outputs: [{ kind: 'dust', position: [3, 1, 0], facing: 'north', region: [] }],
     rows: [{ inputs: [[1, 15]], outputs: [[0, 0]] }],
     timing: { earliest: null, latest: null, holdPrevious: false, settle: 4, horizon: 8 },
     palette: ['solid'],
@@ -86,5 +89,38 @@ describe('blocks', () => {
     const world = { size: [2, 1, 1] as [number, number, number], blocks: [{ type: 'solid' as const, position: [0, 0, 0] as [number, number, number] }] };
     expect(editWorld(world, [0, 0, 0], null).blocks).toEqual([]);
     expect(editWorld(world, [1, 0, 0], { type: 'glass' }).blocks).toHaveLength(2);
+  });
+});
+
+describe('ports the solver places', () => {
+  const input = { input: true, index: 0 };
+
+  it('start with a region holding their current cell and leave the world', () => {
+    const s = setPortFree(spec(), input, true);
+    expect(s.inputs[0]?.region).toEqual([[0, 1, 0]]);
+    expect(occupantAt(s, [0, 1, 0])).toBeNull();
+    expect(specWorld(s).blocks.some((b) => b.type === 'input')).toBe(false);
+  });
+
+  it('add and remove region cells but never empty the region', () => {
+    let s = setPortFree(spec(), input, true);
+    s = toggleRegionCell(s, input, [0, 1, 1]);
+    expect(s.inputs[0]?.region).toEqual([
+      [0, 1, 0],
+      [0, 1, 1],
+    ]);
+    s = toggleRegionCell(s, input, [0, 1, 0]);
+    expect(s.inputs[0]?.region).toEqual([[0, 1, 1]]);
+    s = toggleRegionCell(s, input, [0, 1, 1]);
+    expect(s.inputs[0]?.region).toEqual([[0, 1, 1]]);
+  });
+
+  it('become fixed again at the first region cell', () => {
+    let s = setPortFree(spec(), input, true);
+    s = toggleRegionCell(s, input, [0, 1, 1]);
+    s = toggleRegionCell(s, input, [0, 1, 0]);
+    s = setPortFree(s, input, false);
+    expect(s.inputs[0]?.region).toEqual([]);
+    expect(s.inputs[0]?.position).toEqual([0, 1, 1]);
   });
 });

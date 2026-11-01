@@ -6,7 +6,7 @@ import { SolveBar } from './panels/SolveBar';
 import { SpecPanel } from './panels/SpecPanel';
 import { PLACING_INFO, Toolbar } from './panels/Toolbar';
 import { Scene } from './scene/Scene';
-import { specWorld } from './specEdit';
+import { freePorts, portAt, portName, specWorld } from './specEdit';
 import { PLACING, useStore } from './store';
 
 function ViewControls() {
@@ -99,9 +99,21 @@ function Viewport() {
   const setHover = useStore((s) => s.setHover);
   const place = useStore((s) => s.place);
   const remove = useStore((s) => s.remove);
+  const placing = useStore((s) => s.placing);
+  const regionPort = useStore((s) => s.regionPort);
   const showResult = view === 'result' && result !== null;
   const world = useMemo(() => (showResult ? result.layout : spec ? specWorld(spec) : null), [showResult, result, spec]);
   if (!spec || !world) return <div className="muted center">Loading...</div>;
+  const free = freePorts(spec);
+  const active = free.find((p) => regionPort && p.input === regionPort.input && p.index === regionPort.index) ?? free[0];
+  const regions = showResult
+    ? []
+    : free.map((p) => ({
+        name: portName(p),
+        cells: portAt(spec, p)?.region ?? [],
+        input: p.input,
+        active: placing === 'region' && p === active,
+      }));
 
   return (
     <Scene
@@ -111,6 +123,7 @@ function Viewport() {
       topLayer={topLayer}
       forbidden={showResult ? [] : spec.forbidden}
       kept={showResult ? [] : spec.fixed.map((b) => b.position)}
+      regions={regions}
       hover={hover}
       onHover={setHover}
       onPlace={place}

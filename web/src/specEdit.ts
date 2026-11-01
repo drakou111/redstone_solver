@@ -1,6 +1,6 @@
 // Pure spec edits used by the 3D tools; each returns a new spec.
 
-import type { Block, Dir, InputKind, OutputKind, PlacedBlock, SignalRange, Spec, Vec3, World } from './types';
+import type { Block, Dir, InputKind, InputPort, OutputKind, OutputPort, PlacedBlock, SignalRange, Spec, Vec3, World } from './types';
 import { HORIZONTAL, key } from './types';
 
 const ANY: SignalRange = [0, 15];
@@ -22,11 +22,31 @@ export type Occupant =
   | { kind: 'fixed'; index: number }
   | { kind: 'forbidden'; index: number };
 
+export function isFree(port: { region: Vec3[] }): boolean {
+  return port.region.length > 0;
+}
+
+export function portAt(spec: Spec, ref: PortRef): InputPort | OutputPort | undefined {
+  return ref.input ? spec.inputs[ref.index] : spec.outputs[ref.index];
+}
+
+export function portName(ref: PortRef): string {
+  return `${ref.input ? 'IN' : 'OUT'}${ref.index + 1}`;
+}
+
+// Ports the solver places, in IN1.., OUT1.. order.
+export function freePorts(spec: Spec): PortRef[] {
+  return [
+    ...spec.inputs.flatMap((p, index) => (isFree(p) ? [{ input: true, index }] : [])),
+    ...spec.outputs.flatMap((p, index) => (isFree(p) ? [{ input: false, index }] : [])),
+  ];
+}
+
 export function occupantAt(spec: Spec, p: Vec3): Occupant | null {
   const k = key(p);
-  const input = spec.inputs.findIndex((port) => key(port.position) === k);
+  const input = spec.inputs.findIndex((port) => !isFree(port) && key(port.position) === k);
   if (input >= 0) return { kind: 'port', port: { input: true, index: input } };
-  const output = spec.outputs.findIndex((port) => key(port.position) === k);
+  const output = spec.outputs.findIndex((port) => !isFree(port) && key(port.position) === k);
   if (output >= 0) return { kind: 'port', port: { input: false, index: output } };
   const fixed = spec.fixed.findIndex((b) => key(b.position) === k);
   if (fixed >= 0) return { kind: 'fixed', index: fixed };
@@ -40,8 +60,8 @@ export function addPort(spec: Spec, input: boolean, position: Vec3, kind: InputK
     input ? { ...r, inputs: [...r.inputs, ANY] } : { ...r, outputs: [...r.outputs, ANY] },
   );
   return input
-    ? { ...spec, rows, inputs: [...spec.inputs, { kind: kind as InputKind, position, facing }] }
-    : { ...spec, rows, outputs: [...spec.outputs, { kind: kind as OutputKind, position, facing }] };
+    ? { ...spec, rows, inputs: [...spec.inputs, { kind: kind as InputKind, position, facing, region: [] }] }
+    : { ...spec, rows, outputs: [...spec.outputs, { kind: kind as OutputKind, position, facing, region: [] }] };
 }
 
 export function removePort(spec: Spec, port: PortRef): Spec {
@@ -54,10 +74,39 @@ export function removePort(spec: Spec, port: PortRef): Spec {
     : { ...spec, rows, outputs: spec.outputs.filter(keep) };
 }
 
-export function movePort(spec: Spec, port: PortRef, position: Vec3): Spec {
+function updatePort(spec: Spec, port: PortRef, change: (p: InputPort | OutputPort) => Partial<InputPort | OutputPort>): Spec {
   return port.input
-    ? { ...spec, inputs: spec.inputs.map((p, i) => (i === port.index ? { ...p, position } : p)) }
-    : { ...spec, outputs: spec.outputs.map((p, i) => (i === port.index ? { ...p, position } : p)) };
+    ? { ...spec, inputs: spec.inputs.map((p, i) => (i === port.index ? ({ ...p, ...change(p) } as InputPort) : p)) }
+    : { ...spec, outputs: spec.outputs.map((p, i) => (i === port.index ? ({ ...p, ...change(p) } as OutputPort) : p)) };
+}
+
+export function movePort(spec: Spec, port: PortRef, position: Vec3): Spec {
+  return updatePort(spec, port, () => ({ position }));
+}
+
+// Switches between a fixed port and one the solver places. A new region
+// starts with the port's current cell; a port made fixed again goes to the
+// first cell of its region.
+export function setPortFree(spec: Spec, port: PortRef, free: boolean): Spec {
+  return updatePort(spec, port, (p) =>
+    free ? { region: isFree(p) ? p.region : [p.position] } : { position: p.region[0] ?? p.position, region: [] },
+  );
+}
+
+// Adds or removes one cell of a free port's region (a region never becomes
+// empty, since that would make the port fixed).
+export function toggleRegionCell(spec: Spec, port: PortRef, cell: Vec3): Spec {
+  const k = key(cell);
+  return updatePort(spec, port, (p) => {
+    if (!p.region.some((c) => key(c) === k)) return { region: [...p.region, cell] };
+    const region = p.region.filter((c) => key(c) !== k);
+    return region.length > 0 ? { region } : {};
+  });
+}
+
+export function regionContains(spec: Spec, port: PortRef, cell: Vec3): boolean {
+  const k = key(cell);
+  return portAt(spec, port)?.region.some((c) => key(c) === k) ?? false;
 }
 
 export function nextDir(current: Dir, choices: readonly Dir[]): Dir {
@@ -121,10 +170,16 @@ export function blockAt(world: World, position: Vec3): PlacedBlock | undefined {
 }
 
 // The spec as blocks: ports and kept blocks (what the 3D editor shows).
+// Ports the solver places have no block yet; their regions are drawn
+// separately.
 export function specWorld(spec: Spec): World {
   const blocks: PlacedBlock[] = [
-    ...spec.inputs.map((p, channel): PlacedBlock => ({ type: 'input', kind: p.kind, channel, facing: p.facing, position: p.position })),
-    ...spec.outputs.map((p, channel): PlacedBlock => ({ type: 'output', kind: p.kind, channel, facing: p.facing, position: p.position })),
+    ...spec.inputs.flatMap((p, channel): PlacedBlock[] =>
+      isFree(p) ? [] : [{ type: 'input', kind: p.kind, channel, facing: p.facing, position: p.position }],
+    ),
+    ...spec.outputs.flatMap((p, channel): PlacedBlock[] =>
+      isFree(p) ? [] : [{ type: 'output', kind: p.kind, channel, facing: p.facing, position: p.position }],
+    ),
     ...spec.fixed,
   ];
   return { size: spec.size, blocks };

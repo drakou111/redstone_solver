@@ -9,6 +9,15 @@ import { key } from '../types';
 import { BlockView, type TextureMap } from './BlockView';
 
 
+// Cells where the solver may put a port; the active one is being drawn and
+// can be clicked.
+export interface RegionOverlay {
+  name: string;
+  cells: Vec3[];
+  input: boolean;
+  active: boolean;
+}
+
 interface Props {
   world: World;
   sim: SimState | null;
@@ -16,6 +25,7 @@ interface Props {
   topLayer: number;
   forbidden: Vec3[];
   kept: Vec3[];
+  regions: RegionOverlay[];
   hover: Hover | null;
   onHover: (hover: Hover | null) => void;
   onPlace: (hover: Hover) => void; // right-click
@@ -27,6 +37,8 @@ const GRID_COLOR = '#3a3f4b';
 const BOUNDS_COLOR = '#5b6475';
 const PLACE_COLOR = '#63d07e';
 const REMOVE_COLOR = '#ff5a4d';
+const REGION_INPUT_COLOR = '#3ddc84';
+const REGION_OUTPUT_COLOR = '#ffb03d';
 // Pointer travel (px) above which a press counts as a camera drag, not a click.
 const CLICK_TOLERANCE = 5;
 
@@ -83,7 +95,7 @@ function hoverFromBlock(event: ThreeEvent<PointerEvent | MouseEvent>, cell: Vec3
   return { hit: cell, place: [cell[0] + Math.round(normal.x), cell[1] + Math.round(normal.y), cell[2] + Math.round(normal.z)] };
 }
 
-export function Scene({ world, sim, textures, topLayer, forbidden, kept, hover, onHover, onPlace, onRemove }: Props) {
+export function Scene({ world, sim, textures, topLayer, forbidden, kept, regions, hover, onHover, onPlace, onRemove }: Props) {
   const [sx, sy, sz] = world.size;
   const top = Math.min(topLayer, sy - 1);
   // Clicking empty space places on the floor, or on the top shown layer when
@@ -183,6 +195,30 @@ export function Scene({ world, sim, textures, topLayer, forbidden, kept, hover, 
               <CellBox cell={c} color="#ff5a4d" opacity={0.7} scale={0.9} />
             </group>
           ))}
+        {regions.map((region) =>
+          region.cells
+            .filter((c) => c[1] <= top)
+            .map((c) => {
+              const color = region.input ? REGION_INPUT_COLOR : REGION_OUTPUT_COLOR;
+              return region.active ? (
+                <group key={`${region.name}:${key(c)}`}>
+                  <mesh
+                    position={[c[0] + 0.5, c[1] + 0.5, c[2] + 0.5]}
+                    scale={0.8}
+                    onPointerMove={move(c)}
+                    onClick={leftClick(c)}
+                    onContextMenu={rightClick(c)}
+                  >
+                    <boxGeometry />
+                    <meshBasicMaterial color={color} transparent opacity={0.3} depthWrite={false} />
+                  </mesh>
+                  <CellBox cell={c} color={color} opacity={0.9} scale={0.8} />
+                </group>
+              ) : (
+                <CellBox key={`${region.name}:${key(c)}`} cell={c} color={color} opacity={0.35} scale={0.7} />
+              );
+            }),
+        )}
         {kept
           .filter((c) => c[1] <= top)
           .map((c) => (

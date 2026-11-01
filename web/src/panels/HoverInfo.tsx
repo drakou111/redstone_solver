@@ -1,4 +1,4 @@
-import { blockAt, occupantAt } from '../specEdit';
+import { blockAt, freePorts, occupantAt, portName, regionContains } from '../specEdit';
 import { useStore } from '../store';
 import type { Block } from '../types';
 import { key } from '../types';
@@ -67,7 +67,8 @@ export function HoverInfo() {
     } else if (occupant?.kind === 'forbidden') {
       lines.push('kept empty');
     } else {
-      lines.push('free for the solver');
+      const ports = freePorts(spec).filter((p) => regionContains(spec, p, cell));
+      lines.push(ports.length > 0 ? `allowed for ${ports.map(portName).join(', ')}` : 'free for the solver');
     }
   }
   return (

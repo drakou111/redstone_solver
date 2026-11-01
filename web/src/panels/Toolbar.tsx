@@ -1,4 +1,4 @@
-import { facingChoices } from '../specEdit';
+import { facingChoices, freePorts, portName } from '../specEdit';
 import { PLACING, type Placing, useStore } from '../store';
 import type { Block, BlockType, Dir } from '../types';
 import { INPUT_KINDS, OUTPUT_KINDS } from '../types';
@@ -8,6 +8,7 @@ export const PLACING_INFO: Record<Placing, { label: string; key: string }> = {
   output: { label: 'Output', key: 'O' },
   keep: { label: 'Block', key: 'K' },
   empty: { label: 'Keep empty', key: 'E' },
+  region: { label: 'Port area', key: 'P' },
 };
 
 const SPEC_HELP = 'Right-click: place  |  Left-click: remove  |  R: rotate  |  Drag: orbit, right-drag: pan, wheel: zoom';
@@ -101,7 +102,12 @@ export function Toolbar() {
   const newOutputKind = useStore((s) => s.newOutputKind);
   const setNewInputKind = useStore((s) => s.setNewInputKind);
   const setNewOutputKind = useStore((s) => s.setNewOutputKind);
+  const spec = useStore((s) => s.spec);
+  const regionPort = useStore((s) => s.regionPort);
+  const drawRegion = useStore((s) => s.drawRegion);
   const inSpec = view === 'spec';
+  const free = spec ? freePorts(spec) : [];
+  const selected = free.find((p) => regionPort && p.input === regionPort.input && p.index === regionPort.index) ?? free[0];
 
   return (
     <div className="toolbar">
@@ -130,6 +136,23 @@ export function Toolbar() {
           ))}
         </select>
       )}
+      {inSpec && placing === 'region' &&
+        (selected ? (
+          <select
+            value={portName(selected)}
+            title="Port whose allowed cells you are drawing"
+            onChange={(e) => {
+              const port = free.find((p) => portName(p) === e.target.value);
+              if (port) drawRegion(port);
+            }}
+          >
+            {free.map((p) => (
+              <option key={portName(p)}>{portName(p)}</option>
+            ))}
+          </select>
+        ) : (
+          <span className="tools-label">Set a port to "solver picks" first</span>
+        ))}
       {(!inSpec || placing === 'keep') && <BrushEditor />}
       <div className="tool-help">{inSpec ? SPEC_HELP : RESULT_HELP}</div>
     </div>

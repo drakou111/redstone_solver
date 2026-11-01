@@ -1,6 +1,7 @@
 import { useState } from 'react';
 
 import { formatRange, parseRange } from '../rangeText';
+import { isFree } from '../specEdit';
 import { useStore } from '../store';
 import type { Dir, InputPort, OutputPort, SignalRange, Spec } from '../types';
 import { HORIZONTAL, INPUT_KINDS, OUTPUT_KINDS } from '../types';
@@ -65,6 +66,8 @@ function PortList({ spec, input }: { spec: Spec; input: boolean }) {
   const prefix = input ? 'IN' : 'OUT';
   const kinds: readonly string[] = input ? INPUT_KINDS : OUTPUT_KINDS;
 
+  const setPortFree = useStore((s) => s.setPortFree);
+  const drawRegion = useStore((s) => s.drawRegion);
   const setPorts = (next: (InputPort | OutputPort)[]) =>
     updateSpec((s) => (input ? { ...s, inputs: next as InputPort[] } : { ...s, outputs: next as OutputPort[] }));
   const update = (i: number, change: Partial<InputPort | OutputPort>) =>
@@ -85,8 +88,8 @@ function PortList({ spec, input }: { spec: Spec; input: boolean }) {
       );
       const position: [number, number, number] = input ? [0, 1, 0] : [s.size[0] - 1, 1, 0];
       return input
-        ? { ...s, rows, inputs: [...s.inputs, { kind: 'comparator', position, facing: 'east' }] }
-        : { ...s, rows, outputs: [...s.outputs, { kind: 'dust', position, facing: 'east' }] };
+        ? { ...s, rows, inputs: [...s.inputs, { kind: 'comparator', position, facing: 'east', region: [] }] }
+        : { ...s, rows, outputs: [...s.outputs, { kind: 'dust', position, facing: 'east', region: [] }] };
     });
 
   return (
@@ -102,32 +105,46 @@ function PortList({ spec, input }: { spec: Spec; input: boolean }) {
               <option key={k}>{k}</option>
             ))}
           </select>
-          {AXES.map((axis) => (
-            <NumberField
-              key={axis}
-              value={port.position[axis]}
-              min={0}
-              max={spec.size[axis] - 1}
-              width={44}
-              onChange={(v) => {
-                const position = [...port.position] as [number, number, number];
-                position[axis] = v;
-                update(i, { position });
-              }}
-            />
-          ))}
-          {isDirectional(port, input) ? (
-            <select value={port.facing} onChange={(e) => update(i, { facing: e.target.value as Dir })}>
-              {HORIZONTAL.map((d) => (
-                <option key={d}>{d}</option>
-              ))}
-            </select>
-          ) : (
-            <span className="facing-placeholder" />
-          )}
+          <select
+            value={isFree(port) ? 'free' : 'fixed'}
+            title="Fixed: the port stays where you put it. Solver picks: it goes in one of the cells you draw with the Port area tool"
+            onChange={(e) => setPortFree({ input, index: i }, e.target.value === 'free')}
+          >
+            <option value="fixed">fixed</option>
+            <option value="free">solver picks</option>
+          </select>
           <button className="icon" title="Remove" onClick={() => remove(i)}>
             x
           </button>
+          <div className="port-place">
+            {isFree(port) ? (
+              <button className="region-button" title="Draw the cells this port may use (Port area tool)" onClick={() => drawRegion({ input, index: i })}>
+                {port.region.length} cell{port.region.length === 1 ? '' : 's'} - draw
+              </button>
+            ) : (
+              AXES.map((axis) => (
+                <NumberField
+                  key={axis}
+                  value={port.position[axis]}
+                  min={0}
+                  max={spec.size[axis] - 1}
+                  width={44}
+                  onChange={(v) => {
+                    const position = [...port.position] as [number, number, number];
+                    position[axis] = v;
+                    update(i, { position });
+                  }}
+                />
+              ))
+            )}
+            {isDirectional(port, input) && !isFree(port) && (
+              <select value={port.facing} onChange={(e) => update(i, { facing: e.target.value as Dir })}>
+                {HORIZONTAL.map((d) => (
+                  <option key={d}>{d}</option>
+                ))}
+              </select>
+            )}
+          </div>
         </div>
       ))}
       {ports.length < MAX_PORTS && (

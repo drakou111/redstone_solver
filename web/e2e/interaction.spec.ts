@@ -66,3 +66,22 @@ test('cancel stops a long solve promptly', async ({ page }) => {
   await expect(page.getByRole('button', { name: 'Solve' })).toBeVisible({ timeout: 10_000 });
   expect(Date.now() - pressed).toBeLessThan(5000);
 });
+
+test('a port the solver places gets an area drawn in the scene and solves', async ({ page }) => {
+  await page.goto('');
+  await page.locator('select.examples').selectOption({ label: 'not_gate.txt' });
+  await expect(page.locator('.notice')).toContainText('not_gate.txt');
+  const firstInput = page.locator('.port').first();
+  await firstInput.locator('select').nth(1).selectOption('free');
+  await expect(firstInput.locator('.region-button')).toContainText('1 cell');
+  await expect(page.locator('.tools button.active')).toContainText('Port area');
+
+  const spot = await findInScene(page, (text) => text.includes('free for the solver'));
+  await page.mouse.click(spot.x, spot.y, { button: 'right' });
+  await expect(firstInput.locator('.region-button')).toContainText('2 cells');
+  await findInScene(page, (text) => text.includes('allowed for IN1'));
+
+  await page.getByRole('button', { name: 'Solve' }).click();
+  await expect(page.locator('.status .good')).toBeVisible({ timeout: 60_000 });
+  await page.screenshot({ path: 'test-results/free-port.png' });
+});

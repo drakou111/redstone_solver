@@ -6,13 +6,20 @@ import {
   addPort,
   blockAt,
   editWorld,
+  freePorts,
   inside,
+  isFree,
   occupantAt,
+  type PortRef,
+  portAt,
+  regionContains,
   removePort,
   rotateBlock,
   rotatePort,
   setFixed,
+  setPortFree as withPortFree,
   toggleForbidden,
+  toggleRegionCell,
 } from './specEdit';
 import type { Block, InputKind, OutputKind, SimState, Session, SolveResult, Spec, Vec3, World } from './types';
 
@@ -23,8 +30,9 @@ export const DEFAULT_TIME_LIMIT = 60;
 
 // What a right-click places in the spec view (the circuit view always
 // places the block brush).
-export type Placing = 'input' | 'output' | 'keep' | 'empty';
-export const PLACING: readonly Placing[] = ['input', 'output', 'keep', 'empty'];
+// 'region' adds cells where the solver may put the selected free port.
+export type Placing = 'input' | 'output' | 'keep' | 'empty' | 'region';
+export const PLACING: readonly Placing[] = ['input', 'output', 'keep', 'empty', 'region'];
 
 // Where the pointer is: the cell under it (if it hit a block or marker) and
 // the empty cell a placement would fill.
@@ -73,6 +81,7 @@ interface State {
   newInputKind: InputKind;
   newOutputKind: OutputKind;
   brush: Block;
+  regionPort: PortRef | null;
   hover: Hover | null;
 
   init: () => Promise<void>;
@@ -92,6 +101,9 @@ interface State {
   setNewInputKind: (kind: InputKind) => void;
   setNewOutputKind: (kind: OutputKind) => void;
   setBrush: (block: Block) => void;
+  // Selects the free port whose region the 'region' tool edits.
+  drawRegion: (port: PortRef) => void;
+  setPortFree: (port: PortRef, free: boolean) => void;
   setHover: (hover: Hover | null) => void;
   place: (hover: Hover) => void;
   remove: (hover: Hover) => void;
@@ -201,6 +213,11 @@ export const useStore = create<State>((set, get) => {
   function placeInSpec(spec: Spec, place: Vec3 | null) {
     const { placing, newInputKind, newOutputKind, brush, updateSpec } = get();
     if (!place || !inside(spec.size, place) || occupantAt(spec, place) !== null) return;
+    if (placing === 'region') {
+      const port = activeRegionPort(spec);
+      if (port && !regionContains(spec, port, place)) updateSpec((s) => toggleRegionCell(s, port, place));
+      return;
+    }
     if (placing === 'input') updateSpec((s) => addPort(s, true, place, newInputKind, 'east'));
     else if (placing === 'output') updateSpec((s) => addPort(s, false, place, newOutputKind, 'east'));
     else if (placing === 'keep') updateSpec((s) => setFixed(s, place, brush));
@@ -208,10 +225,27 @@ export const useStore = create<State>((set, get) => {
   }
 
   // Left-click: remove whatever occupies the clicked cell.
+  // The selected free port, or the first one if the selection is stale.
+  function activeRegionPort(spec: Spec): PortRef | null {
+    const selected = get().regionPort;
+    if (selected) {
+      const port = portAt(spec, selected);
+      if (port && isFree(port)) return selected;
+    }
+    return freePorts(spec)[0] ?? null;
+  }
+
   function removeInSpec(spec: Spec, hit: Vec3 | null) {
+    const { updateSpec, placing } = get();
+    if (hit && placing === 'region') {
+      const port = activeRegionPort(spec);
+      if (port && regionContains(spec, port, hit)) {
+        updateSpec((s) => toggleRegionCell(s, port, hit));
+        return;
+      }
+    }
     const occupant = hit ? occupantAt(spec, hit) : null;
     if (!hit || !occupant) return;
-    const { updateSpec } = get();
     if (occupant.kind === 'port') updateSpec((s) => removePort(s, occupant.port));
     else if (occupant.kind === 'fixed') updateSpec((s) => setFixed(s, hit, null));
     else updateSpec((s) => toggleForbidden(s, hit));
@@ -242,6 +276,7 @@ export const useStore = create<State>((set, get) => {
     newInputKind: 'comparator',
     newOutputKind: 'dust',
     brush: { type: 'solid' },
+    regionPort: null,
     hover: null,
 
     init: async () => {
@@ -326,6 +361,11 @@ export const useStore = create<State>((set, get) => {
     setNewInputKind: (kind) => set({ newInputKind: kind }),
     setNewOutputKind: (kind) => set({ newOutputKind: kind }),
     setBrush: (block) => set({ brush: block }),
+    drawRegion: (port) => set({ regionPort: port, placing: 'region', view: 'spec' }),
+    setPortFree: (port, free) => {
+      get().updateSpec((s) => withPortFree(s, port, free));
+      if (free) get().drawRegion(port);
+    },
     setHover: (hover) => set({ hover }),
     place: (hover) => {
       const { view, spec, result, brush } = get();
