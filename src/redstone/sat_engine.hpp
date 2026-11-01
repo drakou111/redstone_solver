@@ -3,6 +3,7 @@
 #include <atomic>
 #include <chrono>
 #include <cstddef>
+#include <cstdint>
 #include <memory>
 #include <vector>
 
@@ -15,7 +16,7 @@ class SatPortfolio {
 public:
   enum class Outcome { Satisfiable, Unsatisfiable, Stopped };
 
-  explicit SatPortfolio(int workers);
+  explicit SatPortfolio(int workers, int seed = 0);
   ~SatPortfolio();
   SatPortfolio(const SatPortfolio &) = delete;
   SatPortfolio &operator=(const SatPortfolio &) = delete;
@@ -26,6 +27,9 @@ public:
                 const std::atomic<bool> *cancel);
   // values[i] of variable i + 1, from the solver that answered.
   std::vector<bool> model(int variables) const;
+  // Conflicts so far, summed over workers: a measure of search effort that,
+  // unlike time, does not depend on machine load.
+  std::int64_t conflicts() const;
 
 private:
   struct Worker;

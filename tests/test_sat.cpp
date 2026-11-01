@@ -224,3 +224,25 @@ row IN1(ss0) -> OUT1(ss1..15)
     CHECK_FALSE(verify_layout(layout, spec, spec.verification_vectors()));
   }
 }
+
+TEST_CASE("SAT engine adds failed cases to the running model") {
+  // Rejections here add steady states and transitions to the live model,
+  // sometimes a steady state without a transition.
+  Spec spec = parse_spec(R"(
+size 4 2 1
+input IN1 comparator 0 1 0 east
+output OUT1 dust 3 1 0
+timing 4 4
+hold_previous on
+row IN1(ss1..15) -> OUT1(ss1..15)
+row IN1(ss0) -> OUT1(ss0)
+)");
+  for (int seed = 0; seed < 3; ++seed) {
+    SolverOptions options;
+    options.sat_seed = seed;
+    options.time_limit_seconds = 60.0;
+    SolveReport report = solve(spec, options);
+    REQUIRE(report.status == SolveStatus::Optimal);
+    CHECK(report.solution->block_count == 5);
+  }
+}

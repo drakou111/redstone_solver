@@ -102,6 +102,10 @@ public:
   // a - b >= gap
   void require_gap(const Int &a, const Int &b, int gap,
                    const std::vector<Lit> &when = {});
+  // result == max(terms) (all terms >= 0), as clauses only: no helper
+  // variables, unlike require_equal(result, max_of(terms)).
+  void require_equal_max(const Int &result, const std::vector<Int> &terms,
+                         const std::vector<Lit> &when = {});
   // result == a - b, given a >= b
   void require_difference(const Int &result, const Int &a, const Int &b,
                           const std::vector<Lit> &when = {});

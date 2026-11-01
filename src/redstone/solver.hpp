@@ -1,6 +1,7 @@
 #pragma once
 
 #include <atomic>
+#include <cstdint>
 #include <functional>
 #include <optional>
 #include <string>
@@ -26,6 +27,7 @@ struct SolverOptions {
   // Parallel SAT solvers with different seeds. More than one was slower in
   // benchmarks (they compete for memory bandwidth), hence the default.
   int max_sat_workers = 1;
+  int sat_seed = 0; // varies the SAT search (benchmarks average over seeds)
   bool stop_at_first = false; // accept the first verified circuit
   bool show_rejected = false; // include rejected layouts in progress messages
   VerificationOptions verification;
@@ -49,6 +51,7 @@ struct SolveReport {
   std::optional<EncodedSolution> solution;
   int refinements = 0;
   double seconds = 0.0;
+  std::int64_t sat_conflicts = 0; // search effort of the SAT engine
 };
 
 using ProgressCallback = std::function<void(std::string_view)>;

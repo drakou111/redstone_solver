@@ -204,20 +204,10 @@ struct CircuitEncoder::Impl {
     if (!spec.allow_feedback || spec.is_tiled())
       this->add_dependency_constraints();
 
-    for (const SteadyCase &steady : plan.steady) {
-      if (steady.inputs.size() != spec.inputs.size())
-        throw std::invalid_argument(
-            "steady case does not match the input count");
-      this->steady_slices.push_back(this->make_steady(steady));
-    }
-    for (const TransitionCase &transition : plan.transitions) {
-      if (transition.from < 0 || transition.to < 0 ||
-          transition.from >= static_cast<int>(plan.steady.size()) ||
-          transition.to >= static_cast<int>(plan.steady.size()))
-        throw std::invalid_argument(
-            "transition refers to a missing steady case");
-      this->add_transition(transition, plan.steady[transition.to]);
-    }
+    for (const SteadyCase &steady : plan.steady)
+      this->add_steady_case(steady);
+    for (const TransitionCase &transition : plan.transitions)
+      this->add_transition_case(transition, plan.steady);
 
     if (this->options.fixed_layout)
       this->require_layout(*this->options.fixed_layout, true);
@@ -227,6 +217,21 @@ struct CircuitEncoder::Impl {
       this->limit_blocks(*this->options.max_blocks);
     if (this->options.minimize_blocks)
       this->add_objective();
+  }
+
+  void add_steady_case(const SteadyCase &steady) {
+    if (steady.inputs.size() != this->spec.inputs.size())
+      throw std::invalid_argument("steady case does not match the input count");
+    this->steady_slices.push_back(this->make_steady(steady));
+  }
+
+  void add_transition_case(TransitionCase transition,
+                           const std::vector<SteadyCase> &steady) {
+    int count = static_cast<int>(this->steady_slices.size());
+    if (transition.from < 0 || transition.to < 0 || transition.from >= count ||
+        transition.to >= count || static_cast<int>(steady.size()) != count)
+      throw std::invalid_argument("transition refers to a missing steady case");
+    this->add_transition(transition, steady[transition.to]);
   }
 
   void limit_blocks(int max_blocks) {
@@ -799,13 +804,8 @@ struct CircuitEncoder::Impl {
       x.conducted[i] = this->b.select(c.conductor, with_dust);
     }
 
-    // Java Level.getSignal from cell j towards d.
-    auto signal_without_dust = [&](int j, Dir d) {
-      if (j < 0)
-        return Int::constant(0);
-      return this->b.exclusive_sum(
-          {x.weak[j][index_of(d)], x.conducted_without_dust[j]});
-    };
+    // Java Level.getSignal from cell j towards d (dust reads the same without
+    // dust's own contributions: weak and conducted_without_dust).
     auto signal = [&](int j, Dir d) {
       if (j < 0)
         return Int::constant(0);
@@ -817,8 +817,12 @@ struct CircuitEncoder::Impl {
       if (j < 0)
         return this->b.constant(false);
       std::optional<Lit> &cached = x.signal_positive[j][index_of(d)];
+      // signal(j, d) > 0 without building the whole signal: its parts are
+      // all non-negative, so it is positive when any part is.
       if (!cached)
-        cached = this->b.positive(signal(j, d));
+        cached = this->b.any({x.weak[j][index_of(d)].ge(1),
+                              x.dust_emit[j][index_of(d)].ge(1),
+                              x.conducted[j].ge(1)});
       return *cached;
     };
     auto from_side = [&](Vec3 p, Dir k) {
@@ -832,8 +836,14 @@ struct CircuitEncoder::Impl {
         continue;
       Vec3 p = c.position;
       std::vector<Int> candidates{Int::constant(0)};
-      for (Dir k : kAllDirs)
-        candidates.push_back(signal_without_dust(from_side(p, k), opposite(k)));
+      // Signals from neighbours, ignoring other dust.
+      for (Dir k : kAllDirs) {
+        int j = from_side(p, k);
+        if (j < 0)
+          continue;
+        candidates.push_back(x.weak[j][index_of(opposite(k))]);
+        candidates.push_back(x.conducted_without_dust[j]);
+      }
       Lit covered = this->cell_at(p + offset(Dir::Up)).conductor;
       for (Dir d : kHorizontalDirs) {
         Vec3 side = p + offset(d);
@@ -853,9 +863,8 @@ struct CircuitEncoder::Impl {
                 .select(!neighbor.conductor, dust_at(side + offset(Dir::Down)))
                 .plus(-1));
       }
-      Int strongest = this->b.max_of(candidates);
-      this->b.require_equal(s.dust[i], strongest,
-                            {c.dust, !c.kind[kInputDust]});
+      this->b.require_equal_max(s.dust[i], candidates,
+                                {c.dust, !c.kind[kInputDust]});
       this->b.require_equal(s.dust[i], Int::constant(0), {!c.dust});
       if (c.may(kInputDust))
         this->b.require_equal(s.dust[i], this->input_signal(s, c),
@@ -876,6 +885,34 @@ struct CircuitEncoder::Impl {
       return this->b.if_else(
           behind_cell.container, this->analog(s, behind),
           this->b.if_else(through, this->analog(s, further), rear_signal));
+    };
+
+    // rear_reading(p, d) == r under `when`, as clauses only.
+    auto rear_into = [&](const Int &r, Vec3 p, Dir d,
+                         const std::vector<Lit> &when) {
+      int behind = from_side(p, opposite(d));
+      int further =
+          this->cell_index(p + offset(opposite(d)) + offset(opposite(d)));
+      auto with = [&](std::initializer_list<Lit> extra) {
+        std::vector<Lit> w = when;
+        w.insert(w.end(), extra);
+        return w;
+      };
+      std::vector<Int> parts;
+      if (behind >= 0)
+        parts = {x.weak[behind][index_of(d)], x.dust_emit[behind][index_of(d)],
+                 x.conducted[behind]};
+      std::vector<Lit> full;
+      for (const Int &part : parts)
+        full.push_back(part.ge(kMaxSignal));
+      const Cell &behind_cell = this->cell(behind);
+      Lit through =
+          this->b.all({behind_cell.conductor, this->cell(further).container,
+                       !this->b.any(full)});
+      this->analog_into(r, s, behind, with({behind_cell.container}));
+      this->analog_into(r, s, further, with({!behind_cell.container, through}));
+      this->b.require_equal_max(r, parts,
+                                with({!behind_cell.container, !through}));
     };
 
     for (int i = 0; i < n; ++i) {
@@ -919,26 +956,30 @@ struct CircuitEncoder::Impl {
       }
 
       if (c.may(kComparator)) {
-        std::vector<Int> rear_terms;
-        std::vector<Int> side_terms;
+        // Rear and side readings are pinned per facing by conditional
+        // clauses rather than built as expressions, which would need helper
+        // variables for every level of every candidate reading.
+        Lit is_comparator = c.kind[kComparator];
+        Int rear = this->b.new_int(0, kMaxSignal);
+        Int side = this->b.new_int(0, kMaxSignal);
+        this->b.require_in_range(rear, 0, 0, {!is_comparator});
+        this->b.require_in_range(side, 0, 0, {!is_comparator});
         for (Dir d : kHorizontalDirs) {
           Lit facing = c.facing[index_of(d)];
           if (facing.is_false())
             continue;
-          Int rear = rear_reading(p, d);
-          rear_terms.push_back(this->b.select(facing, rear));
+          rear_into(rear, p, d, {is_comparator, facing});
 
           Dir right = rotate_clockwise(d);
           Dir left = rotate_counter_clockwise(d);
-          Int side = this->b.max_of(
-              {this->control_signal(s, x, from_side(p, right), opposite(right)),
-               this->control_signal(s, x, from_side(p, left), opposite(left))});
-          side_terms.push_back(this->b.select(facing, side));
+          std::vector<Int> side_parts =
+              this->control_parts(s, x, from_side(p, right), opposite(right));
+          for (const Int &part :
+               this->control_parts(s, x, from_side(p, left), opposite(left)))
+            side_parts.push_back(part);
+          this->b.require_equal_max(side, side_parts, {is_comparator, facing});
         }
-        Int rear = this->b.exclusive_sum(rear_terms);
-        Int side = this->b.exclusive_sum(side_terms);
         Int calc = this->b.new_int(0, kMaxSignal);
-        Lit is_comparator = c.kind[kComparator];
         Lit passes =
             this->b.all({this->b.positive(rear), !this->b.greater(side, rear)});
         this->b.require_equal(calc, Int::constant(0), {!is_comparator});
@@ -1035,14 +1076,30 @@ struct CircuitEncoder::Impl {
                         this->b.all({s.comp_positive[j], facing}), port});
   }
 
-  // Comparator side input from j towards d (Java getControlInputSignal).
-  Int control_signal(const Slice &s, const SliceScratch &x, int j, Dir d) {
+  // Comparator side input from j towards d (Java getControlInputSignal) is
+  // the largest (only non-zero) of these.
+  std::vector<Int> control_parts(const Slice &s, const SliceScratch &x, int j,
+                                 Dir d) {
     if (j < 0)
-      return Int::constant(0);
+      return {};
     const Cell &c = this->cells[j];
-    return this->b.exclusive_sum(
-        {x.strong[j][index_of(d)],
-         this->b.scaled(c.kind[kRedstoneBlock], kMaxSignal), s.dust[j]});
+    return {x.strong[j][index_of(d)],
+            this->b.scaled(c.kind[kRedstoneBlock], kMaxSignal), s.dust[j]};
+  }
+
+  // analog(s, j) == r under `when`, as clauses only.
+  void analog_into(const Int &r, const Slice &s, int j,
+                   const std::vector<Lit> &when) {
+    if (j < 0) {
+      this->b.require_in_range(r, 0, 0, when);
+      return;
+    }
+    const Cell &c = this->cells[j];
+    std::vector<Lit> w = when;
+    w.push_back(c.kind[kInputContainer]);
+    this->b.require_equal(r, this->input_signal(s, c), w);
+    w.back() = !c.kind[kInputContainer];
+    this->b.require_equal(r, c.stored, w);
   }
 
   // ------------------------------------------------------------ dynamics
@@ -1507,6 +1564,15 @@ EncodedSolution CircuitEncoder::decode(const std::vector<bool> &values) const {
 
 void CircuitEncoder::forbid_layout(const World &layout) {
   this->impl_->require_layout(layout, false);
+}
+
+void CircuitEncoder::add_steady(const SteadyCase &steady) {
+  this->impl_->add_steady_case(steady);
+}
+
+void CircuitEncoder::add_transition(TransitionCase transition,
+                                    const std::vector<SteadyCase> &steady) {
+  this->impl_->add_transition_case(transition, steady);
 }
 
 void CircuitEncoder::limit_blocks(int max_blocks) {

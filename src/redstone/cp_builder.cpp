@@ -287,6 +287,27 @@ void Builder::require_gap(const Int &a, const Int &b, int gap,
   }
 }
 
+void Builder::require_equal_max(const Int &result,
+                                const std::vector<Int> &terms,
+                                const std::vector<Lit> &when) {
+  int hi = result.hi();
+  for (const Int &term : terms)
+    hi = std::max(hi, term.hi());
+  for (int k = std::max(result.lo(), 0) + 1; k <= hi; ++k) {
+    std::vector<Lit> some_term;
+    for (const Int &term : terms) {
+      std::vector<Lit> w = when;
+      w.push_back(term.ge(k));
+      this->require(result.ge(k), w);
+      some_term.push_back(term.ge(k));
+    }
+    for (const Lit &w : when)
+      some_term.push_back(!w);
+    some_term.push_back(!result.ge(k));
+    this->require_any(some_term);
+  }
+}
+
 void Builder::require_difference(const Int &result, const Int &a, const Int &b,
                                  const std::vector<Lit> &when) {
   int lo = std::min(result.lo(), 0) + 1;
@@ -298,7 +319,10 @@ void Builder::require_difference(const Int &result, const Int &a, const Int &b,
       w.push_back(a.ge(j + k));
       w.push_back(!b.ge(j + 1));
       this->require(result.ge(k), w);
-      // result >= k and b >= j  ->  a >= j + k
+      // result >= k and b >= j  ->  a >= j + k. Beyond a's range only the
+      // smallest such j matters (a larger b implies it).
+      if (j + k > a.hi() + 1 && j > b.lo())
+        continue;
       w = when;
       w.push_back(result.ge(k));
       w.push_back(b.ge(j));

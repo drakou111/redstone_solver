@@ -1,6 +1,7 @@
 #include "redstone/sat_engine.hpp"
 
 #include <algorithm>
+#include <array>
 #include <stdexcept>
 #include <thread>
 
@@ -15,6 +16,7 @@ namespace {
 
 constexpr int kSatisfiable = 10;
 constexpr int kUnsatisfiable = 20;
+constexpr std::array<const char *, 2> kConfigurations{"sat", "default"};
 
 class Stopper : public CaDiCaL::Terminator {
 public:
@@ -36,11 +38,15 @@ struct SatPortfolio::Worker {
   Stopper stopper;
 };
 
-SatPortfolio::SatPortfolio(int workers) {
+SatPortfolio::SatPortfolio(int workers, int seed) {
   if (workers < 1)
     throw std::invalid_argument("a SAT portfolio needs at least one worker");
   for (int i = 0; i < workers; ++i) {
     auto worker = std::make_unique<Worker>();
+    // The "sat" configuration (tuned for satisfiable formulas) was up to 6x
+    // faster on room-sized specs; a second worker runs the default one,
+    // which is better at proving that no smaller circuit exists.
+    worker->solver.configure(kConfigurations[i % kConfigurations.size()]);
     // Variables are numbered by the encoder, so the solver must not add its
     // own (bounded variable addition).
     worker->solver.set("factor", 0);
@@ -49,10 +55,12 @@ SatPortfolio::SatPortfolio(int workers) {
     // crashes with MSVC's standard library (fine with libstdc++).
     worker->solver.set("congruence", 0);
 #endif
-    worker->solver.set("seed", i);
-    if (i > 0) {
+    worker->solver.set("seed", seed + i);
+    // The seed alone hardly changes CaDiCaL's search; shuffling the variable
+    // order makes other seeds real alternatives (seed 0 keeps the default).
+    if (seed + i > 0) {
       worker->solver.set("shuffle", 1);
-      worker->solver.set("phase", i % 2);
+      worker->solver.set("shufflerandom", 1);
     }
     worker->solver.connect_terminator(&worker->stopper);
     this->workers_.push_back(std::move(worker));
@@ -108,6 +116,14 @@ SatPortfolio::solve(std::chrono::steady_clock::time_point deadline,
   if (this->winner_ < 0)
     return Outcome::Stopped;
   return result == kSatisfiable ? Outcome::Satisfiable : Outcome::Unsatisfiable;
+}
+
+std::int64_t SatPortfolio::conflicts() const {
+  std::int64_t total = 0;
+  for (const auto &worker : this->workers_)
+    total += std::max<std::int64_t>(
+        0, worker->solver.get_statistic_value("conflicts"));
+  return total;
 }
 
 std::vector<bool> SatPortfolio::model(int variables) const {

@@ -1,12 +1,14 @@
 // Runs the solver on every spec in a folder and records how long it takes.
 
 #include <algorithm>
+#include <atomic>
 #include <charconv>
 #include <chrono>
 #include <filesystem>
 #include <format>
 #include <fstream>
 #include <iostream>
+#include <mutex>
 #include <sstream>
 #include <string>
 #include <thread>
@@ -26,6 +28,9 @@ constexpr std::string_view kUsage =
     "  --mode first|best|both what to time (default both)\n"
     "  --out <dir>            where results go (default: output/bench)\n"
     "  --label <text>         name stored with the results\n"
+    "  --seeds <n>            runs per spec with SAT seeds 0..n-1 (default 1)\n"
+    "  --jobs <n>             solves run in parallel (default 1); compare\n"
+    "                         conflicts, since times then depend on load\n"
     "  --help                 show this help\n";
 
 struct Options {
@@ -37,6 +42,8 @@ struct Options {
   std::string label = "unnamed";
   rs::SolverEngine engine = rs::SolverEngine::Sat;
   int sat_workers = 1;
+  int seeds = 1;
+  int jobs = 1;
 };
 
 struct Row {
@@ -46,7 +53,20 @@ struct Row {
   double seconds = 0;
   int blocks = -1;
   int rounds = 0;
+  long long conflicts = 0;
+  int seed = 0;
+  bool solved = false;
 };
+
+int positive_int(std::string_view text, std::string_view name) {
+  int value = 0;
+  auto [end, error] =
+      std::from_chars(text.data(), text.data() + text.size(), value);
+  if (error != std::errc() || value < 1)
+    throw std::invalid_argument(
+        std::format("{} expects a positive number", name));
+  return value;
+}
 
 Options parse(int argc, char **argv) {
   Options o;
@@ -70,11 +90,11 @@ Options parse(int argc, char **argv) {
       if (error != std::errc() || o.time_limit <= 0)
         throw std::invalid_argument("--time-limit expects a positive number");
     } else if (arg == "--sat-workers") {
-      std::string_view v = value();
-      auto [end, error] =
-          std::from_chars(v.data(), v.data() + v.size(), o.sat_workers);
-      if (error != std::errc() || o.sat_workers < 1)
-        throw std::invalid_argument("--sat-workers expects a positive number");
+      o.sat_workers = positive_int(value(), arg);
+    } else if (arg == "--seeds") {
+      o.seeds = positive_int(value(), arg);
+    } else if (arg == "--jobs") {
+      o.jobs = positive_int(value(), arg);
     } else if (arg == "--engine") {
       std::string_view v = value();
       if (v != "sat" && v != "cpsat")
@@ -102,19 +122,24 @@ std::string read_file(const std::filesystem::path &path) {
   return content.str();
 }
 
-Row run(const std::filesystem::path &path, bool first, const Options &o) {
+Row run(const std::filesystem::path &path, bool first, int seed,
+        const Options &o) {
   rs::Spec spec = rs::parse_spec(read_file(path));
   rs::SolverOptions options;
   options.time_limit_seconds = o.time_limit;
   options.stop_at_first = first;
   options.engine = o.engine;
   options.max_sat_workers = o.sat_workers;
+  options.sat_seed = seed;
   rs::SolveReport report = rs::solve(spec, options);
   Row row{path.stem().string(), first ? "first" : "best",
           std::string(rs::to_string(report.status)), report.seconds};
   if (report.solution)
     row.blocks = report.solution->block_count;
   row.rounds = report.refinements;
+  row.conflicts = report.sat_conflicts;
+  row.seed = seed;
+  row.solved = report.solution.has_value();
   return row;
 }
 
@@ -146,28 +171,72 @@ int main(int argc, char **argv) {
         "# label={} engine={} sat_workers={} time_limit={} threads={}\n",
         o.label, o.engine == rs::SolverEngine::Sat ? "sat" : "cpsat",
         o.sat_workers, o.time_limit, std::thread::hardware_concurrency());
-    file << "spec,mode,status,seconds,blocks,rounds\n";
+    file << "spec,mode,seed,status,seconds,blocks,rounds,conflicts\n";
 
-    double total = 0;
-    for (const auto &path : specs) {
-      for (bool first : {true, false}) {
-        if ((first && !o.first) || (!first && !o.best))
-          continue;
-        Row row = run(path, first, o);
-        total += row.seconds;
-        std::string line =
-            std::format("{},{},{},{:.2f},{},{}", row.spec, row.mode, row.status,
-                        row.seconds, row.blocks, row.rounds);
-        file << line << '\n';
-        file.flush();
-        std::cout << std::format("{:<12} {:<6} {:>7.2f}s  {:>3} blocks  {}\n",
-                                 row.spec, row.mode, row.seconds, row.blocks,
-                                 row.status)
+    struct Task {
+      std::filesystem::path path;
+      bool first;
+      int seed;
+    };
+    std::vector<Task> tasks;
+    for (const auto &path : specs)
+      for (bool first : {true, false})
+        if ((first && o.first) || (!first && o.best))
+          for (int seed = 0; seed < o.seeds; ++seed)
+            tasks.push_back({path, first, seed});
+
+    std::vector<Row> rows(tasks.size());
+    std::atomic<std::size_t> next = 0;
+    std::mutex output;
+    auto work = [&] {
+      for (std::size_t t = next++; t < tasks.size(); t = next++) {
+        Row row = run(tasks[t].path, tasks[t].first, tasks[t].seed, o);
+        std::lock_guard lock(output);
+        rows[t] = row;
+        file << std::format("{},{},{},{},{:.2f},{},{},{}\n", row.spec, row.mode,
+                            row.seed, row.status, row.seconds, row.blocks,
+                            row.rounds, row.conflicts)
+             << std::flush;
+        std::cout << std::format("{:<12} {:<6} seed {:<2} {:>7.2f}s {:>9} "
+                                 "conflicts {:>3} blocks  {}\n",
+                                 row.spec, row.mode, row.seed, row.seconds,
+                                 row.conflicts, row.blocks, row.status)
                   << std::flush;
       }
+    };
+    {
+      std::vector<std::jthread> threads;
+      for (int j = 1; j < o.jobs; ++j)
+        threads.emplace_back(work);
+      work();
     }
-    std::cout << std::format("total {:.1f}s, results in {}\n", total,
-                             csv.string());
+
+    // Per spec and mode: how many seeds found a circuit, and the median
+    // effort (an unsolved run counts as worse than any solved one).
+    std::cout << "\nspec         mode   solved  median conflicts  median s\n";
+    long long total_median = 0;
+    int total_solved = 0;
+    for (std::size_t t = 0; t < tasks.size(); t += o.seeds) {
+      std::vector<Row> group(rows.begin() + t, rows.begin() + t + o.seeds);
+      std::sort(group.begin(), group.end(), [](const Row &a, const Row &b) {
+        if (a.solved != b.solved)
+          return a.solved;
+        return a.conflicts < b.conflicts;
+      });
+      const Row &median = group[group.size() / 2];
+      int solved = 0;
+      for (const Row &row : group)
+        solved += row.solved ? 1 : 0;
+      total_solved += solved;
+      total_median += median.conflicts;
+      std::cout << std::format("{:<12} {:<6} {:>2}/{:<4} {:>16} {:>9.2f}{}\n",
+                               median.spec, median.mode, solved, o.seeds,
+                               median.conflicts, median.seconds,
+                               median.solved ? "" : "  (median unsolved)");
+    }
+    std::cout << std::format(
+        "solved {}/{} runs, sum of median conflicts {}, results in {}\n",
+        total_solved, tasks.size(), total_median, csv.string());
     return 0;
   } catch (const std::exception &error) {
     std::cerr << "error: " << error.what() << "\n\n" << kUsage;

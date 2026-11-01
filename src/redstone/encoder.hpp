@@ -74,9 +74,14 @@ public:
   // values[i] is variable i (DIMACS variable i + 1).
   EncodedSolution decode(const std::vector<bool> &values) const;
 
-  // Both add clauses after construction (clauses() grows).
+  // These add clauses after construction (clauses() grows), so a SAT solver
+  // can take in a refined model without starting over.
   void forbid_layout(const World &layout);
   void limit_blocks(int max_blocks);
+  void add_steady(const SteadyCase &steady);
+  // `steady` lists every steady case added so far, in order.
+  void add_transition(TransitionCase transition,
+                      const std::vector<SteadyCase> &steady);
   int horizon() const;
   // The model as CNF (DIMACS literals: variable index + 1, negative = not).
   const std::vector<std::vector<int>> &clauses() const;

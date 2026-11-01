@@ -29,6 +29,7 @@ constexpr std::chrono::milliseconds kCancelPollInterval{50};
 // change is first answered by banning layouts; only once it has caused this
 // many rejections is it added to the model.
 constexpr int kRejectionsBeforeTransition = 3;
+constexpr int kFirstRejectionsBeforeTransition = 10;
 
 // Removes blocks one at a time while the layout still passes verification.
 // Cheap compared to solving, and it cleans up first-found solutions.
@@ -288,10 +289,10 @@ SolveReport solve_cp_sat(const Spec &spec, const SolverOptions &options,
   return finish(SolveStatus::RefinementLimit);
 }
 
-// Incremental loop: one SAT portfolio per model plan. A verified circuit
-// tightens the block bound and a rejected one is banned, both as new clauses,
-// so the solvers keep what they learned. Only a refined plan (new steady
-// states or transitions) starts over with a fresh model.
+// Incremental loop on one SAT portfolio: a verified circuit tightens the
+// block bound, a rejected one is banned or adds the case it failed (new
+// steady states or transitions), all as new clauses, so the solvers keep
+// what they learned throughout.
 SolveReport solve_sat(const Spec &spec, const SolverOptions &options,
                       const ProgressCallback &progress) {
   auto report_progress = [&](std::string message) {
@@ -308,7 +309,6 @@ SolveReport solve_sat(const Spec &spec, const SolverOptions &options,
   auto cancelled = [&] { return options.cancel && options.cancel->load(); };
 
   ModelPlan plan = initial_plan(spec);
-  std::vector<World> forbidden;
   std::map<std::pair<InputVector, InputVector>, int> rejections;
   std::vector<InputVector> verification_vectors = spec.verification_vectors();
   int threads =
@@ -333,41 +333,35 @@ SolveReport solve_sat(const Spec &spec, const SolverOptions &options,
     return report;
   };
 
-  std::unique_ptr<CircuitEncoder> encoder;
-  std::unique_ptr<SatPortfolio> portfolio;
+  CircuitEncoder encoder(
+      spec, plan,
+      EncoderOptions{.minimize_blocks = false, .build_cp_model = false});
+  SatPortfolio portfolio(workers, options.sat_seed);
   std::size_t clauses_sent = 0;
+  report_progress(std::format(
+      "model: {} steady states, {} variables, {} clauses", plan.steady.size(),
+      encoder.variable_count(), encoder.clauses().size()));
+  auto finish_sat = [&](SolveStatus status) {
+    report.sat_conflicts = portfolio.conflicts();
+    return finish(status);
+  };
   for (int iteration = 0; iteration <= options.max_refinements; ++iteration) {
     if (cancelled())
-      return finish(SolveStatus::Cancelled);
-    if (!encoder) {
-      encoder = std::make_unique<CircuitEncoder>(
-          spec, plan,
-          EncoderOptions{.minimize_blocks = false,
-                         .forbidden_layouts = forbidden,
-                         .build_cp_model = false});
-      if (report.solution)
-        encoder->limit_blocks(report.solution->block_count - 1);
-      portfolio = std::make_unique<SatPortfolio>(workers);
-      clauses_sent = 0;
-      report_progress(std::format(
-          "model: {} steady states, {} transitions, {} variables, {} clauses",
-          plan.steady.size(), plan.transitions.size(),
-          encoder->variable_count(), encoder->clauses().size()));
-    }
-    portfolio->add(encoder->clauses(), clauses_sent);
-    clauses_sent = encoder->clauses().size();
+      return finish_sat(SolveStatus::Cancelled);
+    portfolio.add(encoder.clauses(), clauses_sent);
+    clauses_sent = encoder.clauses().size();
 
-    SatPortfolio::Outcome outcome = portfolio->solve(deadline, options.cancel);
+    SatPortfolio::Outcome outcome = portfolio.solve(deadline, options.cancel);
     report.refinements = iteration;
     if (outcome == SatPortfolio::Outcome::Stopped)
-      return finish(cancelled() ? SolveStatus::Cancelled
-                                : SolveStatus::OutOfTime);
+      return finish_sat(cancelled() ? SolveStatus::Cancelled
+                                    : SolveStatus::OutOfTime);
     if (outcome == SatPortfolio::Outcome::Unsatisfiable)
-      return finish(report.solution ? SolveStatus::Optimal
-                                    : SolveStatus::Infeasible);
+      return finish_sat(report.solution ? SolveStatus::Optimal
+                                        : SolveStatus::Infeasible);
 
     EncodedSolution candidate =
-        encoder->decode(portfolio->model(encoder->variable_count()));
+        encoder.decode(portfolio.model(encoder.variable_count()));
     report_progress(std::format("candidate with {} blocks, verifying",
                                 candidate.block_count));
     std::optional<VerificationFailure> failure = verify_layout(
@@ -382,8 +376,8 @@ SolveReport solve_sat(const Spec &spec, const SolverOptions &options,
       int blocks = candidate.block_count;
       report.solution = std::move(candidate);
       if (options.stop_at_first)
-        return finish(SolveStatus::Feasible);
-      encoder->limit_blocks(blocks - 1);
+        return finish_sat(SolveStatus::Feasible);
+      encoder.limit_blocks(blocks - 1);
       continue;
     }
 
@@ -394,14 +388,30 @@ SolveReport solve_sat(const Spec &spec, const SolverOptions &options,
                                     to_string(failure->to))
                       : std::format("settling at {}", to_string(failure->to));
     int &count = rejections[{failure->from.value_or(failure->to), failure->to}];
+    // Rejections are cheap here, so even first-circuit mode would otherwise
+    // ban layout after layout that fail the same input change; it waits
+    // longer since the transition makes the model several times larger.
     bool allow_transitions =
-        !options.stop_at_first && ++count >= kRejectionsBeforeTransition;
-    if (refine_plan(plan, spec, *failure, allow_transitions)) {
+        ++count >= (options.stop_at_first ? kFirstRejectionsBeforeTransition
+                                          : kRejectionsBeforeTransition);
+    std::size_t steady_before = plan.steady.size();
+    std::size_t transitions_before = plan.transitions.size();
+    bool refined = refine_plan(plan, spec, *failure, allow_transitions);
+    // New cases only add clauses, so the solvers keep what they learned.
+    // refine_plan may add steady states even when it reports no refinement.
+    for (std::size_t i = steady_before; i < plan.steady.size(); ++i)
+      encoder.add_steady(plan.steady[i]);
+    for (std::size_t i = transitions_before; i < plan.transitions.size(); ++i)
+      encoder.add_transition(plan.transitions[i], plan.steady);
+    if (refined) {
       report_progress(
           std::format("rejected ({}: {}); adding that case to the model", where,
                       failure->reason));
-      encoder.reset();
-      portfolio.reset();
+      report_progress(std::format("model: {} steady states, {} transitions, "
+                                  "{} variables, {} clauses",
+                                  plan.steady.size(), plan.transitions.size(),
+                                  encoder.variable_count(),
+                                  encoder.clauses().size()));
     } else {
       report_progress(std::format(
           "rejected ({}: {}, origin {} {} {}, rotation {}{}); banning this "
@@ -410,11 +420,10 @@ SolveReport solve_sat(const Spec &spec, const SolverOptions &options,
           failure->placement.origin.y, failure->placement.origin.z,
           failure->placement.symmetry.quarter_turns(),
           failure->placement.symmetry.mirrored() ? " mirrored" : ""));
-      forbidden.push_back(candidate.layout);
-      encoder->forbid_layout(candidate.layout);
+      encoder.forbid_layout(candidate.layout);
     }
   }
-  return finish(SolveStatus::RefinementLimit);
+  return finish_sat(SolveStatus::RefinementLimit);
 }
 
 } // namespace
