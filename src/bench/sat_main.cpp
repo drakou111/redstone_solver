@@ -45,11 +45,10 @@ double seconds_since(Clock::time_point start) {
 }
 
 std::string check(const rs::CircuitEncoder &encoder,
-                  const sat::CpSolverResponse &response,
-                  const rs::Spec &spec) {
+                  const sat::CpSolverResponse &response, const rs::Spec &spec) {
   rs::EncodedSolution solution = encoder.decode(response);
-  auto failure = rs::verify_layout(solution.layout, spec,
-                                   spec.verification_vectors());
+  auto failure =
+      rs::verify_layout(solution.layout, spec, spec.verification_vectors());
   return std::format("{} blocks, {}", solution.block_count,
                      failure ? "rejected by verifier" : "verified");
 }
@@ -118,10 +117,10 @@ int main(int argc, char **argv) {
     // CaDiCaL on the same clauses.
     std::filesystem::path model_file =
         work / (spec_path.stem().string() + ".model");
-    std::string command = std::format(
-        "\"\"{}\" {} \"{}\" -q \"{}\" > \"{}\"\"", kTimeoutTool,
-        static_cast<int>(limit), cadical.string(), cnf.string(),
-        model_file.string());
+    std::string command =
+        std::format("\"\"{}\" {} \"{}\" -q \"{}\" > \"{}\"\"", kTimeoutTool,
+                    static_cast<int>(limit), cadical.string(), cnf.string(),
+                    model_file.string());
     Clock::time_point sat_start = Clock::now();
     int code = std::system(command.c_str());
     double sat_seconds = seconds_since(sat_start);

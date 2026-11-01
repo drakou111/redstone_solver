@@ -36,6 +36,8 @@ struct EncoderOptions {
   std::optional<World> fixed_layout;    // forces every non-port cell
   std::vector<World> forbidden_layouts; // layouts that failed verification
   std::optional<int> max_blocks;        // upper bound on placed blocks
+  // Off: only the clauses are kept (for a SAT solver), not the CP-SAT model.
+  bool build_cp_model = true;
 };
 
 struct TransitionTrace {
@@ -69,9 +71,16 @@ public:
   const operations_research::sat::CpModelBuilder &model() const;
   EncodedSolution
   decode(const operations_research::sat::CpSolverResponse &response) const;
+  // values[i] is variable i (DIMACS variable i + 1).
+  EncodedSolution decode(const std::vector<bool> &values) const;
+
+  // Both add clauses after construction (clauses() grows).
+  void forbid_layout(const World &layout);
+  void limit_blocks(int max_blocks);
   int horizon() const;
   // The model as CNF (DIMACS literals: variable index + 1, negative = not).
   const std::vector<std::vector<int>> &clauses() const;
+  int variable_count() const;
 
 private:
   struct Impl;

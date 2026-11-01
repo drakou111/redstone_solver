@@ -34,7 +34,8 @@ Lit Int::ge(int k) const {
   return this->ge_[k - this->lo_ - 1];
 }
 
-Builder::Builder(sat::CpModelBuilder &model) : model_(model) {
+Builder::Builder(sat::CpModelBuilder &model, bool cp_constraints)
+    : model_(model), cp_constraints_(cp_constraints) {
   this->true_ = Lit(sat::BoolVar(), true);
   this->false_ = Lit(sat::BoolVar(), false);
 }
@@ -43,7 +44,10 @@ Lit Builder::constant(bool value) const {
   return value ? this->true_ : this->false_;
 }
 
-Lit Builder::new_bool() { return {this->model_.NewBoolVar(), std::nullopt}; }
+Lit Builder::new_bool() {
+  ++this->variables_;
+  return {this->model_.NewBoolVar(), std::nullopt};
+}
 
 void Builder::clause(const std::vector<Lit> &lits) {
   std::vector<sat::BoolVar> vars;
@@ -56,7 +60,8 @@ void Builder::clause(const std::vector<Lit> &lits) {
     vars.push_back(lit.var());
     ints.push_back(dimacs(lit.var()));
   }
-  this->model_.AddBoolOr(vars);
+  if (this->cp_constraints_)
+    this->model_.AddBoolOr(vars);
   this->clauses_.push_back(std::move(ints));
 }
 
@@ -196,6 +201,36 @@ Int Builder::max_of(const std::vector<Int> &xs) {
   return {lo, std::move(levels)};
 }
 
+Int Builder::count_for_upper_bound(const std::vector<Lit> &lits) {
+  std::vector<Int> layer;
+  int constant = 0;
+  for (const Lit &lit : lits) {
+    if (lit.is_constant())
+      constant += lit.is_true() ? 1 : 0;
+    else
+      layer.push_back(Int(0, {lit}));
+  }
+  if (layer.empty())
+    return Int::constant(constant);
+  while (layer.size() > 1) {
+    std::vector<Int> next;
+    for (std::size_t i = 0; i + 1 < layer.size(); i += 2) {
+      const Int &a = layer[i];
+      const Int &b = layer[i + 1];
+      Int sum = this->new_int(0, a.hi() + b.hi());
+      for (int i_a = 0; i_a <= a.hi(); ++i_a)
+        for (int i_b = 0; i_b <= b.hi(); ++i_b)
+          if (i_a + i_b > 0)
+            this->require(sum.ge(i_a + i_b), {a.ge(i_a), b.ge(i_b)});
+      next.push_back(std::move(sum));
+    }
+    if (layer.size() % 2 == 1)
+      next.push_back(layer.back());
+    layer = std::move(next);
+  }
+  return layer[0].plus(constant);
+}
+
 void Builder::exactly_one(const std::vector<Lit> &lits) {
   this->clause(lits);
   for (std::size_t i = 0; i < lits.size(); ++i)
@@ -252,8 +287,8 @@ void Builder::require_gap(const Int &a, const Int &b, int gap,
   }
 }
 
-void Builder::require_difference(const Int &result, const Int &a,
-                                 const Int &b, const std::vector<Lit> &when) {
+void Builder::require_difference(const Int &result, const Int &a, const Int &b,
+                                 const std::vector<Lit> &when) {
   int lo = std::min(result.lo(), 0) + 1;
   int hi = std::max(result.hi(), a.hi() - b.lo()) + 1;
   for (int k = lo; k <= hi; ++k)

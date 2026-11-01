@@ -54,12 +54,15 @@ private:
 // nothing.
 class Builder {
 public:
-  explicit Builder(sat::CpModelBuilder &model);
+  // Without `cp_constraints` the clauses are only recorded, not added to the
+  // CP-SAT model (variables are still created there for their numbering).
+  Builder(sat::CpModelBuilder &model, bool cp_constraints);
 
   sat::CpModelBuilder &model() { return this->model_; }
   const std::vector<std::vector<int>> &clauses() const {
     return this->clauses_;
   }
+  int variable_count() const { return this->variables_; }
 
   Lit constant(bool value) const;
   Lit new_bool();
@@ -80,6 +83,9 @@ public:
   Int select(Lit condition, const Int &x); // condition ? x : 0
   Int if_else(Lit condition, const Int &yes, const Int &no);
   Int max_of(const std::vector<Int> &xs);
+  // Number of true literals, encoded one way only (a totalizer): x >= k is
+  // forced once k literals hold, so only upper bounds on x are meaningful.
+  Int count_for_upper_bound(const std::vector<Lit> &lits);
   // Sum of non-negative terms of which at most one is non-zero.
   Int exclusive_sum(const std::vector<Int> &terms) {
     return this->max_of(terms);
@@ -106,6 +112,8 @@ private:
   void clause(const std::vector<Lit> &lits);
 
   sat::CpModelBuilder &model_;
+  bool cp_constraints_;
+  int variables_ = 0;
   Lit true_;
   Lit false_;
   std::map<std::vector<int>, Lit> and_cache_;

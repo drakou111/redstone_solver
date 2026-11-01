@@ -35,6 +35,8 @@ struct Options {
   bool first = true;
   bool best = true;
   std::string label = "unnamed";
+  rs::SolverEngine engine = rs::SolverEngine::Sat;
+  int sat_workers = 1;
 };
 
 struct Row {
@@ -67,6 +69,17 @@ Options parse(int argc, char **argv) {
           std::from_chars(v.data(), v.data() + v.size(), o.time_limit);
       if (error != std::errc() || o.time_limit <= 0)
         throw std::invalid_argument("--time-limit expects a positive number");
+    } else if (arg == "--sat-workers") {
+      std::string_view v = value();
+      auto [end, error] =
+          std::from_chars(v.data(), v.data() + v.size(), o.sat_workers);
+      if (error != std::errc() || o.sat_workers < 1)
+        throw std::invalid_argument("--sat-workers expects a positive number");
+    } else if (arg == "--engine") {
+      std::string_view v = value();
+      if (v != "sat" && v != "cpsat")
+        throw std::invalid_argument("--engine is sat or cpsat");
+      o.engine = v == "sat" ? rs::SolverEngine::Sat : rs::SolverEngine::CpSat;
     } else if (arg == "--mode") {
       std::string_view v = value();
       if (v != "first" && v != "best" && v != "both")
@@ -89,11 +102,13 @@ std::string read_file(const std::filesystem::path &path) {
   return content.str();
 }
 
-Row run(const std::filesystem::path &path, bool first, double time_limit) {
+Row run(const std::filesystem::path &path, bool first, const Options &o) {
   rs::Spec spec = rs::parse_spec(read_file(path));
   rs::SolverOptions options;
-  options.time_limit_seconds = time_limit;
+  options.time_limit_seconds = o.time_limit;
   options.stop_at_first = first;
+  options.engine = o.engine;
+  options.max_sat_workers = o.sat_workers;
   rs::SolveReport report = rs::solve(spec, options);
   Row row{path.stem().string(), first ? "first" : "best",
           std::string(rs::to_string(report.status)), report.seconds};
@@ -127,8 +142,10 @@ int main(int argc, char **argv) {
     std::filesystem::path csv =
         o.out / std::format("{}_{}.csv", stamp, o.label);
     std::ofstream file(csv);
-    file << std::format("# label={} time_limit={} threads={}\n", o.label,
-                        o.time_limit, std::thread::hardware_concurrency());
+    file << std::format(
+        "# label={} engine={} sat_workers={} time_limit={} threads={}\n",
+        o.label, o.engine == rs::SolverEngine::Sat ? "sat" : "cpsat",
+        o.sat_workers, o.time_limit, std::thread::hardware_concurrency());
     file << "spec,mode,status,seconds,blocks,rounds\n";
 
     double total = 0;
@@ -136,7 +153,7 @@ int main(int argc, char **argv) {
       for (bool first : {true, false}) {
         if ((first && !o.first) || (!first && !o.best))
           continue;
-        Row row = run(path, first, o.time_limit);
+        Row row = run(path, first, o);
         total += row.seconds;
         std::string line =
             std::format("{},{},{},{:.2f},{},{}", row.spec, row.mode, row.status,

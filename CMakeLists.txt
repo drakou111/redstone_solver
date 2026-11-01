@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.25)
-project(redstone_solver LANGUAGES CXX)
+project(redstone_solver LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -34,6 +34,26 @@ endif ()
 # Elsewhere, install OR-Tools and point CMAKE_PREFIX_PATH at it.
 find_package(ortools CONFIG REQUIRED)
 
+# --- CaDiCaL (SAT solver). It builds with make, so compile its sources here.
+FetchContent_Declare(cadical
+        GIT_REPOSITORY https://github.com/arminbiere/cadical.git
+        GIT_TAG rel-3.0.1
+        GIT_SHALLOW TRUE
+        SOURCE_SUBDIR no_cmake_project_here)
+FetchContent_MakeAvailable(cadical)
+file(GLOB CADICAL_SOURCES ${cadical_SOURCE_DIR}/src/*.cpp ${cadical_SOURCE_DIR}/src/*.c)
+list(REMOVE_ITEM CADICAL_SOURCES ${cadical_SOURCE_DIR}/src/cadical.cpp ${cadical_SOURCE_DIR}/src/mobical.cpp)
+add_library(cadical STATIC ${CADICAL_SOURCES})
+target_include_directories(cadical SYSTEM PUBLIC ${cadical_SOURCE_DIR}/src)
+target_compile_definitions(cadical PRIVATE NBUILD)
+if (MSVC)
+    set(CADICAL_COMPAT ${CMAKE_SOURCE_DIR}/cmake/cadical_compat)
+    target_include_directories(cadical PRIVATE ${CADICAL_COMPAT}/posix)
+    target_compile_options(cadical PRIVATE /W0 /FI${CADICAL_COMPAT}/msvc_compat.h)
+else ()
+    target_compile_options(cadical PRIVATE -w)
+endif ()
+
 # --- Core library
 add_library(redstone_core STATIC
         src/redstone/block.cpp
@@ -46,10 +66,19 @@ add_library(redstone_core STATIC
         src/redstone/verifier.cpp
         src/redstone/solver.cpp
         src/redstone/report.cpp
-        src/redstone/solve_job.cpp)
+        src/redstone/solve_job.cpp
+        src/redstone/sat_engine.cpp)
 target_include_directories(redstone_core PUBLIC src)
 target_compile_options(redstone_core PRIVATE ${REDSTONE_WARNINGS})
-target_link_libraries(redstone_core PUBLIC ortools::ortools)
+target_link_libraries(redstone_core PUBLIC ortools::ortools PRIVATE cadical)
+# CaDiCaL recurses deeply; Windows threads default to a 1 MB stack, and the
+# executable's stack reserve is what new threads get.
+if (MSVC)
+    target_link_options(redstone_core INTERFACE /STACK:67108864)
+endif ()
+if (MSVC)
+    target_include_directories(redstone_core PRIVATE ${CADICAL_COMPAT})
+endif ()
 
 # Copies the OR-Tools runtime DLLs next to an executable. TARGET_RUNTIME_DLLS misses the
 # transitive ones (zlib, bz2, soplex, ...), so take the whole prebuilt bin folder.
@@ -169,6 +198,7 @@ if (REDSTONE_BUILD_TESTS)
             tests/test_spec.cpp
             tests/test_encoder.cpp
             tests/test_solver.cpp
+            tests/test_sat.cpp
             tests/test_verifier.cpp
             tests/test_report.cpp)
     target_link_libraries(redstone_tests PRIVATE redstone_core Catch2::Catch2WithMain)

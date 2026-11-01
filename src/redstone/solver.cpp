@@ -4,6 +4,7 @@
 #include <chrono>
 #include <format>
 #include <map>
+#include <memory>
 #include <stdexcept>
 #include <thread>
 
@@ -12,6 +13,7 @@
 #include "ortools/sat/model.h"
 #include "ortools/sat/sat_parameters.pb.h"
 #include "redstone/report.hpp"
+#include "redstone/sat_engine.hpp"
 
 namespace rs {
 
@@ -134,9 +136,10 @@ std::string_view to_string(SolveStatus status) {
 // remaining time. A verified candidate becomes the best so far and later
 // rounds must beat it; a rejected one refines the model or is banned. When a
 // round proves nothing smaller exists, the best circuit is optimal.
-SolveReport solve(const Spec &spec, const SolverOptions &options,
-                  const ProgressCallback &progress) {
-  spec.validate();
+namespace {
+
+SolveReport solve_cp_sat(const Spec &spec, const SolverOptions &options,
+                         const ProgressCallback &progress) {
   auto report_progress = [&](std::string message) {
     if (progress)
       progress(message);
@@ -283,6 +286,145 @@ SolveReport solve(const Spec &spec, const SolverOptions &options,
     }
   }
   return finish(SolveStatus::RefinementLimit);
+}
+
+// Incremental loop: one SAT portfolio per model plan. A verified circuit
+// tightens the block bound and a rejected one is banned, both as new clauses,
+// so the solvers keep what they learned. Only a refined plan (new steady
+// states or transitions) starts over with a fresh model.
+SolveReport solve_sat(const Spec &spec, const SolverOptions &options,
+                      const ProgressCallback &progress) {
+  auto report_progress = [&](std::string message) {
+    if (progress)
+      progress(message);
+  };
+  const Clock::time_point start = Clock::now();
+  const Clock::time_point deadline =
+      start + std::chrono::duration_cast<Clock::duration>(
+                  std::chrono::duration<double>(options.time_limit_seconds));
+  auto elapsed = [&] {
+    return std::chrono::duration<double>(Clock::now() - start).count();
+  };
+  auto cancelled = [&] { return options.cancel && options.cancel->load(); };
+
+  ModelPlan plan = initial_plan(spec);
+  std::vector<World> forbidden;
+  std::map<std::pair<InputVector, InputVector>, int> rejections;
+  std::vector<InputVector> verification_vectors = spec.verification_vectors();
+  int threads =
+      options.threads > 0
+          ? options.threads
+          : static_cast<int>(std::max(1u, std::thread::hardware_concurrency()));
+  int workers = std::max(1, std::min(threads, options.max_sat_workers));
+
+  SolveReport report;
+  auto finish = [&](SolveStatus status) {
+    report.status = status;
+    if (report.solution && status != SolveStatus::Optimal) {
+      report.status = SolveStatus::Feasible;
+      int removed =
+          prune_layout(report.solution->layout, spec, verification_vectors,
+                       options.verification, options.cancel);
+      report.solution->block_count -= removed;
+      if (removed > 0)
+        report_progress(std::format("removed {} unneeded blocks", removed));
+    }
+    report.seconds = elapsed();
+    return report;
+  };
+
+  std::unique_ptr<CircuitEncoder> encoder;
+  std::unique_ptr<SatPortfolio> portfolio;
+  std::size_t clauses_sent = 0;
+  for (int iteration = 0; iteration <= options.max_refinements; ++iteration) {
+    if (cancelled())
+      return finish(SolveStatus::Cancelled);
+    if (!encoder) {
+      encoder = std::make_unique<CircuitEncoder>(
+          spec, plan,
+          EncoderOptions{.minimize_blocks = false,
+                         .forbidden_layouts = forbidden,
+                         .build_cp_model = false});
+      if (report.solution)
+        encoder->limit_blocks(report.solution->block_count - 1);
+      portfolio = std::make_unique<SatPortfolio>(workers);
+      clauses_sent = 0;
+      report_progress(std::format(
+          "model: {} steady states, {} transitions, {} variables, {} clauses",
+          plan.steady.size(), plan.transitions.size(),
+          encoder->variable_count(), encoder->clauses().size()));
+    }
+    portfolio->add(encoder->clauses(), clauses_sent);
+    clauses_sent = encoder->clauses().size();
+
+    SatPortfolio::Outcome outcome = portfolio->solve(deadline, options.cancel);
+    report.refinements = iteration;
+    if (outcome == SatPortfolio::Outcome::Stopped)
+      return finish(cancelled() ? SolveStatus::Cancelled
+                                : SolveStatus::OutOfTime);
+    if (outcome == SatPortfolio::Outcome::Unsatisfiable)
+      return finish(report.solution ? SolveStatus::Optimal
+                                    : SolveStatus::Infeasible);
+
+    EncodedSolution candidate =
+        encoder->decode(portfolio->model(encoder->variable_count()));
+    report_progress(std::format("candidate with {} blocks, verifying",
+                                candidate.block_count));
+    std::optional<VerificationFailure> failure = verify_layout(
+        candidate.layout, spec, verification_vectors, options.verification);
+    if (!failure) {
+      // Pruning is cheap next to solving and lets the bound drop in jumps.
+      candidate.block_count -=
+          prune_layout(candidate.layout, spec, verification_vectors,
+                       options.verification, options.cancel);
+      report_progress(
+          std::format("verified a {}-block circuit", candidate.block_count));
+      int blocks = candidate.block_count;
+      report.solution = std::move(candidate);
+      if (options.stop_at_first)
+        return finish(SolveStatus::Feasible);
+      encoder->limit_blocks(blocks - 1);
+      continue;
+    }
+
+    if (options.show_rejected)
+      report_progress("rejected layout:\n" + list_blocks(candidate.layout));
+    std::string where =
+        failure->from ? std::format("{} -> {}", to_string(*failure->from),
+                                    to_string(failure->to))
+                      : std::format("settling at {}", to_string(failure->to));
+    int &count = rejections[{failure->from.value_or(failure->to), failure->to}];
+    bool allow_transitions =
+        !options.stop_at_first && ++count >= kRejectionsBeforeTransition;
+    if (refine_plan(plan, spec, *failure, allow_transitions)) {
+      report_progress(
+          std::format("rejected ({}: {}); adding that case to the model", where,
+                      failure->reason));
+      encoder.reset();
+      portfolio.reset();
+    } else {
+      report_progress(std::format(
+          "rejected ({}: {}, origin {} {} {}, rotation {}{}); banning this "
+          "layout",
+          where, failure->reason, failure->placement.origin.x,
+          failure->placement.origin.y, failure->placement.origin.z,
+          failure->placement.symmetry.quarter_turns(),
+          failure->placement.symmetry.mirrored() ? " mirrored" : ""));
+      forbidden.push_back(candidate.layout);
+      encoder->forbid_layout(candidate.layout);
+    }
+  }
+  return finish(SolveStatus::RefinementLimit);
+}
+
+} // namespace
+
+SolveReport solve(const Spec &spec, const SolverOptions &options,
+                  const ProgressCallback &progress) {
+  spec.validate();
+  return options.engine == SolverEngine::Sat
+             ? solve_sat(spec, options, progress)
+             : solve_cp_sat(spec, options, progress);
 }
 
 } // namespace rs

@@ -172,8 +172,8 @@ struct CircuitEncoder::Impl {
   };
 
   Impl(const Spec &spec, const ModelPlan &plan, EncoderOptions options)
-      : spec(spec), options(std::move(options)), b(model),
-        horizon(spec.timing.horizon()) {
+      : spec(spec), options(std::move(options)),
+        b(model, this->options.build_cp_model), horizon(spec.timing.horizon()) {
     spec.validate();
     this->base = spec.base_world();
     this->build_cells();
@@ -207,11 +207,14 @@ struct CircuitEncoder::Impl {
   }
 
   void limit_blocks(int max_blocks) {
-    sat::LinearExpr placed;
-    for (const Cell &c : this->cells)
-      if (!c.fixed)
-        placed += sat::LinearExpr(1) - c.kind[kAir].expr();
-    this->model.AddLessOrEqual(placed, max_blocks);
+    if (!this->placed_count) {
+      std::vector<Lit> placed;
+      for (const Cell &c : this->cells)
+        if (!c.fixed)
+          placed.push_back(!c.kind[kAir]);
+      this->placed_count = this->b.count_for_upper_bound(placed);
+    }
+    this->b.require(!this->placed_count->ge(max_blocks + 1));
   }
 
   // ---------------------------------------------------------------- cells
@@ -707,8 +710,8 @@ struct CircuitEncoder::Impl {
       if (j < 0)
         return Int::constant(0);
       return this->b.exclusive_sum({x.weak[j][index_of(d)],
-                                         x.dust_emit[j][index_of(d)],
-                                         x.conducted[j]});
+                                    x.dust_emit[j][index_of(d)],
+                                    x.conducted[j]});
     };
     auto signal_positive = [&](int j, Dir d) {
       if (j < 0)
@@ -1168,10 +1171,12 @@ struct CircuitEncoder::Impl {
 
   // --------------------------------------------------------------- decode
 
-  EncodedSolution decode(const sat::CpSolverResponse &response) const {
+  EncodedSolution decode(const std::vector<bool> &values) const {
     auto value = [&](const Lit &lit) {
-      return lit.is_constant() ? lit.is_true()
-                               : sat::SolutionBooleanValue(response, lit.var());
+      if (lit.is_constant())
+        return lit.is_true();
+      int index = lit.var().index();
+      return index >= 0 ? values.at(index) : !values.at(-index - 1);
     };
     auto int_value = [&](const Int &x) {
       int result = x.lo();
@@ -1275,6 +1280,7 @@ struct CircuitEncoder::Impl {
   EncoderOptions options;
   sat::CpModelBuilder model;
   cp::Builder b;
+  std::optional<Int> placed_count;
   int horizon;
   World base{{1, 1, 1}};
   std::vector<Cell> cells;
@@ -1295,7 +1301,26 @@ const sat::CpModelBuilder &CircuitEncoder::model() const {
 
 EncodedSolution
 CircuitEncoder::decode(const sat::CpSolverResponse &response) const {
-  return this->impl_->decode(response);
+  std::vector<bool> values(response.solution().size());
+  for (int i = 0; i < response.solution().size(); ++i)
+    values[i] = response.solution(i) != 0;
+  return this->impl_->decode(values);
+}
+
+EncodedSolution CircuitEncoder::decode(const std::vector<bool> &values) const {
+  return this->impl_->decode(values);
+}
+
+void CircuitEncoder::forbid_layout(const World &layout) {
+  this->impl_->require_layout(layout, false);
+}
+
+void CircuitEncoder::limit_blocks(int max_blocks) {
+  this->impl_->limit_blocks(max_blocks);
+}
+
+int CircuitEncoder::variable_count() const {
+  return this->impl_->b.variable_count();
 }
 
 int CircuitEncoder::horizon() const { return this->impl_->horizon; }
