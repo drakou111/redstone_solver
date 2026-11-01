@@ -173,6 +173,8 @@ struct CircuitEncoder::Impl {
   };
 
   struct Slice {
+    // Settled: every component already shows what it computes.
+    bool steady = false;
     std::vector<Components> comp;
     InputVector inputs;
     std::vector<Int> dust;
@@ -620,10 +622,15 @@ struct CircuitEncoder::Impl {
   void add_dependency_constraints() {
     const int n = static_cast<int>(this->cells.size());
     const bool ranked = !this->spec.allow_feedback;
+    // Only components raise the rank, so it never exceeds the number of
+    // cells that could hold one.
+    int max_rank = 0;
+    for (const Cell &c : this->cells)
+      max_rank += c.component.is_false() ? 0 : 1;
     std::vector<Int> rank;
     if (ranked)
       for (int i = 0; i < n; ++i)
-        rank.push_back(this->b.new_int(0, n));
+        rank.push_back(this->b.new_int(0, max_rank));
 
     auto edge = [&](int p, Vec3 q_position, int gap, std::vector<Lit> when) {
       int q = this->cell_index(q_position);
@@ -991,7 +998,10 @@ struct CircuitEncoder::Impl {
             side_parts.push_back(part);
           this->b.require_equal_max(side, side_parts, {is_comparator, facing});
         }
-        Int calc = this->b.new_int(0, kMaxSignal);
+        // Settled, a comparator's output is what it computes, so both share
+        // one value.
+        Int calc =
+            s.steady ? s.comp[i].comp_out : this->b.new_int(0, kMaxSignal);
         Lit passes =
             this->b.all({this->b.positive(rear), !this->b.greater(side, rear)});
         this->b.require_equal(calc, Int::constant(0), {!is_comparator});
@@ -1130,6 +1140,7 @@ struct CircuitEncoder::Impl {
 
   Slice make_steady(const SteadyCase &steady) {
     Slice s;
+    s.steady = true;
     s.inputs = steady.inputs;
     s.comp = this->new_component_layer(true);
     this->build_instant(s);
@@ -1140,7 +1151,6 @@ struct CircuitEncoder::Impl {
       // Even a locked repeater must agree with its input: a latched value
       // would be memory, which a truth table cannot rely on.
       this->b.require_equal(k.rep_on, s.rep_should[i], {c.kind[kRepeater]});
-      this->b.require_equal(k.comp_out, s.calc[i], {c.kind[kComparator]});
     }
     this->require_outputs(s, steady.expected);
     return s;
