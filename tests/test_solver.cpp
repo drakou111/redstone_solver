@@ -34,6 +34,11 @@ row IN1(ss0) -> OUT1(ss1..15)
   // Block, torch, and supports under the comparator input and output dust.
   CHECK(report.solution->block_count == 4);
   CHECK(report.solution->layout.at({2, 1, 0}).type == BlockType::Torch);
+  // The support layer holds solid blocks only, even with glass allowed.
+  for (int x = 0; x < spec.size.x; ++x) {
+    BlockType floor = report.solution->layout.at({x, 0, 0}).type;
+    CHECK((floor == BlockType::Air || floor == BlockType::Solid));
+  }
 }
 
 TEST_CASE("solver meets an exact delay with outputs held until then") {

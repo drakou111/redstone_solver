@@ -52,6 +52,8 @@ Spec spec_for(const World &layout) {
   spec.rows.push_back({std::vector<SignalRange>(spec.inputs.size()),
                        std::vector<SignalRange>(spec.outputs.size())});
   spec.timing.horizon_ticks = kHorizon;
+  // The layouts stand on glass, which the support layer would not allow.
+  spec.support_layer = false;
   return spec;
 }
 

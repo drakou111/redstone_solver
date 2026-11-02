@@ -56,7 +56,7 @@ constexpr std::string_view kUsage =
     "interfere\n"
     "  feedback on|off       allow loops through components (memory, clocks); "
     "default off\n"
-    "  support_layer on|off   bottom layer holds only wool/glass supports "
+    "  support_layer on|off   bottom layer holds only solid supports "
     "(faster); default on\n"
     "  settle <ticks>         extra ticks after <latest> to come to rest "
     "(default 4)\n"
