@@ -3,9 +3,11 @@
 #include <chrono>
 #include <functional>
 #include <optional>
+#include <string>
 #include <vector>
 
 #include "redstone/cp_builder.hpp"
+#include "redstone/encoder.hpp"
 #include "redstone/sat_engine.hpp"
 #include "redstone/solver.hpp"
 
@@ -245,4 +247,35 @@ row IN1(ss0) -> OUT1(ss0)
     REQUIRE(report.status == SolveStatus::Optimal);
     CHECK(report.solution->block_count == 5);
   }
+}
+
+TEST_CASE("model size profile accounts for every clause and variable") {
+  Spec spec = parse_spec(R"(
+size 4 2 1
+input IN1 strong 0 1 0 east
+output OUT1 dust 3 1 0
+horizon 8
+row IN1(ss1..15) -> OUT1(ss0)
+row IN1(ss0) -> OUT1(ss1..15)
+)");
+  ModelPlan plan;
+  for (const InputVector &inputs : spec.representative_vectors())
+    plan.steady.push_back({inputs, spec.expected_outputs(inputs)});
+  plan.transitions.push_back({0, 1});
+  CircuitEncoder encoder(spec, plan, {.build_cp_model = false});
+  encoder.limit_blocks(3);
+
+  long long variables = 0;
+  long long clauses = 0;
+  std::vector<std::string> names;
+  for (const ModelPart &part : encoder.size_profile()) {
+    variables += part.variables;
+    clauses += part.clauses;
+    names.push_back(part.name);
+  }
+  CHECK(variables == encoder.variable_count());
+  CHECK(clauses == static_cast<long long>(encoder.clauses().size()));
+  for (const char *expected :
+       {"steady: dust", "ticks: comparators", "block limit"})
+    CHECK(std::find(names.begin(), names.end(), expected) != names.end());
 }

@@ -3,7 +3,9 @@
 #include <algorithm>
 #include <array>
 #include <format>
+#include <map>
 #include <stdexcept>
+#include <string>
 
 #include "redstone/cp_builder.hpp"
 
@@ -225,6 +227,53 @@ struct CircuitEncoder::Impl {
       this->add_objective();
   }
 
+  // Charges what the builder added since the last charge to the innermost
+  // open part, so nested parts never count anything twice.
+  void charge() {
+    const auto &clauses = this->b.clauses();
+    ModelPart &part =
+        this->profile[this->open_parts.empty() ? std::string("other")
+                                               : this->open_parts.back()];
+    part.variables += this->b.variable_count() - this->charged_variables;
+    part.clauses +=
+        static_cast<long long>(clauses.size()) - this->charged_clauses;
+    for (std::size_t i = this->charged_clauses; i < clauses.size(); ++i)
+      part.literals += static_cast<long long>(clauses[i].size());
+    this->charged_variables = this->b.variable_count();
+    this->charged_clauses = clauses.size();
+  }
+
+  class Measure {
+  public:
+    Measure(Impl &impl, std::string name) : impl_(impl) {
+      impl.charge();
+      impl.open_parts.push_back(std::move(name));
+    }
+    ~Measure() {
+      this->impl_.charge();
+      this->impl_.open_parts.pop_back();
+    }
+    Measure(const Measure &) = delete;
+    Measure &operator=(const Measure &) = delete;
+
+  private:
+    Impl &impl_;
+  };
+
+  std::vector<ModelPart> size_profile() {
+    this->charge();
+    std::vector<ModelPart> parts;
+    for (const auto &[name, part] : this->profile) {
+      parts.push_back(part);
+      parts.back().name = name;
+    }
+    std::sort(parts.begin(), parts.end(),
+              [](const ModelPart &a, const ModelPart &b) {
+                return a.literals > b.literals;
+              });
+    return parts;
+  }
+
   void add_steady_case(const SteadyCase &steady) {
     if (steady.inputs.size() != this->spec.inputs.size())
       throw std::invalid_argument("steady case does not match the input count");
@@ -241,6 +290,7 @@ struct CircuitEncoder::Impl {
   }
 
   void limit_blocks(int max_blocks) {
+    Measure measure(*this, "block limit");
     if (!this->placed_count) {
       std::vector<Lit> placed;
       for (const Cell &c : this->cells)
@@ -276,6 +326,7 @@ struct CircuitEncoder::Impl {
   const Cell &cell_at(Vec3 p) const { return this->cell(this->cell_index(p)); }
 
   void build_cells() {
+    Measure measure(*this, "cells and shapes");
     this->air_cell = this->constant_cell(kAir);
     this->cells.resize(this->base.volume());
 
@@ -338,8 +389,7 @@ struct CircuitEncoder::Impl {
         for (Kind k : palette) {
           // Optional build style: the bottom layer only holds supports,
           // which removes many choices the search would otherwise explore.
-          if (this->spec.support_layer && p.y == 0 && k != kAir &&
-              k != kSolid)
+          if (this->spec.support_layer && p.y == 0 && k != kAir && k != kSolid)
             continue;
           c.kind[k] = this->b.new_bool();
           kind_vars.push_back(c.kind[k]);
@@ -528,6 +578,7 @@ struct CircuitEncoder::Impl {
   }
 
   void add_static_constraints() {
+    Measure measure(*this, "placement rules");
     for (const Cell &c : this->cells) {
       Vec3 p = c.position;
       const Cell &below = this->cell_at(p + offset(Dir::Down));
@@ -620,6 +671,7 @@ struct CircuitEncoder::Impl {
   //  - With tiling, no edge may cross into a neighbouring copy, so copies
   //    cannot influence each other whatever their inputs are.
   void add_dependency_constraints() {
+    Measure measure(*this, "no loops (ranks)");
     const int n = static_cast<int>(this->cells.size());
     const bool ranked = !this->spec.allow_feedback;
     // Only components raise the rank, so it never exceeds the number of
@@ -688,6 +740,7 @@ struct CircuitEncoder::Impl {
   // --------------------------------------------------------------- slices
 
   Components new_components(const Cell &c, bool steady) {
+    Measure measure(*this, "component states");
     Components x;
     x.lit = c.may(kTorch) ? this->b.new_bool() : this->b.constant(false);
     x.rep_on = c.may(kRepeater) ? this->b.new_bool() : this->b.constant(false);
@@ -717,6 +770,9 @@ struct CircuitEncoder::Impl {
   // Computes everything that settles within a tick from the component states.
   void build_instant(Slice &s) {
     const int n = static_cast<int>(this->cells.size());
+    const std::string slice = s.steady ? "steady: " : "ticks: ";
+    std::optional<Measure> measure;
+    measure.emplace(*this, slice + "emission");
     SliceScratch x;
     x.weak.resize(n);
     x.strong.resize(n);
@@ -791,6 +847,8 @@ struct CircuitEncoder::Impl {
     }
 
     // Power held by conductors (Java getDirectSignalTo), with and without dust.
+    measure.reset();
+    measure.emplace(*this, slice + "conductors");
     for (int i = 0; i < n; ++i) {
       const Cell &c = this->cells[i];
       if (c.conductor.is_false())
@@ -851,6 +909,8 @@ struct CircuitEncoder::Impl {
     };
 
     // Dust power: strongest source, or strongest connected dust minus one.
+    measure.reset();
+    measure.emplace(*this, slice + "dust");
     for (int i = 0; i < n; ++i) {
       const Cell &c = this->cells[i];
       if (c.dust.is_false() || c.kind[kInputDust].is_true())
@@ -934,11 +994,13 @@ struct CircuitEncoder::Impl {
                                 with({!behind_cell.container, !through}));
     };
 
+    measure.reset();
     for (int i = 0; i < n; ++i) {
       const Cell &c = this->cells[i];
       Vec3 p = c.position;
 
       if (c.may(kTorch)) {
+        Measure part(*this, slice + "torches");
         std::vector<Lit> attached;
         for (Dir d : kTorchAttachments)
           attached.push_back(
@@ -948,6 +1010,7 @@ struct CircuitEncoder::Impl {
       }
 
       if (c.may(kRepeater)) {
+        Measure part(*this, slice + "repeaters");
         std::vector<Lit> should;
         std::vector<Lit> locked;
         for (Dir d : kHorizontalDirs) {
@@ -966,6 +1029,7 @@ struct CircuitEncoder::Impl {
       }
 
       if (c.may(kNoteBlock) || c.may(kHopper)) {
+        Measure part(*this, slice + "powered blocks");
         std::vector<Lit> powered;
         for (Dir k : kAllDirs)
           powered.push_back(signal_positive(from_side(p, k), opposite(k)));
@@ -978,6 +1042,7 @@ struct CircuitEncoder::Impl {
         // Rear and side readings are pinned per facing by conditional
         // clauses rather than built as expressions, which would need helper
         // variables for every level of every candidate reading.
+        Measure part(*this, slice + "comparators");
         Lit is_comparator = c.kind[kComparator];
         Int rear = this->b.new_int(0, kMaxSignal);
         Int side = this->b.new_int(0, kMaxSignal);
@@ -1013,6 +1078,7 @@ struct CircuitEncoder::Impl {
       }
     }
 
+    measure.emplace(*this, slice + "outputs");
     s.outputs.clear();
     for (std::size_t o = 0; o < this->spec.outputs.size(); ++o) {
       const OutputPort &port = this->spec.outputs[o];
@@ -1144,6 +1210,7 @@ struct CircuitEncoder::Impl {
     s.inputs = steady.inputs;
     s.comp = this->new_component_layer(true);
     this->build_instant(s);
+    Measure measure(*this, "steady: settled components");
     for (std::size_t i = 0; i < this->cells.size(); ++i) {
       const Cell &c = this->cells[i];
       const Components &k = s.comp[i];
@@ -1192,6 +1259,8 @@ struct CircuitEncoder::Impl {
     const Slice &start = this->steady_slices[transition.from];
     const Slice &end = this->steady_slices[transition.to];
 
+    std::optional<Measure> measure;
+    measure.emplace(*this, "ticks: schedule");
     // schedule[t][cell]: a scheduled tick fires at time t.
     std::vector<std::vector<Lit>> schedule(
         ticks + kMaxScheduleDelay + 1,
@@ -1204,6 +1273,7 @@ struct CircuitEncoder::Impl {
       for (int i = 0; i < n; ++i)
         this->b.require(!schedule[t][i], {!this->cells[i].component});
 
+    measure.reset();
     std::vector<Slice> slices(ticks + 1);
     slices[0].inputs = target.inputs;
     slices[0].comp = start.comp;
@@ -1218,8 +1288,11 @@ struct CircuitEncoder::Impl {
     else
       throw std::logic_error("horizon must be at least one tick");
 
+    measure.emplace(*this, "ticks: state updates");
     for (int t = 1; t <= ticks; ++t)
       this->add_step(slices[t - 1], slices[t], schedule[t]);
+    measure.reset();
+    measure.emplace(*this, "ticks: scheduling");
     for (int t = 0; t <= ticks; ++t)
       this->add_scheduling(t == 0 ? start : slices[t - 1], slices[t], schedule,
                            t);
@@ -1230,6 +1303,8 @@ struct CircuitEncoder::Impl {
           this->b.require(!schedule[t][i], {c.kind[kRepeater], c.delay[k]});
     }
 
+    measure.reset();
+    measure.emplace(*this, "ticks: output timing");
     TransitionData data{transition, {}};
     for (int t = 0; t <= ticks; ++t)
       data.outputs.push_back(slices[t].outputs);
@@ -1376,6 +1451,7 @@ struct CircuitEncoder::Impl {
   }
 
   void require_layout(const World &layout, bool required) {
+    Measure measure(*this, "fixed or banned layouts");
     std::vector<Lit> lits = this->layout_literals(layout);
     if (required) {
       for (const Lit &lit : lits)
@@ -1562,6 +1638,10 @@ struct CircuitEncoder::Impl {
   Cell air_cell;
   std::vector<Slice> steady_slices;
   std::vector<TransitionData> transitions;
+  std::map<std::string, ModelPart> profile;
+  std::vector<std::string> open_parts;
+  int charged_variables = 0;
+  std::size_t charged_clauses = 0;
 };
 
 CircuitEncoder::CircuitEncoder(const Spec &spec, const ModelPlan &plan,
@@ -1609,6 +1689,10 @@ std::vector<int> CircuitEncoder::preferred_literals() const {
     if (!c.fixed && !c.kind[kAir].is_constant())
       lits.push_back(c.kind[kAir].dimacs());
   return lits;
+}
+
+std::vector<ModelPart> CircuitEncoder::size_profile() const {
+  return this->impl_->size_profile();
 }
 
 int CircuitEncoder::variable_count() const {

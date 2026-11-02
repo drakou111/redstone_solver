@@ -14,6 +14,7 @@
 #include <thread>
 #include <vector>
 
+#include "redstone/encoder.hpp"
 #include "redstone/solver.hpp"
 #include "redstone/spec.hpp"
 
@@ -31,6 +32,8 @@ constexpr std::string_view kUsage =
     "  --seeds <n>            runs per spec with SAT seeds 0..n-1 (default 1)\n"
     "  --jobs <n>             solves run in parallel (default 1); compare\n"
     "                         conflicts, since times then depend on load\n"
+    "  --profile <spec>       print the model size per part (settled states\n"
+    "                         and one input change) instead of solving\n"
     "  --help                 show this help\n";
 
 struct Options {
@@ -44,6 +47,7 @@ struct Options {
   int sat_workers = 1;
   int seeds = 1;
   int jobs = 1;
+  std::filesystem::path profile;
 };
 
 struct Row {
@@ -95,6 +99,8 @@ Options parse(int argc, char **argv) {
       o.seeds = positive_int(value(), arg);
     } else if (arg == "--jobs") {
       o.jobs = positive_int(value(), arg);
+    } else if (arg == "--profile") {
+      o.profile = value();
     } else if (arg == "--engine") {
       std::string_view v = value();
       if (v != "sat" && v != "cpsat")
@@ -143,6 +149,41 @@ Row run(const std::filesystem::path &path, bool first, int seed,
   return row;
 }
 
+// The model the SAT engine starts from, plus one input change, by part.
+void print_profile(const std::filesystem::path &path) {
+  rs::Spec spec = rs::parse_spec(read_file(path));
+  rs::ModelPlan plan;
+  for (const rs::InputVector &inputs : spec.representative_vectors())
+    plan.steady.push_back({inputs, spec.expected_outputs(inputs)});
+  if (plan.steady.size() >= 2)
+    plan.transitions.push_back({0, static_cast<int>(plan.steady.size()) - 1});
+  rs::CircuitEncoder encoder(
+      spec, plan, {.minimize_blocks = false, .build_cp_model = false});
+
+  long long variables = 0;
+  long long clauses = 0;
+  long long literals = 0;
+  std::vector<rs::ModelPart> parts = encoder.size_profile();
+  for (const rs::ModelPart &part : parts) {
+    variables += part.variables;
+    clauses += part.clauses;
+    literals += part.literals;
+  }
+  std::cout << std::format(
+      "{}: {} settled states, 1 input change over {} ticks\n",
+      path.filename().string(), plan.steady.size(), encoder.horizon());
+  std::cout << std::format("{:<30} {:>10} {:>10} {:>11} {:>6}\n", "part",
+                           "variables", "clauses", "literals", "share");
+  for (const rs::ModelPart &part : parts)
+    std::cout << std::format("{:<30} {:>10} {:>10} {:>11} {:>5.1f}%\n",
+                             part.name, part.variables, part.clauses,
+                             part.literals,
+                             100.0 * static_cast<double>(part.literals) /
+                                 static_cast<double>(literals));
+  std::cout << std::format("{:<30} {:>10} {:>10} {:>11}\n", "total", variables,
+                           clauses, literals);
+}
+
 } // namespace
 
 int main(int argc, char **argv) {
@@ -153,6 +194,10 @@ int main(int argc, char **argv) {
     }
   try {
     Options o = parse(argc, argv);
+    if (!o.profile.empty()) {
+      print_profile(o.profile);
+      return 0;
+    }
     std::vector<std::filesystem::path> specs;
     for (const auto &entry : std::filesystem::directory_iterator(o.specs))
       if (entry.path().extension() == ".txt")

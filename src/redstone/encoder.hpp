@@ -2,6 +2,7 @@
 
 #include <memory>
 #include <optional>
+#include <string>
 #include <vector>
 
 #include "ortools/sat/cp_model.h"
@@ -43,6 +44,14 @@ struct EncoderOptions {
 struct TransitionTrace {
   TransitionCase transition;
   std::vector<std::vector<int>> outputs; // [tick 0..horizon][output channel]
+};
+
+// Size of one part of the model, to see what is worth making smaller.
+struct ModelPart {
+  std::string name;
+  long long variables = 0;
+  long long clauses = 0;
+  long long literals = 0;
 };
 
 struct EncodedSolution {
@@ -89,6 +98,8 @@ public:
   // Literals a SAT solver should try first: "this cell is air" for every
   // cell the solver fills, so first circuits come out sparse.
   std::vector<int> preferred_literals() const;
+  // Variables and clauses per part of the model, largest first.
+  std::vector<ModelPart> size_profile() const;
 
 private:
   struct Impl;
