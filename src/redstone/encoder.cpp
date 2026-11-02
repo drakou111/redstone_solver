@@ -1050,10 +1050,15 @@ struct CircuitEncoder::Impl {
         this->b.require_in_range(side, 0, 0, {!is_comparator});
         for (Dir d : kHorizontalDirs) {
           Lit facing = c.facing[index_of(d)];
-          if (facing.is_false())
+          if (!facing.is_false())
+            rear_into(rear, p, d, {is_comparator, facing});
+        }
+        // Both facings along an axis read the same two side neighbours.
+        for (Dir d : {Dir::North, Dir::East}) {
+          Lit along = this->b.any(
+              {c.facing[index_of(d)], c.facing[index_of(opposite(d))]});
+          if (along.is_false())
             continue;
-          rear_into(rear, p, d, {is_comparator, facing});
-
           Dir right = rotate_clockwise(d);
           Dir left = rotate_counter_clockwise(d);
           std::vector<Int> side_parts =
@@ -1061,19 +1066,30 @@ struct CircuitEncoder::Impl {
           for (const Int &part :
                this->control_parts(s, x, from_side(p, left), opposite(left)))
             side_parts.push_back(part);
-          this->b.require_equal_max(side, side_parts, {is_comparator, facing});
+          this->b.require_equal_max(side, side_parts, {is_comparator, along});
         }
         // Settled, a comparator's output is what it computes, so both share
         // one value.
         Int calc =
             s.steady ? s.comp[i].comp_out : this->b.new_int(0, kMaxSignal);
-        Lit passes =
-            this->b.all({this->b.positive(rear), !this->b.greater(side, rear)});
         this->b.require_equal(calc, Int::constant(0), {!is_comparator});
-        this->b.require_equal(calc, Int::constant(0), {is_comparator, !passes});
+        // Subtract: max(0, rear - side), which is 0 whenever compare mode
+        // would output nothing.
         this->b.require_difference(calc, rear, side,
-                                   {is_comparator, passes, c.subtract});
-        this->b.require_equal(calc, rear, {is_comparator, passes, !c.subtract});
+                                   {is_comparator, c.subtract});
+        // Compare: rear if side <= rear, else 0. Stated level by level so
+        // no helper variables are needed.
+        Lit compare = !c.subtract;
+        Lit on = calc.ge(1);
+        for (int k = 1; k <= kMaxSignal; ++k) {
+          this->b.require(rear.ge(k), {is_comparator, compare, calc.ge(k)});
+          if (k >= 2)
+            this->b.require(calc.ge(k),
+                            {is_comparator, compare, on, rear.ge(k)});
+          this->b.require(rear.ge(k), {is_comparator, compare, on, side.ge(k)});
+          this->b.require(side.ge(k + 1),
+                          {is_comparator, compare, !on, rear.ge(k)});
+        }
         s.calc[i] = calc;
       }
     }
