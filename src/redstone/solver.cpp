@@ -1,11 +1,15 @@
 #include "redstone/solver.hpp"
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <format>
+#include <limits>
 #include <map>
 #include <memory>
+#include <mutex>
 #include <stdexcept>
+#include <string>
 #include <thread>
 
 #include "ortools/sat/cp_model.pb.h"
@@ -72,8 +76,19 @@ int find_or_add_steady(ModelPlan &plan, const Spec &spec,
 
 // Settled states only: unrolling every transition up front makes the model far
 // larger, and the verifier adds the transitions that actually misbehave.
-ModelPlan initial_plan(const Spec &spec) {
+// With one_row_each, only the lowest input vector of each truth row; the
+// verifier adds the others when a candidate fails them.
+ModelPlan initial_plan(const Spec &spec, bool one_row_each = false) {
   ModelPlan plan;
+  if (one_row_each) {
+    for (const TruthRow &row : spec.rows) {
+      InputVector lowest;
+      for (SignalRange range : row.inputs)
+        lowest.push_back(range.min);
+      find_or_add_steady(plan, spec, lowest);
+    }
+    return plan;
+  }
   for (const InputVector &inputs : spec.representative_vectors())
     find_or_add_steady(plan, spec, inputs);
   return plan;
@@ -289,26 +304,60 @@ SolveReport solve_cp_sat(const Spec &spec, const SolverOptions &options,
   return finish(SolveStatus::RefinementLimit);
 }
 
+// Blocks the quick search may place (those the spec's palette allows).
+constexpr std::array<BlockType, 4> kQuickPalette{
+    BlockType::Solid, BlockType::Dust, BlockType::Torch, BlockType::Repeater};
+
+// What the SAT searches running side by side share.
+struct SharedSearch {
+  std::mutex mutex;
+  std::optional<EncodedSolution> best; // guarded by mutex
+  std::atomic<int> best_blocks = std::numeric_limits<int>::max();
+  // Set once the answer is settled (optimality proven, or a first circuit
+  // found in stop-at-first mode); every search then stops.
+  std::atomic<bool> finished = false;
+};
+
+struct SatSearch {
+  std::string name;
+  Spec spec;
+  bool one_row_each = false; // start from one input vector per truth row
+  // Its palette is the spec's, so running out of circuits proves the best
+  // one optimal.
+  bool complete = false;
+  // Set when another search finds a better circuit, so this one stops its
+  // current solve and takes the tighter bound.
+  std::atomic<bool> interrupt = false;
+};
+
+enum class SearchEnd {
+  Proven,
+  Exhausted,
+  Found,
+  Stopped,
+  Cancelled,
+  OutOfTime,
+  RefinementLimit
+};
+
+struct SearchResult {
+  SearchEnd end = SearchEnd::Stopped;
+  int refinements = 0;
+  std::int64_t conflicts = 0;
+};
+
 // Incremental loop on one SAT portfolio: a verified circuit tightens the
 // block bound, a rejected one is banned or adds the case it failed (new
 // steady states or transitions), all as new clauses, so the solvers keep
 // what they learned throughout.
-SolveReport solve_sat(const Spec &spec, const SolverOptions &options,
-                      const ProgressCallback &progress) {
-  auto report_progress = [&](std::string message) {
-    if (progress)
-      progress(message);
-  };
-  const Clock::time_point start = Clock::now();
-  const Clock::time_point deadline =
-      start + std::chrono::duration_cast<Clock::duration>(
-                  std::chrono::duration<double>(options.time_limit_seconds));
-  auto elapsed = [&] {
-    return std::chrono::duration<double>(Clock::now() - start).count();
-  };
+SearchResult run_sat_search(SatSearch &search,
+                            std::vector<std::unique_ptr<SatSearch>> &searches,
+                            SharedSearch &shared, const SolverOptions &options,
+                            Clock::time_point deadline,
+                            const std::function<void(std::string)> &say) {
+  const Spec &spec = search.spec;
   auto cancelled = [&] { return options.cancel && options.cancel->load(); };
-
-  ModelPlan plan = initial_plan(spec);
+  ModelPlan plan = initial_plan(spec, search.one_row_each);
   std::map<std::pair<InputVector, InputVector>, int> rejections;
   std::vector<InputVector> verification_vectors = spec.verification_vectors();
   int threads =
@@ -317,55 +366,63 @@ SolveReport solve_sat(const Spec &spec, const SolverOptions &options,
           : static_cast<int>(std::max(1u, std::thread::hardware_concurrency()));
   int workers = std::max(1, std::min(threads, options.max_sat_workers));
 
-  SolveReport report;
-  auto finish = [&](SolveStatus status) {
-    report.status = status;
-    if (report.solution && status != SolveStatus::Optimal) {
-      report.status = SolveStatus::Feasible;
-      int removed =
-          prune_layout(report.solution->layout, spec, verification_vectors,
-                       options.verification, options.cancel);
-      report.solution->block_count -= removed;
-      if (removed > 0)
-        report_progress(std::format("removed {} unneeded blocks", removed));
-    }
-    report.seconds = elapsed();
-    return report;
-  };
-
   CircuitEncoder encoder(
       spec, plan,
       EncoderOptions{.minimize_blocks = false, .build_cp_model = false});
   SatPortfolio portfolio(workers, options.sat_seed);
   std::size_t clauses_sent = 0;
-  report_progress(std::format(
-      "model: {} steady states, {} variables, {} clauses", plan.steady.size(),
-      encoder.variable_count(), encoder.clauses().size()));
-  auto finish_sat = [&](SolveStatus status) {
-    report.sat_conflicts = portfolio.conflicts();
-    return finish(status);
+  int applied_bound = std::numeric_limits<int>::max();
+  say(std::format("model: {} steady states, {} variables, {} clauses",
+                  plan.steady.size(), encoder.variable_count(),
+                  encoder.clauses().size()));
+  SearchResult result;
+  auto end = [&](SearchEnd how) {
+    result.end = how;
+    result.conflicts = portfolio.conflicts();
+    return result;
   };
-  for (int iteration = 0; iteration <= options.max_refinements; ++iteration) {
+
+  while (result.refinements <= options.max_refinements) {
     if (cancelled())
-      return finish_sat(SolveStatus::Cancelled);
+      return end(SearchEnd::Cancelled);
+    if (shared.finished)
+      return end(SearchEnd::Stopped);
+    // Cleared before reading the bound, so a better circuit published from
+    // here on interrupts the coming solve.
+    search.interrupt = false;
+    int bound = shared.best_blocks;
+    if (bound < applied_bound) {
+      encoder.limit_blocks(bound - 1);
+      applied_bound = bound;
+    }
     portfolio.add(encoder.clauses(), clauses_sent);
     if (clauses_sent == 0)
       portfolio.prefer(encoder.preferred_literals());
     clauses_sent = encoder.clauses().size();
 
-    SatPortfolio::Outcome outcome = portfolio.solve(deadline, options.cancel);
-    report.refinements = iteration;
-    if (outcome == SatPortfolio::Outcome::Stopped)
-      return finish_sat(cancelled() ? SolveStatus::Cancelled
-                                    : SolveStatus::OutOfTime);
-    if (outcome == SatPortfolio::Outcome::Unsatisfiable)
-      return finish_sat(report.solution ? SolveStatus::Optimal
-                                        : SolveStatus::Infeasible);
+    SatPortfolio::Outcome outcome =
+        portfolio.solve(deadline, options.cancel, &search.interrupt);
+    if (outcome == SatPortfolio::Outcome::Stopped) {
+      if (cancelled())
+        return end(SearchEnd::Cancelled);
+      if (shared.finished)
+        return end(SearchEnd::Stopped);
+      if (Clock::now() >= deadline)
+        return end(SearchEnd::OutOfTime);
+      continue; // interrupted by a better circuit: take its bound
+    }
+    if (outcome == SatPortfolio::Outcome::Unsatisfiable) {
+      if (!search.complete)
+        return end(SearchEnd::Exhausted);
+      shared.finished = true;
+      return end(SearchEnd::Proven);
+    }
 
+    ++result.refinements;
     EncodedSolution candidate =
         encoder.decode(portfolio.model(encoder.variable_count()));
-    report_progress(std::format("candidate with {} blocks, verifying",
-                                candidate.block_count));
+    say(std::format("candidate with {} blocks, verifying",
+                    candidate.block_count));
     std::optional<VerificationFailure> failure = verify_layout(
         candidate.layout, spec, verification_vectors, options.verification);
     if (!failure) {
@@ -373,18 +430,27 @@ SolveReport solve_sat(const Spec &spec, const SolverOptions &options,
       candidate.block_count -=
           prune_layout(candidate.layout, spec, verification_vectors,
                        options.verification, options.cancel);
-      report_progress(
-          std::format("verified a {}-block circuit", candidate.block_count));
       int blocks = candidate.block_count;
-      report.solution = std::move(candidate);
-      if (options.stop_at_first)
-        return finish_sat(SolveStatus::Feasible);
-      encoder.limit_blocks(blocks - 1);
+      say(std::format("verified a {}-block circuit", blocks));
+      {
+        std::lock_guard lock(shared.mutex);
+        if (blocks < shared.best_blocks) {
+          shared.best = std::move(candidate);
+          shared.best_blocks = blocks;
+          for (auto &other : searches)
+            if (other.get() != &search)
+              other->interrupt = true;
+        }
+      }
+      if (options.stop_at_first) {
+        shared.finished = true;
+        return end(SearchEnd::Found);
+      }
       continue;
     }
 
     if (options.show_rejected)
-      report_progress("rejected layout:\n" + list_blocks(candidate.layout));
+      say("rejected layout:\n" + list_blocks(candidate.layout));
     std::string where =
         failure->from ? std::format("{} -> {}", to_string(*failure->from),
                                     to_string(failure->to))
@@ -406,16 +472,14 @@ SolveReport solve_sat(const Spec &spec, const SolverOptions &options,
     for (std::size_t i = transitions_before; i < plan.transitions.size(); ++i)
       encoder.add_transition(plan.transitions[i], plan.steady);
     if (refined) {
-      report_progress(
-          std::format("rejected ({}: {}); adding that case to the model", where,
+      say(std::format("rejected ({}: {}); adding that case to the model", where,
                       failure->reason));
-      report_progress(std::format("model: {} steady states, {} transitions, "
-                                  "{} variables, {} clauses",
-                                  plan.steady.size(), plan.transitions.size(),
-                                  encoder.variable_count(),
-                                  encoder.clauses().size()));
+      say(std::format("model: {} steady states, {} transitions, {} variables, "
+                      "{} clauses",
+                      plan.steady.size(), plan.transitions.size(),
+                      encoder.variable_count(), encoder.clauses().size()));
     } else {
-      report_progress(std::format(
+      say(std::format(
           "rejected ({}: {}, origin {} {} {}, rotation {}{}); banning this "
           "layout",
           where, failure->reason, failure->placement.origin.x,
@@ -425,7 +489,98 @@ SolveReport solve_sat(const Spec &spec, const SolverOptions &options,
       encoder.forbid_layout(candidate.layout);
     }
   }
-  return finish_sat(SolveStatus::RefinementLimit);
+  return end(SearchEnd::RefinementLimit);
+}
+
+// The main search on the spec's palette, plus (unless the palette is already
+// that small) a quick one on a few basic blocks that starts from one input
+// vector per truth row. Both run at once and share the best circuit.
+SolveReport solve_sat(const Spec &spec, const SolverOptions &options,
+                      const ProgressCallback &progress) {
+  const Clock::time_point start = Clock::now();
+  const Clock::time_point deadline =
+      start + std::chrono::duration_cast<Clock::duration>(
+                  std::chrono::duration<double>(options.time_limit_seconds));
+
+  std::vector<std::unique_ptr<SatSearch>> searches;
+  auto main_search = std::make_unique<SatSearch>();
+  main_search->spec = spec;
+  main_search->complete = true;
+  searches.push_back(std::move(main_search));
+  if (options.quick_palette_search) {
+    Spec quick = spec;
+    quick.palette.clear();
+    for (BlockType type : kQuickPalette)
+      if (spec.palette_contains(type))
+        quick.palette.push_back(type);
+    if (!quick.palette.empty() && quick.palette.size() < spec.palette.size()) {
+      auto search = std::make_unique<SatSearch>();
+      search->name = "basic blocks";
+      search->spec = std::move(quick);
+      search->one_row_each = true;
+      searches.push_back(std::move(search));
+    }
+  }
+
+  std::mutex progress_mutex;
+  SharedSearch shared;
+  std::vector<SearchResult> results(searches.size());
+  {
+    std::vector<std::jthread> threads;
+    for (std::size_t i = 0; i < searches.size(); ++i)
+      threads.emplace_back([&, i] {
+        SatSearch &search = *searches[i];
+        auto say = [&](std::string message) {
+          if (!progress)
+            return;
+          std::lock_guard lock(progress_mutex);
+          progress(search.name.empty()
+                       ? message
+                       : std::format("[{}] {}", search.name, message));
+        };
+        results[i] =
+            run_sat_search(search, searches, shared, options, deadline, say);
+        if (results[i].end == SearchEnd::Exhausted)
+          say(shared.best_blocks < std::numeric_limits<int>::max()
+                  ? "no smaller circuit with these blocks; the main search "
+                    "goes on"
+                  : "no circuit with only these blocks; the main search goes "
+                    "on");
+      });
+  }
+
+  SolveReport report;
+  report.solution = std::move(shared.best);
+  for (const SearchResult &result : results) {
+    report.refinements += result.refinements;
+    report.sat_conflicts += result.conflicts;
+  }
+  auto ended = [&](SearchEnd how) {
+    return std::any_of(results.begin(), results.end(),
+                       [&](const SearchResult &r) { return r.end == how; });
+  };
+  SolveStatus status = SolveStatus::OutOfTime;
+  if (ended(SearchEnd::Proven))
+    status = report.solution ? SolveStatus::Optimal : SolveStatus::Infeasible;
+  else if (ended(SearchEnd::Cancelled))
+    status = SolveStatus::Cancelled;
+  else if (ended(SearchEnd::Found))
+    status = SolveStatus::Feasible;
+  else if (results[0].end == SearchEnd::RefinementLimit)
+    status = SolveStatus::RefinementLimit;
+
+  report.status = status;
+  if (report.solution && status != SolveStatus::Optimal) {
+    report.status = SolveStatus::Feasible;
+    std::vector<InputVector> vectors = spec.verification_vectors();
+    int removed = prune_layout(report.solution->layout, spec, vectors,
+                               options.verification, options.cancel);
+    report.solution->block_count -= removed;
+    if (removed > 0 && progress)
+      progress(std::format("removed {} unneeded blocks", removed));
+  }
+  report.seconds = std::chrono::duration<double>(Clock::now() - start).count();
+  return report;
 }
 
 } // namespace

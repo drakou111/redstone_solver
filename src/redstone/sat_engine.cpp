@@ -23,11 +23,14 @@ public:
   bool terminate() override {
     return this->done->load(std::memory_order_relaxed) ||
            (this->cancel && this->cancel->load(std::memory_order_relaxed)) ||
+           (this->interrupt &&
+            this->interrupt->load(std::memory_order_relaxed)) ||
            std::chrono::steady_clock::now() >= this->deadline;
   }
 
   const std::atomic<bool> *done = nullptr;
   const std::atomic<bool> *cancel = nullptr;
+  const std::atomic<bool> *interrupt = nullptr;
   std::chrono::steady_clock::time_point deadline;
 };
 
@@ -95,7 +98,8 @@ void SatPortfolio::add(const std::vector<std::vector<int>> &clauses,
 
 SatPortfolio::Outcome
 SatPortfolio::solve(std::chrono::steady_clock::time_point deadline,
-                    const std::atomic<bool> *cancel) {
+                    const std::atomic<bool> *cancel,
+                    const std::atomic<bool> *interrupt) {
   std::atomic<bool> done = false;
   std::atomic<int> winner = -1;
   std::atomic<int> result = 0;
@@ -105,6 +109,7 @@ SatPortfolio::solve(std::chrono::steady_clock::time_point deadline,
       Worker &worker = *this->workers_[w];
       worker.stopper.done = &done;
       worker.stopper.cancel = cancel;
+      worker.stopper.interrupt = interrupt;
       worker.stopper.deadline = deadline;
       threads.emplace_back([&, w] {
         int answer = worker.solver.solve();

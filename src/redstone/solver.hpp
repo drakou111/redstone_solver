@@ -29,6 +29,10 @@ struct SolverOptions {
   int max_sat_workers = 1;
   int sat_seed = 0; // varies the SAT search (benchmarks average over seeds)
   bool stop_at_first = false; // accept the first verified circuit
+  // SAT engine: a second search alongside the main one only places solid,
+  // dust, torches and repeaters. Its model is several times smaller, so it
+  // often finds circuits much sooner; the best circuit of either bounds both.
+  bool quick_palette_search = true;
   bool show_rejected = false; // include rejected layouts in progress messages
   VerificationOptions verification;
   // Set to true from another thread to stop early.

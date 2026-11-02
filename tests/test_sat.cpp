@@ -279,3 +279,53 @@ row IN1(ss0) -> OUT1(ss1..15)
        {"steady: dust", "ticks: comparators", "block limit"})
     CHECK(std::find(names.begin(), names.end(), expected) != names.end());
 }
+
+TEST_CASE("the basic-block search does not hide circuits that need more") {
+  // Only a comparator can tell strength 8 from 7, so the basic-block search
+  // finds nothing and the main search must still prove the optimum.
+  Spec spec = parse_spec(R"(
+size 5 2 3
+input IN1 comparator 0 1 1 east
+output OUT1 dust 4 1 1
+horizon 10
+row IN1(ss8..15) -> OUT1(ss1..15)
+row IN1(ss0..7) -> OUT1(ss0)
+)");
+  std::optional<int> blocks[2];
+  for (bool quick : {true, false}) {
+    SolverOptions options;
+    options.quick_palette_search = quick;
+    options.time_limit_seconds = 60.0;
+    SolveReport report = solve(spec, options);
+    REQUIRE(report.status == SolveStatus::Optimal);
+    blocks[quick ? 1 : 0] = report.solution->block_count;
+  }
+  CHECK(blocks[0] == blocks[1]);
+}
+
+TEST_CASE("first-circuit mode takes the basic-block search's circuit") {
+  Spec spec = parse_spec(R"(
+size 5 3 5
+input IN1 comparator 0 1 0 east
+input IN2 comparator 0 1 4 east
+output OUT1 dust 4 1 2
+horizon 12
+row IN1(ss1..15),IN2(ss1..15) -> OUT1(ss1..15)
+row IN1(ss0) -> OUT1(ss0)
+row IN2(ss0) -> OUT1(ss0)
+)");
+  SolverOptions options;
+  options.stop_at_first = true;
+  options.time_limit_seconds = 60.0;
+  std::vector<std::string> messages;
+  SolveReport report = solve(spec, options, [&](std::string_view message) {
+    messages.emplace_back(message);
+  });
+  REQUIRE(report.status == SolveStatus::Feasible);
+  REQUIRE(report.solution);
+  CHECK_FALSE(verify_layout(report.solution->layout, spec,
+                            spec.verification_vectors()));
+  CHECK(std::any_of(messages.begin(), messages.end(), [](const auto &m) {
+    return m.starts_with("[basic blocks]");
+  }));
+}
