@@ -99,7 +99,8 @@ void SatPortfolio::add(const std::vector<std::vector<int>> &clauses,
 SatPortfolio::Outcome
 SatPortfolio::solve(std::chrono::steady_clock::time_point deadline,
                     const std::atomic<bool> *cancel,
-                    const std::atomic<bool> *interrupt) {
+                    const std::atomic<bool> *interrupt,
+                    const std::vector<int> &assumptions) {
   std::atomic<bool> done = false;
   std::atomic<int> winner = -1;
   std::atomic<int> result = 0;
@@ -112,6 +113,8 @@ SatPortfolio::solve(std::chrono::steady_clock::time_point deadline,
       worker.stopper.interrupt = interrupt;
       worker.stopper.deadline = deadline;
       threads.emplace_back([&, w] {
+        for (int lit : assumptions)
+          worker.solver.assume(lit);
         int answer = worker.solver.solve();
         if (answer != kSatisfiable && answer != kUnsatisfiable)
           return;
@@ -127,6 +130,18 @@ SatPortfolio::solve(std::chrono::steady_clock::time_point deadline,
   if (this->winner_ < 0)
     return Outcome::Stopped;
   return result == kSatisfiable ? Outcome::Satisfiable : Outcome::Unsatisfiable;
+}
+
+std::vector<int>
+SatPortfolio::failed(const std::vector<int> &assumptions) const {
+  if (this->winner_ < 0)
+    throw std::logic_error("no SAT solver has answered");
+  CaDiCaL::Solver &solver = this->workers_[this->winner_]->solver;
+  std::vector<int> lits;
+  for (int lit : assumptions)
+    if (solver.failed(lit))
+      lits.push_back(lit);
+  return lits;
 }
 
 std::int64_t SatPortfolio::conflicts() const {

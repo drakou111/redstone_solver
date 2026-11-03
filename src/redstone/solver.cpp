@@ -8,6 +8,7 @@
 #include <map>
 #include <memory>
 #include <mutex>
+#include <set>
 #include <stdexcept>
 #include <string>
 #include <thread>
@@ -34,6 +35,9 @@ constexpr std::chrono::milliseconds kCancelPollInterval{50};
 // many rejections is it added to the model.
 constexpr int kRejectionsBeforeTransition = 3;
 constexpr int kFirstRejectionsBeforeTransition = 10;
+// A solve that holds part of a sketch fixed is either quick or stuck
+// proving the sketch impossible; past this the sketch only guides.
+constexpr std::chrono::seconds kSketchSolveTime{3};
 
 // Removes blocks one at a time while the layout still passes verification.
 // Cheap compared to solving, and it cleans up first-found solutions.
@@ -382,6 +386,18 @@ SearchResult run_sat_search(SatSearch &search,
     return result;
   };
 
+  // A sketch (hint lines) is first assumed right everywhere. When that is
+  // impossible, the solver names the cells it could not keep; those and
+  // their neighbours are freed and the rest still assumed, so the search
+  // repairs the sketch around its mistakes instead of starting over.
+  std::vector<SketchCell> sketch;
+  if (!spec.hints.empty()) {
+    std::vector<SketchCell> cells = encoder.sketch_cells();
+    std::erase_if(cells, [](const SketchCell &c) { return c.literal == 0; });
+    sketch = std::move(cells);
+    say(std::format("sketch: assuming {} cells as drawn", sketch.size()));
+  }
+
   while (result.refinements <= options.max_refinements) {
     if (cancelled())
       return end(SearchEnd::Cancelled);
@@ -400,8 +416,15 @@ SearchResult run_sat_search(SatSearch &search,
       portfolio.prefer(encoder.preferred_literals());
     clauses_sent = encoder.clauses().size();
 
-    SatPortfolio::Outcome outcome =
-        portfolio.solve(deadline, options.cancel, &search.interrupt);
+    std::vector<int> assumptions;
+    for (const SketchCell &cell : sketch)
+      assumptions.push_back(cell.literal);
+    Clock::time_point solve_deadline =
+        assumptions.empty()
+            ? deadline
+            : std::min(deadline, Clock::now() + kSketchSolveTime);
+    SatPortfolio::Outcome outcome = portfolio.solve(
+        solve_deadline, options.cancel, &search.interrupt, assumptions);
     if (outcome == SatPortfolio::Outcome::Stopped) {
       if (cancelled())
         return end(SearchEnd::Cancelled);
@@ -409,7 +432,35 @@ SearchResult run_sat_search(SatSearch &search,
         return end(SearchEnd::Stopped);
       if (Clock::now() >= deadline)
         return end(SearchEnd::OutOfTime);
+      if (!assumptions.empty() && Clock::now() >= solve_deadline) {
+        sketch.clear();
+        say("sketch: repair is slow; searching freely, trying the sketch "
+            "first");
+        continue;
+      }
       continue; // interrupted by a better circuit: take its bound
+    }
+    if (outcome == SatPortfolio::Outcome::Unsatisfiable &&
+        !assumptions.empty()) {
+      std::vector<int> failed = portfolio.failed(assumptions);
+      if (!failed.empty()) {
+        std::set<int> failed_set(failed.begin(), failed.end());
+        auto key = [](Vec3 p) { return std::array<int, 3>{p.x, p.y, p.z}; };
+        std::set<std::array<int, 3>> freed;
+        for (const SketchCell &cell : sketch)
+          if (failed_set.contains(cell.literal)) {
+            freed.insert(key(cell.position));
+            for (Dir d : kAllDirs)
+              freed.insert(key(cell.position + offset(d)));
+          }
+        std::erase_if(sketch, [&](const SketchCell &cell) {
+          return freed.contains(key(cell.position));
+        });
+        say(std::format("sketch: freed cells the solver could not keep; {} "
+                        "still as drawn",
+                        sketch.size()));
+        continue;
+      }
     }
     if (outcome == SatPortfolio::Outcome::Unsatisfiable) {
       if (!search.complete)
@@ -432,6 +483,8 @@ SearchResult run_sat_search(SatSearch &search,
                        options.verification, options.cancel);
       int blocks = candidate.block_count;
       say(std::format("verified a {}-block circuit", blocks));
+      // The sketch has done its job; smaller circuits may look different.
+      sketch.clear();
       {
         std::lock_guard lock(shared.mutex);
         if (blocks < shared.best_blocks) {

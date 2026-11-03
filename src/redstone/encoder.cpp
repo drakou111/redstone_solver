@@ -1514,6 +1514,37 @@ struct CircuitEncoder::Impl {
 
   // ------------------------------------------------------- layouts & goal
 
+  // Literals that all hold when free cell c holds `block`.
+  std::vector<Lit> cell_literals(const Cell &c, const Block &block) {
+    Kind kind = kind_of(block);
+    if (block.type == BlockType::Input || block.type == BlockType::Output) {
+      bool input = block.type == BlockType::Input;
+      std::optional<Lit> at;
+      for (const auto &[ch, lit] : input ? c.free_inputs : c.free_outputs)
+        if (ch == block.channel)
+          at = lit;
+      if (!at)
+        throw std::invalid_argument(
+            "layout has a port where the spec allows none");
+      std::vector<Lit> lits{*at};
+      if (is_directional_port(kind))
+        lits.push_back(c.facing[index_of(block.facing)]);
+      return lits;
+    }
+    std::vector<Lit> lits{c.kind[kind]};
+    if (is_directional(kind))
+      lits.push_back(c.facing[index_of(block.facing)]);
+    if (kind == kRepeater)
+      lits.push_back(c.delay[block.repeater_delay() - 1]);
+    if (kind == kComparator)
+      lits.push_back(block.comparator_mode() == ComparatorMode::Subtract
+                         ? c.subtract
+                         : !c.subtract);
+    if (has_stored_signal(kind))
+      lits.push_back(this->b.equals_value(c.stored, block.stored_signal()));
+    return lits;
+  }
+
   std::vector<Lit> layout_literals(const World &layout) {
     if (!(layout.size() == this->base.size()))
       throw std::invalid_argument("layout size does not match the spec volume");
@@ -1521,35 +1552,27 @@ struct CircuitEncoder::Impl {
     for (const Cell &c : this->cells) {
       if (c.fixed)
         continue;
-      const Block &block = layout.at(c.position);
-      Kind kind = kind_of(block);
-      if (block.type == BlockType::Input || block.type == BlockType::Output) {
-        bool input = block.type == BlockType::Input;
-        std::optional<Lit> at;
-        for (const auto &[ch, lit] : input ? c.free_inputs : c.free_outputs)
-          if (ch == block.channel)
-            at = lit;
-        if (!at)
-          throw std::invalid_argument(
-              "layout has a port where the spec allows none");
-        lits.push_back(*at);
-        if (is_directional_port(kind))
-          lits.push_back(c.facing[index_of(block.facing)]);
-        continue;
-      }
-      lits.push_back(c.kind[kind]);
-      if (is_directional(kind))
-        lits.push_back(c.facing[index_of(block.facing)]);
-      if (kind == kRepeater)
-        lits.push_back(c.delay[block.repeater_delay() - 1]);
-      if (kind == kComparator)
-        lits.push_back(block.comparator_mode() == ComparatorMode::Subtract
-                           ? c.subtract
-                           : !c.subtract);
-      if (has_stored_signal(kind))
-        lits.push_back(this->b.equals_value(c.stored, block.stored_signal()));
+      std::vector<Lit> cell = this->cell_literals(c, layout.at(c.position));
+      lits.insert(lits.end(), cell.begin(), cell.end());
     }
     return lits;
+  }
+
+  std::vector<SketchCell> sketch_cells() {
+    Measure measure(*this, "sketch");
+    World sketch(this->spec.size);
+    for (const auto &[position, block] : this->spec.hints)
+      sketch.set(position, block);
+    std::vector<SketchCell> result;
+    for (const Cell &c : this->cells) {
+      if (c.fixed)
+        continue;
+      Lit holds = this->b.all(this->cell_literals(c, sketch.at(c.position)));
+      if (holds.is_true())
+        continue;
+      result.push_back({c.position, holds.is_false() ? 0 : holds.dimacs()});
+    }
+    return result;
   }
 
   void require_layout(const World &layout, bool required) {
@@ -1819,6 +1842,10 @@ std::vector<int> CircuitEncoder::preferred_literals() const {
       prefer(c.subtract, block.comparator_mode() == ComparatorMode::Subtract);
   }
   return lits;
+}
+
+std::vector<SketchCell> CircuitEncoder::sketch_cells() {
+  return this->impl_->sketch_cells();
 }
 
 std::vector<ModelPart> CircuitEncoder::size_profile() const {

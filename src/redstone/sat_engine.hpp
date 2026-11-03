@@ -26,9 +26,14 @@ public:
   // Adds clauses[from..] (DIMACS literals) to every solver.
   void add(const std::vector<std::vector<int>> &clauses, std::size_t from);
   // Stopped when the deadline passes or `cancel` or `interrupt` is set.
+  // `assumptions` hold for this call only.
   Outcome solve(std::chrono::steady_clock::time_point deadline,
                 const std::atomic<bool> *cancel,
-                const std::atomic<bool> *interrupt = nullptr);
+                const std::atomic<bool> *interrupt = nullptr,
+                const std::vector<int> &assumptions = {});
+  // After Unsatisfiable: the assumptions the answer depends on (empty when
+  // the clauses alone are unsatisfiable).
+  std::vector<int> failed(const std::vector<int> &assumptions) const;
   // values[i] of variable i + 1, from the solver that answered.
   std::vector<bool> model(int variables) const;
   // Conflicts so far, summed over workers: a measure of search effort that,

@@ -90,6 +90,20 @@ TEST_CASE("SAT portfolio answers satisfiable and unsatisfiable formulas") {
         SatPortfolio::Outcome::Unsatisfiable);
 }
 
+TEST_CASE("SAT portfolio names the assumptions an answer depends on") {
+  SatPortfolio portfolio(2);
+  portfolio.add({{1, 2}}, 0);
+  std::vector<int> assumptions{-1, -2, 3};
+  REQUIRE(portfolio.solve(deadline(), nullptr, nullptr, assumptions) ==
+          SatPortfolio::Outcome::Unsatisfiable);
+  std::vector<int> failed = portfolio.failed(assumptions);
+  std::sort(failed.begin(), failed.end());
+  CHECK(failed == std::vector<int>{-2, -1});
+  // Assumptions last for one call only.
+  CHECK(portfolio.solve(deadline(), nullptr) ==
+        SatPortfolio::Outcome::Satisfiable);
+}
+
 TEST_CASE("SAT portfolio stops when cancelled") {
   // Pigeonhole 10 into 9: hard enough that it is still running when asked.
   constexpr int kHoles = 9;
@@ -373,8 +387,43 @@ row IN1(ss0) -> OUT1(ss1..15)
   SolverOptions options;
   options.stop_at_first = true;
   options.time_limit_seconds = 60.0;
-  SolveReport report = solve(spec, options);
+  std::vector<std::string> messages;
+  SolveReport report = solve(spec, options, [&](std::string_view message) {
+    messages.emplace_back(message);
+  });
   REQUIRE(report.solution);
   CHECK_FALSE(verify_layout(report.solution->layout, spec,
                             spec.verification_vectors()));
+  CHECK(std::any_of(messages.begin(), messages.end(), [](const auto &m) {
+    return m.find("sketch: freed") != std::string::npos;
+  }));
+}
+
+TEST_CASE("a correct sketch is taken as drawn") {
+  Spec spec = parse_spec(R"(
+size 4 2 1
+input IN1 comparator 0 1 0 east
+output OUT1 dust 3 1 0
+horizon 8
+hint 0 0 0 solid
+hint 3 0 0 solid
+hint 1 1 0 solid
+hint 2 1 0 torch west
+row IN1(ss1..15) -> OUT1(ss0)
+row IN1(ss0) -> OUT1(ss1..15)
+)");
+  SolverOptions options;
+  options.stop_at_first = true;
+  options.time_limit_seconds = 60.0;
+  std::vector<std::string> messages;
+  SolveReport report = solve(spec, options, [&](std::string_view message) {
+    messages.emplace_back(message);
+  });
+  REQUIRE(report.solution);
+  for (const auto &[position, block] : spec.hints)
+    CHECK(report.solution->layout.at(position) == block);
+  CHECK(report.solution->block_count == 4);
+  CHECK(std::none_of(messages.begin(), messages.end(), [](const auto &m) {
+    return m.find("sketch: freed") != std::string::npos;
+  }));
 }

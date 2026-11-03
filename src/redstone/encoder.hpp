@@ -54,6 +54,13 @@ struct ModelPart {
   long long literals = 0;
 };
 
+// A free cell and the literal "it holds what the sketch shows" (0 when the
+// sketch's block is not allowed there).
+struct SketchCell {
+  Vec3 position;
+  int literal = 0;
+};
+
 struct EncodedSolution {
   World layout;
   int block_count = 0;
@@ -98,6 +105,9 @@ public:
   // Literals a SAT solver should try first: "this cell is air" for every
   // cell the solver fills, so first circuits come out sparse.
   std::vector<int> preferred_literals() const;
+  // One literal per free cell for the sketch: the hint lines, empty
+  // elsewhere. Adds the clauses that define them.
+  std::vector<SketchCell> sketch_cells();
   // Variables and clauses per part of the model, largest first.
   std::vector<ModelPart> size_profile() const;
 
