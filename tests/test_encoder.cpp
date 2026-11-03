@@ -286,3 +286,58 @@ TEST_CASE("model matches simulator: dust and repeater inputs, comparator "
   check_model_matches_simulator(w, {{0, 0}, {12, 0}, {12, 4}, {1, 9}},
                                 all_pairs(4));
 }
+
+TEST_CASE("a repeater and a torch racing in one tick are ruled out") {
+  // Found by shrinking a full adder candidate the simulator rejected: a short
+  // pulse ends at the repeater (5, 2, 0) in the tick the torch (6, 3, 2)
+  // reads it. The game runs the repeater first, so the torch never sees the
+  // pulse; a model that updates both at once would let it through.
+  World w({7, 4, 5});
+  w.set({0, 0, 0}, Block::solid());
+  w.set({3, 0, 0}, Block::solid());
+  w.set({6, 0, 1}, Block::solid());
+  w.set({0, 0, 2}, Block::solid());
+  w.set({6, 0, 3}, Block::solid());
+  w.set({0, 0, 4}, Block::solid());
+  w.set({6, 0, 4}, Block::solid());
+  w.set({0, 1, 0}, Block::input(0, InputKind::Repeater, Dir::East));
+  w.set({1, 1, 0}, Block::solid());
+  w.set({2, 1, 0}, Block::torch(Dir::West));
+  w.set({3, 1, 0}, Block::dust());
+  w.set({4, 1, 0}, Block::solid());
+  w.set({5, 1, 0}, Block::solid());
+  w.set({6, 1, 1}, Block::output(0, OutputKind::Dust));
+  w.set({0, 1, 2}, Block::input(1, InputKind::Repeater, Dir::East));
+  w.set({6, 1, 3}, Block::output(1, OutputKind::Dust));
+  w.set({0, 1, 4}, Block::input(2, InputKind::Repeater, Dir::East));
+  w.set({5, 1, 4}, Block::solid());
+  w.set({6, 1, 4}, Block::dust());
+  w.set({2, 2, 0}, Block::solid());
+  w.set({3, 2, 0}, Block::torch(Dir::West));
+  w.set({4, 2, 0}, Block::torch(Dir::Down));
+  w.set({5, 2, 0}, Block::repeater(Dir::East, 1));
+  w.set({6, 2, 0}, Block::solid());
+  w.set({6, 2, 3}, Block::solid());
+  w.set({5, 2, 4}, Block::dust());
+  w.set({6, 3, 0}, Block::dust());
+  w.set({6, 3, 1}, Block::solid());
+  w.set({6, 3, 2}, Block::torch(Dir::North));
+  w.set({6, 3, 3}, Block::repeater(Dir::South, 1));
+  w.set({5, 3, 4}, Block::torch(Dir::East));
+  w.set({6, 3, 4}, Block::solid());
+  REQUIRE(w.validate().empty());
+  Spec spec = spec_for(w);
+  spec.timing.horizon_ticks = 16;
+  ModelPlan plan;
+  plan.steady = {{{0, 0, 0}, std::nullopt}, {{15, 15, 0}, std::nullopt}};
+  plan.transitions = {{0, 1}};
+  CircuitEncoder encoder(spec, plan,
+                         EncoderOptions{.enforce_outputs = false,
+                                        .minimize_blocks = false,
+                                        .fixed_layout = w});
+  sat::SatParameters parameters;
+  parameters.set_num_workers(1);
+  sat::CpSolverResponse response =
+      sat::SolveWithParameters(encoder.model().Build(), parameters);
+  CHECK(response.status() == sat::CpSolverStatus::INFEASIBLE);
+}

@@ -1453,6 +1453,20 @@ struct CircuitEncoder::Impl {
 
       this->b.require_equal(z.obs_on, !a.obs_on, {k[kObserver], fire});
       this->b.require_equal(z.obs_on, a.obs_on, {k[kObserver], !fire});
+
+      // The game runs a tick's updates one after another (repeaters before
+      // torches, then in scheduling order); the model runs them all at once
+      // on the previous state. They agree unless what a component reads
+      // changes in the very tick it updates, so that is ruled out.
+      this->b.require_equal(prev.torch_powered[i], cur.torch_powered[i],
+                            {k[kTorch], fire});
+      this->b.require_equal(prev.rep_should[i], cur.rep_should[i],
+                            {k[kRepeater], fire});
+      this->b.require_equal(prev.rep_locked[i], cur.rep_locked[i],
+                            {k[kRepeater], fire});
+      if (c.may(kComparator))
+        this->b.require_equal(prev.calc[i], cur.calc[i],
+                              {k[kComparator], fire});
     }
   }
 
