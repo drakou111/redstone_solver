@@ -334,6 +334,29 @@ struct SatSearch {
   std::atomic<bool> interrupt = false;
 };
 
+// Settles the answer: every search stops.
+void finish_all(SharedSearch &shared,
+                std::vector<std::unique_ptr<SatSearch>> &searches) {
+  shared.finished = true;
+  for (auto &search : searches)
+    search->interrupt = true;
+}
+
+// Keeps `found` if it beats the best so far; the other searches then stop
+// their solve to take the tighter bound.
+void publish(SharedSearch &shared,
+             std::vector<std::unique_ptr<SatSearch>> &searches,
+             const SatSearch &from, EncodedSolution found) {
+  std::lock_guard lock(shared.mutex);
+  if (found.block_count >= shared.best_blocks)
+    return;
+  shared.best_blocks = found.block_count;
+  shared.best = std::move(found);
+  for (auto &other : searches)
+    if (other.get() != &from)
+      other->interrupt = true;
+}
+
 enum class SearchEnd {
   Proven,
   Exhausted,
@@ -465,7 +488,7 @@ SearchResult run_sat_search(SatSearch &search,
     if (outcome == SatPortfolio::Outcome::Unsatisfiable) {
       if (!search.complete)
         return end(SearchEnd::Exhausted);
-      shared.finished = true;
+      finish_all(shared, searches);
       return end(SearchEnd::Proven);
     }
 
@@ -485,18 +508,9 @@ SearchResult run_sat_search(SatSearch &search,
       say(std::format("verified a {}-block circuit", blocks));
       // The sketch has done its job; smaller circuits may look different.
       sketch.clear();
-      {
-        std::lock_guard lock(shared.mutex);
-        if (blocks < shared.best_blocks) {
-          shared.best = std::move(candidate);
-          shared.best_blocks = blocks;
-          for (auto &other : searches)
-            if (other.get() != &search)
-              other->interrupt = true;
-        }
-      }
+      publish(shared, searches, search, std::move(candidate));
       if (options.stop_at_first) {
-        shared.finished = true;
+        finish_all(shared, searches);
         return end(SearchEnd::Found);
       }
       continue;
