@@ -109,6 +109,16 @@ public:
   // variables, unlike require_equal(result, max_of(terms)).
   void require_equal_max(const Int &result, const std::vector<Int> &terms,
                          const std::vector<Lit> &when = {});
+  // result == max over terms of (condition ? value : 0), values >= 0 from
+  // level 1 up. Each conditional term gets one "feeds" literal (it reaches
+  // result) instead of a helper variable per level.
+  struct Choice {
+    Lit condition;
+    Int value;
+  };
+  void require_equal_max_chosen(const Int &result,
+                                const std::vector<Choice> &terms,
+                                const std::vector<Lit> &when = {});
   // result == a - b, given a >= b
   void require_difference(const Int &result, const Int &a, const Int &b,
                           const std::vector<Lit> &when = {});

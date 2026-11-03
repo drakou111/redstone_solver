@@ -208,6 +208,7 @@ struct CircuitEncoder::Impl {
     spec.validate();
     this->base = spec.base_world();
     this->build_cells();
+    this->on_off_power = this->only_power_presence_read();
     this->add_static_constraints();
     if (!spec.allow_feedback || spec.is_tiled())
       this->add_dependency_constraints();
@@ -225,6 +226,61 @@ struct CircuitEncoder::Impl {
       this->limit_blocks(*this->options.max_blocks);
     if (this->options.minimize_blocks)
       this->add_objective();
+  }
+
+  // Without comparators, every reader of conducted power and of dust
+  // powering a side only asks whether it is on (outputs too, when each range
+  // holds all of 1..15 or only 0). Those values are then kept as on/off
+  // (0 or 15), which saves most of their levels; dust keeps its exact level.
+  bool only_power_presence_read() const {
+    for (const Cell &c : this->cells)
+      if (c.may(kComparator))
+        return false;
+    for (std::size_t o = 0; o < this->spec.outputs.size(); ++o) {
+      if (this->spec.outputs[o].kind == OutputKind::Dust)
+        continue;
+      if (this->spec.outputs[o].kind == OutputKind::Comparator)
+        return false;
+      for (const TruthRow &row : this->spec.rows) {
+        SignalRange r = row.outputs[o];
+        if (r.max != 0 && (r.min > 1 || r.max < kMaxSignal))
+          return false;
+      }
+    }
+    return true;
+  }
+
+  // Exactly 15 * lit when every level of x is the same literal.
+  static std::optional<Lit> on_off_literal(const Int &x) {
+    if (x.is_constant())
+      return std::nullopt;
+    const std::vector<Lit> &levels = x.levels();
+    if (x.lo() != 0 || x.hi() != kMaxSignal)
+      return std::nullopt;
+    for (const Lit &level : levels)
+      if (level.var().index() != levels[0].var().index())
+        return std::nullopt;
+    return levels[0];
+  }
+
+  // max(terms) built without new levels when every term is 0 or 15.
+  std::optional<Int> on_off_max(const std::vector<Int> &terms) {
+    std::vector<Lit> on;
+    for (const Int &term : terms) {
+      if (term.is_constant()) {
+        if (term.lo() == 0)
+          continue;
+        if (term.lo() != kMaxSignal)
+          return std::nullopt;
+        on.push_back(this->b.constant(true));
+        continue;
+      }
+      std::optional<Lit> lit = on_off_literal(term);
+      if (!lit)
+        return std::nullopt;
+      on.push_back(*lit);
+    }
+    return this->b.scaled(this->b.any(on), kMaxSignal);
   }
 
   // Charges what the builder added since the last charge to the innermost
@@ -842,7 +898,11 @@ struct CircuitEncoder::Impl {
         else if (d == Dir::Up)
           x.dust_emit[i][di] = Int::constant(0);
         else
-          x.dust_emit[i][di] = this->b.select(c.points[di], s.dust[i]);
+          x.dust_emit[i][di] =
+              this->on_off_power
+                  ? this->b.scaled(this->b.all({c.points[di], s.dust[i].ge(1)}),
+                                   kMaxSignal)
+                  : this->b.select(c.points[di], s.dust[i]);
       }
     }
 
@@ -863,13 +923,29 @@ struct CircuitEncoder::Impl {
         strong_in.insert(strong_in.end(), parts.begin(), parts.end());
         dust_in.push_back(x.dust_emit[j][index_of(opposite(k))]);
       }
-      Int without_dust = this->b.new_int(0, kMaxSignal);
-      this->b.require_equal_max(without_dust, strong_in, {c.conductor});
-      this->b.require_in_range(without_dust, 0, 0, {!c.conductor});
+      // Strong power is usually 0 or 15 (no comparators near), which needs
+      // one literal instead of fifteen levels.
+      Int without_dust;
+      if (std::optional<Int> on_off = this->on_off_max(strong_in)) {
+        without_dust = this->b.select(c.conductor, *on_off);
+      } else {
+        without_dust = this->b.new_int(0, kMaxSignal);
+        this->b.require_equal_max(without_dust, strong_in, {c.conductor});
+        this->b.require_in_range(without_dust, 0, 0, {!c.conductor});
+      }
       dust_in.push_back(without_dust);
-      Int with_dust = this->b.new_int(0, kMaxSignal);
-      this->b.require_equal_max(with_dust, dust_in, {c.conductor});
-      this->b.require_in_range(with_dust, 0, 0, {!c.conductor});
+      Int with_dust;
+      if (this->on_off_power) {
+        std::vector<Lit> on{without_dust.ge(1)};
+        for (const Int &part : dust_in)
+          on.push_back(part.ge(1));
+        with_dust = this->b.scaled(this->b.all({c.conductor, this->b.any(on)}),
+                                   kMaxSignal);
+      } else {
+        with_dust = this->b.new_int(0, kMaxSignal);
+        this->b.require_equal_max(with_dust, dust_in, {c.conductor});
+        this->b.require_in_range(with_dust, 0, 0, {!c.conductor});
+      }
       x.conducted_without_dust[i] = without_dust;
       x.conducted[i] = with_dust;
     }
@@ -916,16 +992,31 @@ struct CircuitEncoder::Impl {
       if (c.dust.is_false() || c.kind[kInputDust].is_true())
         continue;
       Vec3 p = c.position;
-      std::vector<Int> candidates{Int::constant(0)};
       // Signals from neighbours, ignoring other dust.
+      std::vector<Int> sources;
       for (Dir k : kAllDirs) {
         int j = from_side(p, k);
         if (j < 0)
           continue;
         const std::vector<Int> &weak = x.weak[j][index_of(opposite(k))];
-        candidates.insert(candidates.end(), weak.begin(), weak.end());
-        candidates.push_back(x.conducted_without_dust[j]);
+        sources.insert(sources.end(), weak.begin(), weak.end());
+        sources.push_back(x.conducted_without_dust[j]);
       }
+      std::vector<cp::Builder::Choice> candidates;
+      Lit always = this->b.constant(true);
+      // Sources of 0 or 15 merge into one; the rest (comparators) stay apart.
+      std::vector<Lit> on;
+      for (const Int &source : sources) {
+        if (source.is_constant() && source.lo() == 0)
+          continue;
+        if (std::optional<Lit> lit = on_off_literal(source))
+          on.push_back(*lit);
+        else
+          candidates.push_back({always, source});
+      }
+      if (!on.empty())
+        candidates.push_back(
+            {always, this->b.scaled(this->b.any(on), kMaxSignal)});
       Lit covered = this->cell_at(p + offset(Dir::Up)).conductor;
       for (Dir d : kHorizontalDirs) {
         Vec3 side = p + offset(d);
@@ -934,19 +1025,14 @@ struct CircuitEncoder::Impl {
           int j = this->cell_index(q);
           return j < 0 ? Int::constant(0) : s.dust[j];
         };
-        candidates.push_back(dust_at(side).plus(-1));
+        candidates.push_back({always, dust_at(side).plus(-1)});
+        candidates.push_back({this->b.all({neighbor.conductor, !covered}),
+                              dust_at(side + offset(Dir::Up)).plus(-1)});
         candidates.push_back(
-            this->b
-                .select(this->b.all({neighbor.conductor, !covered}),
-                        dust_at(side + offset(Dir::Up)))
-                .plus(-1));
-        candidates.push_back(
-            this->b
-                .select(!neighbor.conductor, dust_at(side + offset(Dir::Down)))
-                .plus(-1));
+            {!neighbor.conductor, dust_at(side + offset(Dir::Down)).plus(-1)});
       }
-      this->b.require_equal_max(s.dust[i], candidates,
-                                {c.dust, !c.kind[kInputDust]});
+      this->b.require_equal_max_chosen(s.dust[i], candidates,
+                                       {c.dust, !c.kind[kInputDust]});
       this->b.require_equal(s.dust[i], Int::constant(0), {!c.dust});
       if (c.may(kInputDust))
         this->b.require_equal(s.dust[i], this->input_signal(s, c),
@@ -1647,6 +1733,7 @@ struct CircuitEncoder::Impl {
   cp::Builder b;
   std::optional<Int> placed_count;
   int horizon;
+  bool on_off_power = false;
   World base{{1, 1, 1}};
   std::vector<Cell> cells;
   // Free ports: [channel] -> (cell index, "the port is there").

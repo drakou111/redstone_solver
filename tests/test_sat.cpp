@@ -136,6 +136,33 @@ TEST_CASE("clause integers compute max, select, if-else and difference") {
       [](int a, int c) { return a >= c ? a - c : 0; });
 }
 
+TEST_CASE("chosen max pins its result to exactly the largest term") {
+  // Every result value is tried, so a loose encoding would show up as a
+  // second satisfiable value.
+  for (int a = 0; a <= kMax; ++a)
+    for (int c = 0; c <= kMax; ++c) {
+      int conditional = a > c ? a - 1 : 0;
+      int on_off = a <= c && a >= 3 ? kMax : 0;
+      int expected = std::max({conditional, c - 1, on_off, 0});
+      for (int v = 0; v <= kMax; ++v) {
+        ClauseModel m;
+        cp::Int x = m.b.new_int(0, kMax);
+        cp::Int y = m.b.new_int(0, kMax);
+        cp::Lit x_greater = m.b.greater(x, y);
+        cp::Int r = m.b.new_int(0, kMax);
+        m.b.require_equal_max_chosen(r,
+                                     {{x_greater, x.plus(-1)},
+                                      {m.b.constant(true), y.plus(-1)},
+                                      {!x_greater, m.b.scaled(x.ge(3), kMax)}});
+        m.b.require_in_range(x, a, a);
+        m.b.require_in_range(y, c, c);
+        m.b.require_in_range(r, v, v);
+        INFO("a=" << a << " b=" << c << " result=" << v);
+        CHECK(m.solve().has_value() == (v == expected));
+      }
+    }
+}
+
 TEST_CASE("block count bound limits how many literals hold") {
   constexpr int kLiterals = 7;
   for (int limit = 0; limit <= kLiterals; ++limit) {

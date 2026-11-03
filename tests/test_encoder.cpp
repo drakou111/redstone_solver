@@ -188,6 +188,20 @@ TEST_CASE("model matches simulator: observer watching a hopper, strong and "
   check_model_matches_simulator(w, {{0}, {15}}, all_pairs(2));
 }
 
+TEST_CASE("model matches simulator: dust fading before the block it powers") {
+  // No comparator is placed, so conductors are modelled on/off while the
+  // dust keeps its level: input 2 dies out one dust short of the block.
+  World w = with_glass_floor({7, 2, 1});
+  w.set({0, 1, 0}, Block::input(0, InputKind::Comparator, Dir::East));
+  w.set({1, 1, 0}, Block::dust());
+  w.set({2, 1, 0}, Block::dust());
+  w.set({3, 1, 0}, Block::dust());
+  w.set({4, 1, 0}, Block::solid());
+  w.set({5, 1, 0}, Block::torch(Dir::West));
+  w.set({6, 1, 0}, Block::output(0, OutputKind::Dust));
+  check_model_matches_simulator(w, {{0}, {15}, {2}, {3}}, all_pairs(4));
+}
+
 TEST_CASE("model matches simulator: dust stepping up glass and down solid") {
   World w = with_glass_floor({5, 3, 1});
   w.set({0, 1, 0}, Block::input(0, InputKind::Comparator, Dir::East));

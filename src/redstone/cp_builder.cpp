@@ -310,6 +310,64 @@ void Builder::require_equal_max(const Int &result,
   }
 }
 
+void Builder::require_equal_max_chosen(const Int &result,
+                                       const std::vector<Choice> &terms,
+                                       const std::vector<Lit> &when) {
+  auto with = [&](std::initializer_list<Lit> extra) {
+    std::vector<Lit> w = when;
+    w.insert(w.end(), extra);
+    return w;
+  };
+  // Two levels hold the same literal: the higher one's clause implies the
+  // lower one's, in both directions below.
+  auto same = [](const Lit &a, const Lit &b) {
+    if (a.is_constant() || b.is_constant())
+      return a.is_constant() && b.is_constant() && a.is_true() == b.is_true();
+    return a.var().index() == b.var().index();
+  };
+  std::vector<Lit> feeders;
+  std::vector<const Int *> unconditional;
+  for (const Choice &term : terms) {
+    if (term.condition.is_false() || term.value.hi() <= 0)
+      continue;
+    // Each level of the term raises result (only the top of a run of equal
+    // literals is needed, as result's levels imply the lower ones).
+    for (int k = 1; k <= term.value.hi(); ++k) {
+      if (k < term.value.hi() && same(term.value.ge(k), term.value.ge(k + 1)))
+        continue;
+      this->require(result.ge(k), with({term.condition, term.value.ge(k)}));
+    }
+    if (term.condition.is_true()) {
+      unconditional.push_back(&term.value);
+      continue;
+    }
+    Lit feeds = this->new_bool();
+    feeders.push_back(feeds);
+    this->require(term.condition, with({feeds}));
+    int top = std::min(term.value.hi(), result.hi());
+    for (int k = 1; k <= top; ++k) {
+      if (k > 1 && same(term.value.ge(k), term.value.ge(k - 1)))
+        continue;
+      this->require(term.value.ge(k), with({feeds, result.ge(k)}));
+    }
+    if (top < result.hi())
+      this->require(!result.ge(top + 1), with({feeds}));
+  }
+  // Each level of result is reached by an unconditional term or by the
+  // conditional term that feeds it.
+  for (int k = std::max(result.lo(), 0) + 1; k <= result.hi(); ++k) {
+    std::vector<Lit> some = feeders;
+    for (const Int *value : unconditional)
+      some.push_back(value->ge(k));
+    for (const Lit &w : when)
+      some.push_back(!w);
+    some.push_back(!result.ge(k));
+    this->require_any(some);
+    if (feeders.empty() && unconditional.empty())
+      break; // result is 0; the first level says it all
+  }
+}
+
 void Builder::require_difference(const Int &result, const Int &a, const Int &b,
                                  const std::vector<Lit> &when) {
   int lo = std::min(result.lo(), 0) + 1;
