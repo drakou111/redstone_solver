@@ -78,7 +78,7 @@ struct Spec {
   // clocks; truth tables do not need them and forbidding them keeps every
   // input's settled state unique.
   bool allow_feedback = false;
-  // The bottom layer only holds supports (wool, glass or air). Dust and
+  // The bottom layer only holds supports (solid or air). Dust and
   // diodes cannot sit there anyway, and leaving out the rare remaining uses
   // makes solving much faster.
   bool support_layer = true;
@@ -89,6 +89,9 @@ struct Spec {
   std::vector<std::pair<Vec3, Block>> fixed;
   // Cells the solver must leave empty.
   std::vector<Vec3> forbidden;
+  // A sketch: blocks the solver tries first but may change. Cells without
+  // a hint are tried empty first.
+  std::vector<std::pair<Vec3, Block>> hints;
 
   bool is_tiled() const {
     return this->tiled[0] || this->tiled[1] || this->tiled[2];

@@ -1787,10 +1787,37 @@ void CircuitEncoder::limit_blocks(int max_blocks) {
 }
 
 std::vector<int> CircuitEncoder::preferred_literals() const {
+  // Hinted air is the same as no hint: empty is tried first anyway.
+  World hints(this->impl_->spec.size);
+  for (const auto &[position, block] : this->impl_->spec.hints)
+    hints.set(position, block);
   std::vector<int> lits;
-  for (const Impl::Cell &c : this->impl_->cells)
-    if (!c.fixed && !c.kind[kAir].is_constant())
-      lits.push_back(c.kind[kAir].dimacs());
+  // Every choice literal of the cell is set: CaDiCaL tries literals true
+  // first, so those left out could win over the hinted ones.
+  auto prefer = [&](const Lit &lit, bool value) {
+    if (!lit.is_constant())
+      lits.push_back(value ? lit.dimacs() : -lit.dimacs());
+  };
+  for (const Impl::Cell &c : this->impl_->cells) {
+    if (c.fixed)
+      continue;
+    const Block &block = hints.at(c.position);
+    if (block.type == BlockType::Air) {
+      prefer(c.kind[kAir], true);
+      continue;
+    }
+    Kind kind = kind_of(block);
+    for (int k = 0; k < kKindCount; ++k)
+      prefer(c.kind[k], k == kind);
+    if (is_directional(kind))
+      for (Dir d : kAllDirs)
+        prefer(c.facing[index_of(d)], d == block.facing);
+    if (kind == kRepeater)
+      for (int k = 0; k < kRepeaterDelays; ++k)
+        prefer(c.delay[k], k + 1 == block.repeater_delay());
+    if (kind == kComparator)
+      prefer(c.subtract, block.comparator_mode() == ComparatorMode::Subtract);
+  }
   return lits;
 }
 

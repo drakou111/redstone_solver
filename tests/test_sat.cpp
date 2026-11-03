@@ -356,3 +356,25 @@ row IN2(ss0) -> OUT1(ss0)
     return m.starts_with("[basic blocks]");
   }));
 }
+
+TEST_CASE("a sketch with mistakes still leads to a working circuit") {
+  // The torch hangs on the wrong side and a stray repeater sits in the way.
+  Spec spec = parse_spec(R"(
+size 5 2 1
+input IN1 comparator 0 1 0 east
+output OUT1 dust 4 1 0
+horizon 8
+hint 1 1 0 solid
+hint 2 1 0 torch east
+hint 3 1 0 repeater east 1
+row IN1(ss1..15) -> OUT1(ss0)
+row IN1(ss0) -> OUT1(ss1..15)
+)");
+  SolverOptions options;
+  options.stop_at_first = true;
+  options.time_limit_seconds = 60.0;
+  SolveReport report = solve(spec, options);
+  REQUIRE(report.solution);
+  CHECK_FALSE(verify_layout(report.solution->layout, spec,
+                            spec.verification_vectors()));
+}

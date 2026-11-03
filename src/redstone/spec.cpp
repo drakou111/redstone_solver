@@ -327,6 +327,13 @@ void Spec::validate() const {
         block.type == BlockType::Output)
       throw std::invalid_argument("kept cells must hold a placeable block");
   }
+  for (const auto &[position, block] : this->hints) {
+    check_position(position,
+                   std::format("hint {} at ({}, {}, {})", to_string(block),
+                               position.x, position.y, position.z));
+    if (block.type == BlockType::Input || block.type == BlockType::Output)
+      throw std::invalid_argument("hints must be placeable blocks or air");
+  }
   for (Vec3 position : this->forbidden)
     check_position(position, std::format("empty cell ({}, {}, {})", position.x,
                                          position.y, position.z));
@@ -587,6 +594,12 @@ Spec parse_spec(std::string_view text) {
         Vec3 position{coordinate(1), coordinate(2), coordinate(3)};
         spec.fixed.emplace_back(position,
                                 parse_block_words({w.begin() + 4, w.end()}));
+      } else if (key == "hint") {
+        if (w.size() < 5)
+          throw std::invalid_argument("hint needs x y z and a block");
+        Vec3 position{coordinate(1), coordinate(2), coordinate(3)};
+        spec.hints.emplace_back(position,
+                                parse_block_words({w.begin() + 4, w.end()}));
       } else if (key == "region") {
         need(5, 5);
         bool input = w[1].starts_with("IN");
@@ -733,6 +746,9 @@ std::string format_spec(const Spec &spec) {
         std::format("keep {} {} {} {}\n", p.x, p.y, p.z, block_words(block));
   for (Vec3 p : spec.forbidden)
     text += std::format("empty {} {} {}\n", p.x, p.y, p.z);
+  for (const auto &[p, block] : spec.hints)
+    text +=
+        std::format("hint {} {} {} {}\n", p.x, p.y, p.z, block_words(block));
   for (std::size_t i = 0; i < spec.inputs.size(); ++i)
     for (Vec3 p : spec.inputs[i].region)
       text += std::format("region IN{} {} {} {}\n", i + 1, p.x, p.y, p.z);

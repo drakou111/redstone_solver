@@ -200,6 +200,25 @@ TEST_CASE("kept and empty cells parse, validate and round-trip") {
                   std::invalid_argument);
 }
 
+TEST_CASE("hints parse, validate and round-trip") {
+  Spec spec = parse_spec("size 4 2 1\n"
+                         "input IN1 comparator 0 1 0 east\n"
+                         "output OUT1 dust 3 1 0\n"
+                         "hint 1 1 0 solid\n"
+                         "hint 2 1 0 torch west\n"
+                         "row -> OUT1(ss0..15)\n");
+  REQUIRE(spec.hints.size() == 2);
+  CHECK(spec.hints[1].second == Block::torch(Dir::West));
+  // A hint is only a preference: the cell stays free.
+  CHECK(spec.base_world().at({1, 1, 0}).type == BlockType::Air);
+  CHECK(parse_spec(format_spec(spec)).hints == spec.hints);
+
+  CHECK_THROWS_AS(parse_spec("size 2 2 1\ninput IN1 comparator 0 1 0 east\n"
+                             "output OUT1 dust 1 1 0\nhint 5 1 0 solid\n"
+                             "row -> OUT1(ss0)\n"),
+                  std::invalid_argument);
+}
+
 TEST_CASE("free ports take their cells from region lines") {
   Spec spec = parse_spec(R"(
 size 4 2 3
