@@ -177,12 +177,28 @@ private:
   static constexpr double kRepeater = 0.12;
   static constexpr double kComparator = 0.14;
   static constexpr double kInverter = 0.12;
+  // Wires climb onto blocks and come back down, so they can cross others.
+  static constexpr double kClimb = 0.15;
+  static constexpr double kDescend = 0.25;
 
   double unit() { return std::uniform_real_distribution<double>(0, 1)(rng_); }
 
   bool free(rs::Vec3 p) const {
-    return this->w_.in_bounds(p) && p.y == 1 &&
+    return this->w_.in_bounds(p) && p.y >= 1 &&
            this->w_.at(p).type == rs::BlockType::Air;
+  }
+
+  // Gives p something to stand on: a solid block below if that cell is
+  // empty. False when the cell below holds something else.
+  bool prop_up(rs::Vec3 p) {
+    rs::Vec3 below = p + rs::offset(rs::Dir::Down);
+    if (rs::supports_on_top(this->w_.at(below)))
+      return true;
+    if (below.y >= 1 && this->w_.at(below).type == rs::BlockType::Air) {
+      this->w_.set(below, rs::Block::solid());
+      return true;
+    }
+    return false;
   }
 
   rs::Vec3 random_start() {
@@ -216,6 +232,7 @@ private:
   // `onto`), when it runs into another block, or after kMaxSteps.
   void grow(rs::Vec3 c, rs::Vec3 goal, bool onto) {
     rs::Dir heading = this->heading_toward(c, goal, rs::Dir::East);
+    const rs::Vec3 up = rs::offset(rs::Dir::Up);
     for (int step = 0; step < kMaxSteps; ++step) {
       if (!this->free(c))
         return; // ran into the box edge or another wire: they join
@@ -223,14 +240,36 @@ private:
           onto ? c == goal
                : std::abs(c.x - goal.x) + std::abs(c.z - goal.z) == 1 &&
                      c.y == goal.y;
+      if (!this->prop_up(c))
+        return;
       if (arrived) {
         this->w_.set(c, rs::Block::dust());
         return;
       }
       rs::Dir next = this->heading_toward(c, goal, heading);
+      rs::Vec3 ahead = c + rs::offset(next);
+      // Down when above the goal's level and close or by chance; up by
+      // chance. Dust needs the cell above the lower end empty.
+      int dy = 0;
+      int distance = std::abs(c.x - goal.x) + std::abs(c.z - goal.z);
+      if (c.y > goal.y &&
+          (distance <= c.y - goal.y + 1 || this->unit() < kDescend)) {
+        if (this->w_.in_bounds(ahead) &&
+            this->w_.at(ahead).type == rs::BlockType::Air)
+          dy = -1;
+      } else if (c.y + 1 < this->w_.size().y && this->unit() < kClimb &&
+                 this->free(c + up)) {
+        dy = 1;
+      }
+      if (dy != 0) {
+        this->w_.set(c, rs::Block::dust());
+        heading = next;
+        c = ahead + rs::Vec3{0, dy, 0};
+        continue;
+      }
       double r = this->unit();
       bool straight = next == heading;
-      rs::Vec3 ahead = c + rs::offset(heading);
+      ahead = c + rs::offset(heading);
       if (straight && (r -= kRepeater) < 0) {
         this->w_.set(c, rs::Block::repeater(
                             heading, 1 + static_cast<int>(this->rng_() % 4)));

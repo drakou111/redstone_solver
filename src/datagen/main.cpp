@@ -51,6 +51,7 @@ constexpr std::string_view kUsage =
     "                    the spec's own table if found (<out>.target.txt)\n"
     "  --search <s>      search s seconds for a circuit computing the spec's\n"
     "                    rows; writes the best as a spec with hints to <out>\n"
+    "  --seeds <file>    with --search: start from these layouts (.rsd)\n"
     "  --tables <file>   compute the truth table of every layout in an .rsd\n"
     "                    file (outputs ignored) and write them to <out>\n"
     "  --help            show this help\n";
@@ -76,6 +77,7 @@ struct Options {
   double evolve_seconds = 0;    // > 0: novelty search instead of sampling
   double search_seconds = 0;    // > 0: search for the spec's own table
   std::filesystem::path tables; // layouts to compute the truth tables of
+  std::filesystem::path seeds;  // circuits the search starts from
 };
 
 struct Sample {
@@ -235,7 +237,8 @@ int run_evolve(const Options &o, rs::Spec spec,
 // takes any mutant that scores at least as well (drifting across equals),
 // restarting from the best or a fresh circuit when stuck.
 int run_search(const Options &o, rs::Spec spec,
-               const std::vector<rs::InputVector> &vectors, int threads) {
+               const std::vector<rs::InputVector> &vectors,
+               const std::vector<rs::World> &seeds, int threads) {
   const int outputs = static_cast<int>(spec.outputs.size());
   const Target target = target_of(spec, vectors);
   const int full = std::popcount(target.mask);
@@ -279,7 +282,10 @@ int run_search(const Options &o, rs::Spec spec,
         std::mt19937_64 rng(o.seed * 104729 + t + 1);
         auto fresh = [&]() -> std::pair<rs::World, Score> {
           while (true) {
-            rs::World w = grown_layout(spec, rng);
+            rs::World w = seeds.empty() ? grown_layout(spec, rng)
+                                        : seeds[rng() % seeds.size()];
+            if (!w.validate().empty())
+              continue;
             if (auto table = truth_table(w, vectors, outputs))
               return {w, score_of(*table, target, count_blocks(w))};
           }
@@ -361,6 +367,54 @@ int run_search(const Options &o, rs::Spec spec,
   return best.right == full ? 0 : 1;
 }
 
+// The layout of one .rsd record's cells on the spec's ports; none if a
+// class is unknown or a port class sits off the spec's ports.
+std::optional<rs::World> decode_layout(const rs::World &base,
+                                       const CellClasses &classes,
+                                       const char *cells) {
+  rs::World w = base;
+  for (int i = 0; i < base.volume(); ++i) {
+    int c = static_cast<unsigned char>(cells[i]);
+    rs::Vec3 p = w.position_of(i);
+    rs::BlockType t = base.at(p).type;
+    if (t == rs::BlockType::Input || t == rs::BlockType::Output)
+      continue;
+    if (c == classes.port() || c >= static_cast<int>(classes.names().size()))
+      return std::nullopt;
+    w.set(p, classes.block(c));
+  }
+  return w;
+}
+
+// All layouts of an .rsd file for the spec's box (outputs ignored).
+std::vector<rs::World> read_layouts(const std::filesystem::path &path,
+                                    const rs::Spec &spec,
+                                    const CellClasses &classes) {
+  std::ifstream in(path, std::ios::binary);
+  if (!in)
+    throw std::runtime_error("cannot open " + path.string());
+  std::vector<char> raw((std::istreambuf_iterator<char>(in)),
+                        std::istreambuf_iterator<char>());
+  const int header = static_cast<int>(kMagic.size()) + 7;
+  if (raw.size() < static_cast<std::size_t>(header) ||
+      !std::equal(kMagic.begin(), kMagic.end(), raw.begin()))
+    throw std::invalid_argument(path.string() + " is not an .rsd file");
+  auto u8 = [&](int i) {
+    return static_cast<int>(static_cast<unsigned char>(raw[i]));
+  };
+  if (u8(4) != spec.size.x || u8(5) != spec.size.y || u8(6) != spec.size.z)
+    throw std::invalid_argument(path.string() + " has another box size");
+  const rs::World base = spec.base_world();
+  const std::size_t record =
+      static_cast<std::size_t>(u8(8) * u8(9) + base.volume());
+  std::vector<rs::World> layouts;
+  for (std::size_t at = header; at + record <= raw.size(); at += record)
+    if (auto w = decode_layout(base, classes,
+                               raw.data() + at + record - base.volume()))
+      layouts.push_back(std::move(*w));
+  return layouts;
+}
+
 // Reads layouts (records of an .rsd file whose outputs are ignored), and
 // writes them back with the truth tables they compute; a layout that breaks
 // a placement rule or never comes to rest gets 255 for every output.
@@ -400,24 +454,10 @@ int run_tables(const Options &o, const rs::Spec &spec,
         for (std::size_t r = next++; r < count; r = next++) {
           char *rec = raw.data() + header + r * record;
           char *cells = rec + table_bytes;
-          rs::World w = base;
-          bool ok = true;
-          for (int i = 0; i < volume && ok; ++i) {
-            int c = static_cast<unsigned char>(cells[i]);
-            rs::Vec3 p = w.position_of(i);
-            bool port = base.at(p).type == rs::BlockType::Input ||
-                        base.at(p).type == rs::BlockType::Output;
-            if (port)
-              continue;
-            if (c == classes.port() ||
-                c >= static_cast<int>(classes.names().size()))
-              ok = false;
-            else
-              w.set(p, classes.block(c));
-          }
+          std::optional<rs::World> w = decode_layout(base, classes, cells);
           std::optional<std::vector<std::uint8_t>> table;
-          if (ok && w.validate().empty())
-            table = truth_table(w, vectors, outputs);
+          if (w && w->validate().empty())
+            table = truth_table(*w, vectors, outputs);
           for (int i = 0; i < table_bytes; ++i)
             rec[i] = static_cast<char>(table ? (*table)[i] : 255);
           if (table)
@@ -463,6 +503,8 @@ Options parse(int argc, char **argv) {
       o.seed = static_cast<std::uint64_t>(parse_count(value(), arg));
     else if (arg == "--keep-constant")
       o.keep_constant = true;
+    else if (arg == "--seeds")
+      o.seeds = value();
     else if (arg == "--tables")
       o.tables = value();
     else if (arg == "--search")
@@ -532,7 +574,12 @@ int main(int argc, char **argv) {
       std::vector<rs::InputVector> checked = spec.verification_vectors();
       if (checked.size() * spec.outputs.size() > 64)
         throw std::invalid_argument("too many verification vectors to search");
-      return run_search(o, spec, checked, threads);
+      std::vector<rs::World> seeds;
+      if (!o.seeds.empty())
+        seeds = read_layouts(o.seeds, spec, classes);
+      if (!o.seeds.empty() && seeds.empty())
+        throw std::invalid_argument("no usable layouts in " + o.seeds.string());
+      return run_search(o, spec, checked, seeds, threads);
     }
 
     std::ofstream out(o.out, std::ios::binary);
