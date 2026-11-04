@@ -33,6 +33,9 @@ struct SolverOptions {
   // dust, torches and repeaters. Its model is several times smaller, so it
   // often finds circuits much sooner; the best circuit of either bounds both.
   bool quick_palette_search = true;
+  // Time for one solve that keeps part of a sketch (hint lines) fixed;
+  // past it the sketch only guides. Large boxes need more.
+  double sketch_step_seconds = 3.0;
   bool show_rejected = false; // include rejected layouts in progress messages
   VerificationOptions verification;
   // Set to true from another thread to stop early.

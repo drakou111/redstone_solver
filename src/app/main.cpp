@@ -25,6 +25,8 @@ constexpr std::string_view kUsage =
     "  --threads <n>           solver threads (default: all)\n"
     "  --first                 stop at the first verified circuit\n"
     "  --log-search            print CP-SAT's search log\n"
+    "  --sketch-time <s>       seconds per repair step of a sketch (hint\n"
+    "                          lines) before it only guides (default 3)\n"
     "  --show-rejected         print layouts the simulator rejected\n"
     "  --check                 do not solve: simulate the layout drawn by the\n"
     "                          spec's hint lines (other cells empty) and "
@@ -111,6 +113,8 @@ CliOptions parse_args(int argc, char **argv) {
       options.solver.log_search = true;
     else if (arg == "--first")
       options.solver.stop_at_first = true;
+    else if (arg == "--sketch-time")
+      options.solver.sketch_step_seconds = parse_number(value(), arg);
     else if (arg == "--show-rejected")
       options.solver.show_rejected = true;
     else if (arg == "--check")

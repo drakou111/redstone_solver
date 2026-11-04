@@ -35,9 +35,6 @@ constexpr std::chrono::milliseconds kCancelPollInterval{50};
 // many rejections is it added to the model.
 constexpr int kRejectionsBeforeTransition = 3;
 constexpr int kFirstRejectionsBeforeTransition = 10;
-// A solve that holds part of a sketch fixed is either quick or stuck
-// proving the sketch impossible; past this the sketch only guides.
-constexpr std::chrono::seconds kSketchSolveTime{3};
 
 // Removes blocks one at a time while the layout still passes verification.
 // Cheap compared to solving, and it cleans up first-found solutions.
@@ -445,7 +442,11 @@ SearchResult run_sat_search(SatSearch &search,
     Clock::time_point solve_deadline =
         assumptions.empty()
             ? deadline
-            : std::min(deadline, Clock::now() + kSketchSolveTime);
+            : std::min(deadline,
+                       Clock::now() +
+                           std::chrono::duration_cast<Clock::duration>(
+                               std::chrono::duration<double>(
+                                   options.sketch_step_seconds)));
     SatPortfolio::Outcome outcome = portfolio.solve(
         solve_deadline, options.cancel, &search.interrupt, assumptions);
     if (outcome == SatPortfolio::Outcome::Stopped) {
