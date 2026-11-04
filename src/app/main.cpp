@@ -7,6 +7,7 @@
 #include <string>
 #include <string_view>
 
+#include "redstone/layout_check.hpp"
 #include "redstone/report.hpp"
 #include "redstone/solver.hpp"
 #include "redstone/spec.hpp"
@@ -25,6 +26,11 @@ constexpr std::string_view kUsage =
     "  --first                 stop at the first verified circuit\n"
     "  --log-search            print CP-SAT's search log\n"
     "  --show-rejected         print layouts the simulator rejected\n"
+    "  --check                 do not solve: simulate the layout drawn by the\n"
+    "                          spec's hint lines (other cells empty) and "
+    "report\n"
+    "                          every row and input change; exit 0 if it "
+    "passes\n"
     "  --help                  show this help\n"
     "\n"
     "Spec file lines (# starts a comment):\n"
@@ -47,6 +53,8 @@ constexpr std::string_view kUsage =
     "                         e.g. 'keep 1 0 0 solid', 'keep 2 1 0 repeater "
     "east 2'\n"
     "  empty <x> <y> <z>      cell the solver must leave empty\n"
+    "  hint <x> <y> <z> <block> [facing] [setting]  sketch: tried first, may "
+    "change\n"
     "  input IN<n> <kind> free, output OUT<n> <kind> free\n"
     "                         the solver places the port (and its facing) in\n"
     "                         one of the cells given by region lines\n"
@@ -73,6 +81,7 @@ constexpr std::string_view kUsage =
 struct CliOptions {
   std::filesystem::path spec_path;
   rs::SolverOptions solver;
+  bool check = false;
 };
 
 double parse_number(std::string_view text, std::string_view option) {
@@ -104,6 +113,8 @@ CliOptions parse_args(int argc, char **argv) {
       options.solver.stop_at_first = true;
     else if (arg == "--show-rejected")
       options.solver.show_rejected = true;
+    else if (arg == "--check")
+      options.check = true;
     else if (arg.starts_with("--"))
       throw std::invalid_argument(std::format("unknown option {}", arg));
     else if (options.spec_path.empty())
@@ -155,6 +166,13 @@ int main(int argc, char **argv) {
   try {
     CliOptions options = parse_args(argc, argv);
     rs::Spec spec = rs::parse_spec(read_file(options.spec_path));
+    if (options.check) {
+      rs::World layout = rs::layout_from_hints(spec);
+      std::cout << rs::render_layers(layout) << '\n';
+      rs::LayoutCheck check = rs::check_layout(layout, spec);
+      std::cout << rs::format_check(check, spec);
+      return check.passes() ? 0 : 1;
+    }
     rs::SolveReport report =
         rs::solve(spec, options.solver, [](std::string_view message) {
           std::clog << "[solver] " << message << '\n';

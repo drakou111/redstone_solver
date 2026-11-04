@@ -67,7 +67,8 @@ add_library(redstone_core STATIC
         src/redstone/solver.cpp
         src/redstone/report.cpp
         src/redstone/solve_job.cpp
-        src/redstone/sat_engine.cpp)
+        src/redstone/sat_engine.cpp
+        src/redstone/layout_check.cpp)
 target_include_directories(redstone_core PUBLIC src)
 target_compile_options(redstone_core PRIVATE ${REDSTONE_WARNINGS})
 target_link_libraries(redstone_core PUBLIC ortools::ortools PRIVATE cadical)
@@ -200,7 +201,8 @@ if (REDSTONE_BUILD_TESTS)
             tests/test_solver.cpp
             tests/test_sat.cpp
             tests/test_verifier.cpp
-            tests/test_report.cpp)
+            tests/test_report.cpp
+            tests/test_layout_check.cpp)
     target_link_libraries(redstone_tests PRIVATE redstone_core Catch2::Catch2WithMain)
     target_compile_options(redstone_tests PRIVATE ${REDSTONE_WARNINGS})
     redstone_copy_runtime_dlls(redstone_tests)
