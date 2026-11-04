@@ -25,6 +25,7 @@
 #include <vector>
 
 #include "redstone/circuit_gen.hpp"
+#include "redstone/layout_check.hpp"
 #include "redstone/simulator.hpp"
 #include "redstone/spec.hpp"
 #include "redstone/verifier.hpp"
@@ -281,11 +282,12 @@ int run_search(const Options &o, rs::Spec spec,
     for (int t = 0; t < threads; ++t)
       workers.emplace_back([&, t] {
         std::mt19937_64 rng(o.seed * 104729 + t + 1);
+        rs::ExpressChecker checker(spec);
         auto fresh = [&]() -> std::pair<rs::World, Score> {
           while (true) {
             rs::World w = seeds.empty() ? grown_layout(spec, rng)
                                         : seeds[rng() % seeds.size()];
-            if (!w.validate().empty())
+            if (!w.validate().empty() || !checker.can_express(w))
               continue;
             if (auto table = truth_table(w, vectors, outputs))
               return {w, score_of(*table, target, count_blocks(w))};
@@ -298,7 +300,9 @@ int run_search(const Options &o, rs::Spec spec,
           mutate(child, spec, rng);
           ++tried;
           ++since_better;
-          if (!child.validate().empty())
+          // Loops are ruled out like the solver does, so what the search
+          // finds can be finished by a sketch repair.
+          if (!child.validate().empty() || !checker.can_express(child))
             continue;
           auto table = truth_table(child, vectors, outputs);
           if (!table)
@@ -418,7 +422,8 @@ std::vector<rs::World> read_layouts(const std::filesystem::path &path,
 
 // Reads layouts (records of an .rsd file whose outputs are ignored), and
 // writes them back with the truth tables they compute; a layout that breaks
-// a placement rule or never comes to rest gets 255 for every output.
+// a placement rule, loops (the solver could not express it) or never comes
+// to rest gets 255 for every output.
 int run_tables(const Options &o, const rs::Spec &spec,
                const std::vector<rs::InputVector> &vectors,
                const CellClasses &classes, int threads) {
@@ -452,12 +457,13 @@ int run_tables(const Options &o, const rs::Spec &spec,
     std::vector<std::jthread> workers;
     for (int t = 0; t < threads; ++t)
       workers.emplace_back([&] {
+        rs::ExpressChecker checker(spec);
         for (std::size_t r = next++; r < count; r = next++) {
           char *rec = raw.data() + header + r * record;
           char *cells = rec + table_bytes;
           std::optional<rs::World> w = decode_layout(base, classes, cells);
           std::optional<std::vector<std::uint8_t>> table;
-          if (w && w->validate().empty())
+          if (w && w->validate().empty() && checker.can_express(*w))
             table = truth_table(*w, vectors, outputs);
           for (int i = 0; i < table_bytes; ++i)
             rec[i] = static_cast<char>(table ? (*table)[i] : 255);

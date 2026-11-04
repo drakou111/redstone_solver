@@ -1,5 +1,6 @@
 #pragma once
 
+#include <memory>
 #include <optional>
 #include <string>
 #include <vector>
@@ -42,6 +43,27 @@ struct LayoutCheck {
 // The spec's ports and kept blocks plus its hint lines, every other cell
 // empty. Free ports are not supported.
 World layout_from_hints(const Spec &spec);
+
+// Whether the solver's model can express a layout: its placement rules and,
+// unless the spec allows feedback, no signal loop through a component. The
+// simulator accepts loops; the solver (and so a sketch repair) cannot.
+// Builds the model once; each layout is then one quick solve. Not
+// thread-safe: one per thread.
+class ExpressChecker {
+public:
+  explicit ExpressChecker(const Spec &spec);
+  ~ExpressChecker();
+  ExpressChecker(const ExpressChecker &) = delete;
+  ExpressChecker &operator=(const ExpressChecker &) = delete;
+
+  bool can_express(const World &layout);
+
+private:
+  struct Impl;
+  std::unique_ptr<Impl> impl_;
+};
+
+bool solver_can_express(const World &layout, const Spec &spec);
 
 LayoutCheck check_layout(const World &layout, const Spec &spec,
                          const VerificationOptions &options = {});

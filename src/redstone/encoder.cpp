@@ -1572,6 +1572,17 @@ struct CircuitEncoder::Impl {
     return lits;
   }
 
+  std::optional<std::vector<int>> layout_assumptions(const World &layout) {
+    std::vector<int> result;
+    for (const Lit &lit : this->layout_literals(layout)) {
+      if (lit.is_false())
+        return std::nullopt;
+      if (!lit.is_true())
+        result.push_back(lit.dimacs());
+    }
+    return result;
+  }
+
   std::vector<SketchCell> sketch_cells() {
     Measure measure(*this, "sketch");
     World sketch(this->spec.size);
@@ -1856,6 +1867,11 @@ std::vector<int> CircuitEncoder::preferred_literals() const {
       prefer(c.subtract, block.comparator_mode() == ComparatorMode::Subtract);
   }
   return lits;
+}
+
+std::optional<std::vector<int>>
+CircuitEncoder::layout_assumptions(const World &layout) {
+  return this->impl_->layout_assumptions(layout);
 }
 
 std::vector<SketchCell> CircuitEncoder::sketch_cells() {

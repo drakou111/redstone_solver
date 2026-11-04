@@ -108,6 +108,10 @@ public:
   // One literal per free cell for the sketch: the hint lines, empty
   // elsewhere. Adds the clauses that define them.
   std::vector<SketchCell> sketch_cells();
+  // DIMACS literals that hold exactly when every free cell matches `layout`,
+  // or nothing when some cell's block cannot go there at all. May add
+  // defining clauses.
+  std::optional<std::vector<int>> layout_assumptions(const World &layout);
   // Variables and clauses per part of the model, largest first.
   std::vector<ModelPart> size_profile() const;
 

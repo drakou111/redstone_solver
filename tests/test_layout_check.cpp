@@ -58,3 +58,38 @@ TEST_CASE("a hint on a port cell is refused") {
   CHECK_THROWS_AS(parse_spec(std::string(kNotGate) + "hint 3 1 0 solid\n"),
                   std::invalid_argument);
 }
+
+TEST_CASE("a signal loop through a comparator is reported unless feedback "
+          "is on") {
+  // The comparator's output dust runs round to its own side input.
+  const std::string base = R"(
+size 4 2 3
+input IN1 repeater 0 1 1 east
+output OUT1 dust 3 1 1
+horizon 10
+hint 0 0 0 solid
+hint 1 0 0 solid
+hint 2 0 0 solid
+hint 0 0 1 solid
+hint 1 0 1 solid
+hint 2 0 1 solid
+hint 3 0 1 solid
+hint 1 1 1 comparator east subtract
+hint 2 1 1 dust
+hint 2 1 0 dust
+row IN1(ss15) -> OUT1(ss1..15)
+row IN1(ss0) -> OUT1(ss0)
+)";
+  Spec open = parse_spec(base);
+  CHECK(solver_can_express(layout_from_hints(open), open));
+
+  Spec loop = parse_spec(base + "hint 1 1 0 dust\n");
+  World layout = layout_from_hints(loop);
+  CHECK_FALSE(solver_can_express(layout, loop));
+  LayoutCheck check = check_layout(layout, loop);
+  CHECK_FALSE(check.passes());
+  CHECK(format_check(check, loop).find("loop") != std::string::npos);
+
+  Spec allowed = parse_spec(base + "hint 1 1 0 dust\nfeedback on\n");
+  CHECK(solver_can_express(layout_from_hints(allowed), allowed));
+}

@@ -1,8 +1,11 @@
 #include "redstone/layout_check.hpp"
 
+#include <chrono>
 #include <format>
 #include <stdexcept>
 
+#include "redstone/encoder.hpp"
+#include "redstone/sat_engine.hpp"
 #include "redstone/simulator.hpp"
 
 namespace rs {
@@ -44,7 +47,48 @@ std::string values_text(const std::vector<int> &values) {
   return text;
 }
 
+// Every free cell is assumed, so the answer comes from propagation alone.
+constexpr std::chrono::seconds kExpressCheckTime{30};
+
 } // namespace
+
+struct ExpressChecker::Impl {
+  CircuitEncoder encoder;
+  SatPortfolio sat{1};
+  std::size_t clauses_sent = 0;
+
+  explicit Impl(const Spec &spec)
+      : encoder(spec, ModelPlan{},
+                EncoderOptions{.enforce_outputs = false,
+                               .minimize_blocks = false,
+                               .build_cp_model = false}) {}
+};
+
+ExpressChecker::ExpressChecker(const Spec &spec)
+    : impl_(std::make_unique<Impl>(spec)) {}
+
+ExpressChecker::~ExpressChecker() = default;
+
+bool ExpressChecker::can_express(const World &layout) {
+  std::optional<std::vector<int>> assumptions =
+      this->impl_->encoder.layout_assumptions(layout);
+  if (!assumptions)
+    return false;
+  const auto &clauses = this->impl_->encoder.clauses();
+  this->impl_->sat.add(clauses, this->impl_->clauses_sent);
+  this->impl_->clauses_sent = clauses.size();
+  SatPortfolio::Outcome outcome = this->impl_->sat.solve(
+      std::chrono::steady_clock::now() + kExpressCheckTime, nullptr, nullptr,
+      *assumptions);
+  if (outcome == SatPortfolio::Outcome::Stopped)
+    throw std::runtime_error("checking a layout against the solver's model "
+                             "did not finish");
+  return outcome == SatPortfolio::Outcome::Satisfiable;
+}
+
+bool solver_can_express(const World &layout, const Spec &spec) {
+  return ExpressChecker(spec).can_express(layout);
+}
 
 bool LayoutCheck::passes() const {
   if (!this->invalid.empty() || this->unstable || this->elsewhere)
@@ -77,6 +121,12 @@ LayoutCheck check_layout(const World &layout, const Spec &spec,
   check.invalid = layout.validate();
   if (!check.invalid.empty())
     return check;
+  if (!solver_can_express(layout, spec))
+    check.invalid.push_back(
+        spec.allow_feedback
+            ? "the solver's model cannot express this layout"
+            : "signals loop through a component (the solver rules loops out "
+              "unless 'feedback on')");
   Simulator built(layout);
   if (!built.run_until_quiet(options.max_settle_ticks)) {
     check.unstable = "does not come to rest after being built";
