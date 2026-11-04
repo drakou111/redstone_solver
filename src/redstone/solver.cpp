@@ -474,18 +474,21 @@ SearchResult run_sat_search(SatSearch &search,
         std::set<int> failed_set(failed.begin(), failed.end());
         auto key = [](Vec3 p) { return std::array<int, 3>{p.x, p.y, p.z}; };
         std::set<std::array<int, 3>> freed;
+        std::string culprits;
         for (const SketchCell &cell : sketch)
           if (failed_set.contains(cell.literal)) {
             freed.insert(key(cell.position));
             for (Dir d : kAllDirs)
               freed.insert(key(cell.position + offset(d)));
+            culprits += std::format(" ({},{},{})", cell.position.x,
+                                    cell.position.y, cell.position.z);
           }
         std::erase_if(sketch, [&](const SketchCell &cell) {
           return freed.contains(key(cell.position));
         });
-        say(std::format("sketch: freed cells the solver could not keep; {} "
+        say(std::format("sketch: freed cells the solver could not keep{}; {} "
                         "still as drawn",
-                        sketch.size()));
+                        culprits, sketch.size()));
         continue;
       }
     }
