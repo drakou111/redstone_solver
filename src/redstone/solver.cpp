@@ -36,12 +36,17 @@ constexpr std::chrono::milliseconds kCancelPollInterval{50};
 constexpr int kRejectionsBeforeTransition = 3;
 constexpr int kFirstRejectionsBeforeTransition = 10;
 
+// Pruning a large first-found circuit verifies it once per block, which can
+// take minutes; the cleanup after a solve gets this long at most.
+constexpr std::chrono::seconds kFinalPruneTime{30};
+
 // Removes blocks one at a time while the layout still passes verification.
 // Cheap compared to solving, and it cleans up first-found solutions.
 int prune_layout(World &layout, const Spec &spec,
                  const std::vector<InputVector> &vectors,
                  const VerificationOptions &options,
-                 const std::atomic<bool> *cancel) {
+                 const std::atomic<bool> *cancel,
+                 std::chrono::steady_clock::time_point deadline) {
   std::vector<bool> kept(layout.volume(), false);
   for (const auto &[position, block] : spec.fixed)
     kept[layout.index_of(position)] = true;
@@ -50,7 +55,8 @@ int prune_layout(World &layout, const Spec &spec,
   while (changed) {
     changed = false;
     for (int i = 0; i < layout.volume(); ++i) {
-      if (cancel && cancel->load())
+      if ((cancel && cancel->load()) ||
+          std::chrono::steady_clock::now() >= deadline)
         return removed;
       Vec3 p = layout.position_of(i);
       Block block = layout.at(p);
@@ -187,7 +193,8 @@ SolveReport solve_cp_sat(const Spec &spec, const SolverOptions &options,
       report.status = SolveStatus::Feasible;
       int removed =
           prune_layout(report.solution->layout, spec, verification_vectors,
-                       options.verification, options.cancel);
+                       options.verification, options.cancel,
+                       std::chrono::steady_clock::now() + kFinalPruneTime);
       report.solution->block_count -= removed;
       if (removed > 0)
         report_progress(std::format("removed {} unneeded blocks", removed));
@@ -507,12 +514,14 @@ SearchResult run_sat_search(SatSearch &search,
     std::optional<VerificationFailure> failure = verify_layout(
         candidate.layout, spec, verification_vectors, options.verification);
     if (!failure) {
+      say(std::format("verified a {}-block circuit, pruning",
+                      candidate.block_count));
       // Pruning is cheap next to solving and lets the bound drop in jumps.
       candidate.block_count -=
           prune_layout(candidate.layout, spec, verification_vectors,
-                       options.verification, options.cancel);
+                       options.verification, options.cancel, deadline);
       int blocks = candidate.block_count;
-      say(std::format("verified a {}-block circuit", blocks));
+      say(std::format("pruned to {} blocks", blocks));
       // The sketch has done its job; smaller circuits may look different.
       sketch.clear();
       publish(shared, searches, search, std::move(candidate));
@@ -648,7 +657,8 @@ SolveReport solve_sat(const Spec &spec, const SolverOptions &options,
     report.status = SolveStatus::Feasible;
     std::vector<InputVector> vectors = spec.verification_vectors();
     int removed = prune_layout(report.solution->layout, spec, vectors,
-                               options.verification, options.cancel);
+                               options.verification, options.cancel,
+                               Clock::now() + kFinalPruneTime);
     report.solution->block_count -= removed;
     if (removed > 0 && progress)
       progress(std::format("removed {} unneeded blocks", removed));
