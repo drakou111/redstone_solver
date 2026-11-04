@@ -166,6 +166,12 @@ row IN1(ss0) -> OUT1(ss1..15)
   CHECK(layout.at({2, 1, 0}).type == BlockType::Air);
   CHECK_FALSE(verify_layout(layout, spec, spec.verification_vectors()));
 
+  // A kept block survives even when the circuit works without it.
+  Spec spare = parse_spec(base + "keep 1 1 1 dust\n");
+  SolveReport spare_report = solve(spare, test_options());
+  REQUIRE(spare_report.solution);
+  CHECK(spare_report.solution->layout.at({1, 1, 1}) == Block::dust());
+
   // The output dust can only stand on the cell below it.
   Spec impossible = parse_spec(base + "empty 3 0 0\n");
   CHECK(solve(impossible, test_options()).status == SolveStatus::Infeasible);

@@ -42,6 +42,9 @@ int prune_layout(World &layout, const Spec &spec,
                  const std::vector<InputVector> &vectors,
                  const VerificationOptions &options,
                  const std::atomic<bool> *cancel) {
+  std::vector<bool> kept(layout.volume(), false);
+  for (const auto &[position, block] : spec.fixed)
+    kept[layout.index_of(position)] = true;
   int removed = 0;
   bool changed = true;
   while (changed) {
@@ -51,8 +54,8 @@ int prune_layout(World &layout, const Spec &spec,
         return removed;
       Vec3 p = layout.position_of(i);
       Block block = layout.at(p);
-      if (block.type == BlockType::Air || block.type == BlockType::Input ||
-          block.type == BlockType::Output)
+      if (kept[i] || block.type == BlockType::Air ||
+          block.type == BlockType::Input || block.type == BlockType::Output)
         continue;
       layout.set(p, Block::air());
       if (verify_layout(layout, spec, vectors, options)) {
