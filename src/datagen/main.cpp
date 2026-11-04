@@ -44,8 +44,9 @@ constexpr std::string_view kUsage =
     "  --threads <n>     worker threads (default: all)\n"
     "  --seed <n>        random seed (default 1)\n"
     "  --keep-constant   also keep circuits whose outputs never change\n"
-    "  --generator <g>   grow (wires from inputs to outputs, default) or\n"
-    "                    random (every cell random)\n"
+    "  --generator <g>   grow (wires from inputs to outputs, default),\n"
+    "                    motif (chained subtract/join logic), mix (half\n"
+    "                    each) or random (every cell random)\n"
     "  --evolve <s>      instead of sampling, search for new functions for\n"
     "                    s seconds: one smallest circuit per function, and\n"
     "                    the spec's own table if found (<out>.target.txt)\n"
@@ -73,11 +74,11 @@ struct Options {
   int threads = 0;
   std::uint64_t seed = 1;
   bool keep_constant = false;
-  bool grow = true; // wires from inputs to outputs; else every cell random
-  double evolve_seconds = 0;    // > 0: novelty search instead of sampling
-  double search_seconds = 0;    // > 0: search for the spec's own table
-  std::filesystem::path tables; // layouts to compute the truth tables of
-  std::filesystem::path seeds;  // circuits the search starts from
+  std::string generator = "grow"; // grow, motif, mix or random
+  double evolve_seconds = 0;      // > 0: novelty search instead of sampling
+  double search_seconds = 0;      // > 0: search for the spec's own table
+  std::filesystem::path tables;   // layouts to compute the truth tables of
+  std::filesystem::path seeds;    // circuits the search starts from
 };
 
 struct Sample {
@@ -513,9 +514,11 @@ Options parse(int argc, char **argv) {
       o.evolve_seconds = static_cast<double>(parse_count(value(), arg));
     else if (arg == "--generator") {
       std::string_view kind = value();
-      if (kind != "grow" && kind != "random")
-        throw std::invalid_argument("--generator is grow or random");
-      o.grow = kind == "grow";
+      if (kind != "grow" && kind != "random" && kind != "motif" &&
+          kind != "mix")
+        throw std::invalid_argument(
+            "--generator is grow, motif, mix or random");
+      o.generator = kind;
     } else
       throw std::invalid_argument(std::format("unknown option {}", arg));
   }
@@ -622,7 +625,10 @@ int main(int argc, char **argv) {
           while (kept < o.count) {
             ++tried;
             rs::World w =
-                o.grow ? grown_layout(spec, rng) : random_layout(spec, rng);
+                o.generator == "random" ? random_layout(spec, rng)
+                : o.generator == "motif" || (o.generator == "mix" && rng() % 2)
+                    ? motif_layout(spec, rng)
+                    : grown_layout(spec, rng);
             auto table = truth_table(w, vectors, outputs);
             if (!table) {
               ++unstable;
@@ -666,8 +672,7 @@ int main(int argc, char **argv) {
     std::ofstream meta(o.out.string() + ".json");
     meta << "{\n";
     meta << std::format("  \"spec\": \"{}\",\n", o.spec.generic_string());
-    meta << std::format("  \"generator\": \"{}\",\n",
-                        o.grow ? "grow" : "random");
+    meta << std::format("  \"generator\": \"{}\",\n", o.generator);
     meta << std::format("  \"seed\": {},\n  \"keep_constant\": {},\n", o.seed,
                         o.keep_constant ? "true" : "false");
     meta << std::format("  \"size\": [{}, {}, {}],\n", size.x, size.y, size.z);

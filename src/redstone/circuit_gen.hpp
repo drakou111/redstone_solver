@@ -110,6 +110,9 @@ Block random_block(const World &w, Vec3 p, std::mt19937_64 &rng,
 World random_layout(const Spec &spec, std::mt19937_64 &rng);
 // Wires grown from the inputs toward the outputs and into comparator sides.
 World grown_layout(const Spec &spec, std::mt19937_64 &rng);
+// Chained logic on purpose: per output a random expression (depth <= 2) of
+// subtract comparators and dust joins over the inputs.
+World motif_layout(const Spec &spec, std::mt19937_64 &rng);
 // The circuit with one more random wire.
 World with_random_wire(const Spec &spec, std::mt19937_64 &rng, World w);
 // Every combination of inputs off (0) and fully on.

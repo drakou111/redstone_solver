@@ -144,6 +144,35 @@ public:
     return this->w_;
   }
 
+  // Chained logic on purpose: each output computes a random expression of
+  // depth up to two over the inputs, built from subtract comparators (rear
+  // minus side) and dust joins, wired with plain climbing wires.
+  rs::World build_motifs() {
+    for (std::size_t o = 0; o < this->spec_.outputs.size(); ++o) {
+      const rs::OutputPort &port = this->spec_.outputs[o];
+      bool dust = port.kind == rs::OutputKind::Dust;
+      rs::Vec3 goal =
+          dust ? port.position : port.position - rs::offset(port.facing);
+      std::array<int, 3> in{};
+      int inputs = static_cast<int>(this->spec_.inputs.size());
+      for (int k = 0; k < 3; ++k)
+        in[k] = static_cast<int>(this->rng_() % inputs);
+      if (inputs >= 3) {
+        // distinct inputs, so the recipes compute what their names say
+        std::array<int, 3> order{0, 1, 2};
+        std::shuffle(order.begin(), order.end(), this->rng_);
+        in = order;
+      }
+      this->expr_.clear();
+      std::optional<rs::Vec3> source = this->embed(this->recipe(in));
+      if (!source)
+        continue;
+      if (auto from = this->branch(*source))
+        this->grow(*from, goal, !dust, true);
+    }
+    return this->w_;
+  }
+
   rs::World build() {
     for (std::size_t o = 0; o < this->spec_.outputs.size(); ++o) {
       const rs::OutputPort &port = this->spec_.outputs[o];
@@ -184,8 +213,17 @@ private:
   double unit() { return std::uniform_real_distribution<double>(0, 1)(rng_); }
 
   bool free(rs::Vec3 p) const {
-    return this->w_.in_bounds(p) && p.y >= 1 &&
-           this->w_.at(p).type == rs::BlockType::Air;
+    if (!this->w_.in_bounds(p) || p.y < 1 ||
+        this->w_.at(p).type != rs::BlockType::Air)
+      return false;
+    return !this->is_input_start(p);
+  }
+
+  bool is_input_start(rs::Vec3 p) const {
+    for (std::size_t i = 0; i < this->spec_.inputs.size(); ++i)
+      if (p == this->input_start(static_cast<int>(i)))
+        return true;
+    return false;
   }
 
   // Gives p something to stand on: a solid block below if that cell is
@@ -194,11 +232,178 @@ private:
     rs::Vec3 below = p + rs::offset(rs::Dir::Down);
     if (rs::supports_on_top(this->w_.at(below)))
       return true;
-    if (below.y >= 1 && this->w_.at(below).type == rs::BlockType::Air) {
+    if (below.y >= 1 && this->w_.at(below).type == rs::BlockType::Air &&
+        !this->is_input_start(below)) {
       this->w_.set(below, rs::Block::solid());
       return true;
     }
     return false;
+  }
+
+  static constexpr int kMotifDepth = 2;
+  static constexpr double kMotifLeaf = 0.25;
+  static constexpr double kMotifJoin = 0.3;
+
+  rs::Vec3 random_cell() {
+    rs::Vec3 size = this->w_.size();
+    return {static_cast<int>(this->rng_() % size.x), 1,
+            static_cast<int>(this->rng_() % size.z)};
+  }
+
+  // A free cell next to `p` (same level) to start a branch from.
+  std::optional<rs::Vec3> branch(rs::Vec3 p) {
+    std::array<rs::Dir, 4> dirs = rs::kHorizontalDirs;
+    std::shuffle(dirs.begin(), dirs.end(), this->rng_);
+    for (rs::Dir d : dirs) {
+      rs::Vec3 q = p + rs::offset(d);
+      if (this->free(q))
+        return q;
+    }
+    return std::nullopt;
+  }
+
+  // An expression over the inputs: an input, a minus b (subtract
+  // comparator) or a or b (dust join). Nodes refer to earlier nodes.
+  struct Expr {
+    char op = 'i';
+    int a = -1;
+    int b = -1;
+    int input = 0;
+  };
+
+  int leaf(int input) {
+    this->expr_.push_back({'i', -1, -1, input});
+    return static_cast<int>(this->expr_.size()) - 1;
+  }
+  int node(char op, int a, int b) {
+    this->expr_.push_back({op, a, b, 0});
+    return static_cast<int>(this->expr_.size()) - 1;
+  }
+  int sub(int a, int b) { return this->node('s', a, b); }
+  int join(int a, int b) { return this->node('o', a, b); }
+  int exclusive(int a, int b) {
+    return this->join(this->sub(a, b), this->sub(b, a));
+  }
+  int both(int a, int b) { return this->sub(a, this->sub(a, b)); }
+  int majority(int a, int b, int c) {
+    return this->join(this->both(a, b), this->both(c, this->join(a, b)));
+  }
+
+  // A random recipe (the logic adders and comparators are made of), or a
+  // random tree; `inputs` are three distinct-if-possible input indices.
+  int recipe(const std::array<int, 3> &in) {
+    auto x = [&] { return this->leaf(in[0]); };
+    auto y = [&] { return this->leaf(in[1]); };
+    auto z = [&] { return this->leaf(in[2]); };
+    double r = this->unit();
+    if ((r -= 0.25) < 0)
+      return this->exclusive(x(), y());
+    if ((r -= 0.15) < 0)
+      return this->exclusive(this->exclusive(x(), y()), z());
+    if ((r -= 0.15) < 0)
+      return this->majority(x(), y(), z());
+    if ((r -= 0.15) < 0)
+      return this->both(x(), y());
+    if ((r -= 0.1) < 0)
+      return this->sub(x(), y());
+    if ((r -= 0.1) < 0)
+      return this->join(x(), y());
+    return this->random_tree(kMotifDepth);
+  }
+
+  int random_tree(int depth) {
+    int inputs = static_cast<int>(this->spec_.inputs.size());
+    double r = this->unit();
+    if (depth == 0 || r < kMotifLeaf)
+      return this->leaf(static_cast<int>(this->rng_() % inputs));
+    int a = this->random_tree(depth - 1);
+    int b = this->random_tree(depth - 1);
+    return r < kMotifLeaf + kMotifJoin ? this->join(a, b) : this->sub(a, b);
+  }
+
+  rs::Vec3 input_start(int i) const {
+    const rs::InputPort &port = this->spec_.inputs[i];
+    bool diode = port.kind == rs::InputKind::Comparator ||
+                 port.kind == rs::InputKind::Repeater;
+    return port.position + rs::offset(diode ? port.facing : rs::Dir::East);
+  }
+
+  // A cell carrying node n's signal, or none if wiring failed.
+  std::optional<rs::Vec3> embed(int n) {
+    const Expr e = this->expr_[n];
+    if (e.op == 'i') {
+      rs::Vec3 s = this->input_start(e.input);
+      if (this->w_.at(s).type == rs::BlockType::Air)
+        this->w_.set(s, rs::Block::dust());
+      if (this->w_.at(s).type != rs::BlockType::Dust)
+        return std::nullopt;
+      return s;
+    }
+    std::optional<rs::Vec3> a = this->embed(e.a);
+    if (!a)
+      return std::nullopt;
+    if (e.op == 'o') {
+      // a or b: b's wire runs into a's cell.
+      std::optional<rs::Vec3> b = this->embed(e.b);
+      if (b && *b != *a)
+        if (auto from = this->branch(*b))
+          this->grow(*from, *a, false, true);
+      return a;
+    }
+    // a minus b: a's wire into a subtract comparator, b's into its side.
+    std::optional<rs::Vec3> from = this->branch(*a);
+    if (!from)
+      return std::nullopt;
+    std::optional<rs::Vec3> gate = this->gate_wire(*from, this->random_cell());
+    if (!gate)
+      return std::nullopt;
+    rs::Dir facing = this->w_.at(*gate).facing;
+    rs::Vec3 out = *gate + rs::offset(facing);
+    std::optional<rs::Vec3> b = this->embed(e.b);
+    if (b) {
+      // Full strength into the side: a repeater facing the comparator, fed
+      // by b's wire, so b cancels a whatever their dust levels.
+      std::array<rs::Dir, 2> sides{rs::rotate_clockwise(facing),
+                                   rs::rotate_counter_clockwise(facing)};
+      if (this->rng_() % 2)
+        std::swap(sides[0], sides[1]);
+      for (rs::Dir side_dir : sides) {
+        rs::Vec3 side = *gate + rs::offset(side_dir);
+        rs::Vec3 feed = side + rs::offset(side_dir);
+        if (this->free(side) && this->free(feed) && this->prop_up(side)) {
+          this->w_.set(side, rs::Block::repeater(rs::opposite(side_dir), 1));
+          if (auto from_b = this->branch(*b))
+            this->grow(*from_b, feed, true, true);
+          break;
+        }
+      }
+    }
+    return out;
+  }
+
+  // A plain wire from `c` that ends in a subtract comparator (after one to
+  // three steps) with dust on its output; the comparator's cell.
+  std::optional<rs::Vec3> gate_wire(rs::Vec3 c, rs::Vec3 goal) {
+    rs::Dir heading = this->heading_toward(c, goal, rs::Dir::East);
+    int before = 1 + static_cast<int>(this->rng_() % 3);
+    for (int step = 0; step < kMaxSteps; ++step) {
+      if (!this->free(c) || !this->prop_up(c))
+        return std::nullopt;
+      rs::Dir next = this->heading_toward(c, goal, heading);
+      rs::Vec3 ahead = c + rs::offset(heading);
+      if (step >= before && next == heading && this->free(ahead) &&
+          this->prop_up(ahead)) {
+        this->w_.set(
+            c, rs::Block::comparator(heading, rs::ComparatorMode::Subtract));
+        this->w_.set(ahead, rs::Block::dust());
+        this->comparators_.push_back(c);
+        return c;
+      }
+      this->w_.set(c, rs::Block::dust());
+      heading = next;
+      c = c + rs::offset(heading);
+    }
+    return std::nullopt;
   }
 
   rs::Vec3 random_start() {
@@ -230,11 +435,15 @@ private:
 
   // Lays a wire from `start`; it ends next to `goal` (or on it when
   // `onto`), when it runs into another block, or after kMaxSteps.
-  void grow(rs::Vec3 c, rs::Vec3 goal, bool onto) {
+  void grow(rs::Vec3 c, rs::Vec3 goal, bool onto, bool plain = false) {
     rs::Dir heading = this->heading_toward(c, goal, rs::Dir::East);
     const rs::Vec3 up = rs::offset(rs::Dir::Up);
     for (int step = 0; step < kMaxSteps; ++step) {
-      if (!this->free(c))
+      // A wire may start on an input's own cell; others never touch it.
+      bool own_start = step == 0 && this->w_.in_bounds(c) &&
+                       this->w_.at(c).type == rs::BlockType::Air &&
+                       this->is_input_start(c);
+      if (!this->free(c) && !own_start)
         return; // ran into the box edge or another wire: they join
       bool arrived =
           onto ? c == goal
@@ -267,7 +476,7 @@ private:
         c = ahead + rs::Vec3{0, dy, 0};
         continue;
       }
-      double r = this->unit();
+      double r = plain ? 1.0 : this->unit();
       bool straight = next == heading;
       ahead = c + rs::offset(heading);
       if (straight && (r -= kRepeater) < 0) {
@@ -298,12 +507,17 @@ private:
   std::mt19937_64 &rng_;
   rs::World w_;
   std::vector<rs::Vec3> comparators_;
+  std::vector<Expr> expr_;
 };
 
 } // namespace
 
 World grown_layout(const Spec &spec, std::mt19937_64 &rng) {
   return Grower(spec, rng).build();
+}
+
+World motif_layout(const Spec &spec, std::mt19937_64 &rng) {
+  return Grower(spec, rng).build_motifs();
 }
 
 World with_random_wire(const Spec &spec, std::mt19937_64 &rng, World w) {

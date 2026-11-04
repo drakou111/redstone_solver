@@ -97,3 +97,19 @@ TEST_CASE("mutations never move the ports") {
       CHECK(w.at(p) == base.at(p));
   }
 }
+
+TEST_CASE("motif circuits keep the placement rules and the input cells") {
+  Spec spec = parse_spec(kAdderPorts);
+  std::mt19937_64 rng(11);
+  for (int i = 0; i < 200; ++i) {
+    World w = gen::motif_layout(spec, rng);
+    INFO("circuit " << i);
+    REQUIRE(w.validate().empty());
+    // The cell in front of each input carries that input's own wire only:
+    // never a block placed for something else.
+    for (const InputPort &port : spec.inputs) {
+      BlockType t = w.at(port.position + offset(port.facing)).type;
+      CHECK((t == BlockType::Air || t == BlockType::Dust));
+    }
+  }
+}
