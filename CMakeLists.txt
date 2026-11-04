@@ -68,7 +68,8 @@ add_library(redstone_core STATIC
         src/redstone/report.cpp
         src/redstone/solve_job.cpp
         src/redstone/sat_engine.cpp
-        src/redstone/layout_check.cpp)
+        src/redstone/layout_check.cpp
+        src/redstone/circuit_gen.cpp)
 target_include_directories(redstone_core PUBLIC src)
 target_compile_options(redstone_core PRIVATE ${REDSTONE_WARNINGS})
 target_link_libraries(redstone_core PUBLIC ortools::ortools PRIVATE cadical)
@@ -102,6 +103,12 @@ add_executable(redstone_bench src/bench/main.cpp)
 target_link_libraries(redstone_bench PRIVATE redstone_core)
 target_compile_options(redstone_bench PRIVATE ${REDSTONE_WARNINGS})
 redstone_copy_runtime_dlls(redstone_bench)
+
+# --- Training data: random circuits and their truth tables
+add_executable(redstone_datagen src/datagen/main.cpp)
+target_link_libraries(redstone_datagen PRIVATE redstone_core)
+target_compile_options(redstone_datagen PRIVATE ${REDSTONE_WARNINGS})
+redstone_copy_runtime_dlls(redstone_datagen)
 
 add_executable(redstone_satbench src/bench/sat_main.cpp)
 target_link_libraries(redstone_satbench PRIVATE redstone_core)
@@ -202,7 +209,8 @@ if (REDSTONE_BUILD_TESTS)
             tests/test_sat.cpp
             tests/test_verifier.cpp
             tests/test_report.cpp
-            tests/test_layout_check.cpp)
+            tests/test_layout_check.cpp
+            tests/test_circuit_gen.cpp)
     target_link_libraries(redstone_tests PRIVATE redstone_core Catch2::Catch2WithMain)
     target_compile_options(redstone_tests PRIVATE ${REDSTONE_WARNINGS})
     redstone_copy_runtime_dlls(redstone_tests)

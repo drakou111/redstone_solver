@@ -33,6 +33,8 @@ Command line and tests:
 
 ```
 build/msvc/Release/redstone_cli.exe examples/and_gate.txt --time-limit 60
+build/msvc/Release/redstone_cli.exe my_sketch.txt --check   # simulate the layout in its hint lines
+build/msvc/Release/redstone_datagen.exe --spec examples/full_adder.txt --count 100000 --out data.rsd
 ctest --preset release                        # C++ tests
 cd web && npm test && npx playwright test     # UI unit and end-to-end tests
 ```
