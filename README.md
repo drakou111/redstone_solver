@@ -36,6 +36,7 @@ build/msvc/Release/redstone_cli.exe examples/and_gate.txt --time-limit 60
 build/msvc/Release/redstone_cli.exe my_sketch.txt --check   # simulate the layout in its hint lines
 build/msvc/Release/redstone_datagen.exe --spec examples/full_adder.txt --count 100000 --out data.rsd
 python ml/loop3.py                            # train the circuit sketcher (PyTorch, CUDA)
+python ml/compose_full_adder.py               # full adder from two SAT-made half adders (~10 s)
 ctest --preset release                        # C++ tests
 cd web && npm test && npx playwright test     # UI unit and end-to-end tests
 ```
