@@ -22,7 +22,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 CLI = ROOT / "build" / "msvc" / "Release" / "redstone_cli.exe"
 OUT_DIR = ROOT / "output" / "compose_full_adder"
-MODULE_SIZE = (5, 3, 3)  # x, y, z of the half adder module
+MODULE_SIZE = (5, 2, 4)  # x, y, z of the half adder module (y 2: flat, one layer)
 # Rows of the module's outputs on its east face. HA2 is shifted down by
 # XOR_ROW so its first input meets HA1's XOR output; AND_ROW < XOR_ROW lets
 # HA1's AND output pass north of HA2. XOR_ROW 1 gives a box one row shorter
