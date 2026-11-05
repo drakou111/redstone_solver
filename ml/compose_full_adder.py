@@ -29,6 +29,10 @@ MODULE_SIZE = (5, 3, 3)  # x, y, z of the half adder module
 # when such a module exists (not for 5x3x3; 6x3x3 gives 12x3x4).
 XOR_ROW = 2
 AND_ROW = 0
+# CLEAN: module faces empty except ports, so the half adders can touch.
+# Otherwise GAP free columns separate them and the solver bridges the gap.
+CLEAN = True
+GAP = 0
 HORIZON = 80  # ticks to come to rest (two gates in a chain are slow)
 MODULE_SECONDS = 600
 STAGE_SECONDS = 600
@@ -158,7 +162,7 @@ def make_module(log) -> Path | None:
         "horizon 30",
         *HALF_ADDER_ROWS,
     ]
-    for x in (0, mx - 1):
+    for x in (0, mx - 1) if CLEAN else ():
         for y in range(1, my):
             for z in range(mz):
                 if (x, y, z) not in keep_open:
@@ -176,7 +180,7 @@ def main() -> None:
         return
     module = read_blocks(module_log)
     mx, my, mz = MODULE_SIZE
-    x2, z2 = mx, XOR_ROW  # HA2 right after HA1, its IN1 at HA1's XOR output
+    x2, z2 = mx + GAP, XOR_ROW  # HA2 after HA1, its IN1 in line with HA1's XOR output
     z_c = mz  # C enters one row below HA1
     size = (x2 + mx, my, max(z2 + mz, z_c + 1))
     out1 = (x2 + mx - 1, 1, z2 + XOR_ROW)  # HA2's XOR output
@@ -202,7 +206,7 @@ def main() -> None:
             stage1,
             full_adder_rows(False),
             pinned,
-            free=lambda p: p[1] == 0 or (p[2] >= mz and p[0] < x2),
+            free=lambda p: p[1] == 0 or (p[2] >= mz and p[0] < x2) or mx <= p[0] < x2,
         )
     )
     log1 = solve(spec1, STAGE_SECONDS, log)
