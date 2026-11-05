@@ -46,3 +46,14 @@ test('checks a sketch and marks changed solver options', async ({ page }) => {
   await page.getByLabel('Only as drawn').check();
   await expect(options).toHaveClass(/changed/);
 });
+
+test('shrinks a solved circuit into a smaller box', async ({ page }) => {
+  await page.goto('');
+  await page.locator('select.examples').selectOption({ label: 'not_gate.txt' });
+  await expect(page.locator('.notice')).toContainText('not_gate.txt');
+  await page.getByLabel('first circuit only').check();
+  await page.getByRole('button', { name: 'Solve' }).click();
+  await expect(page.locator('.status .good')).toBeVisible({ timeout: 60_000 });
+  await page.getByRole('button', { name: 'Shrink' }).click();
+  await expect(page.locator('.status')).toContainText(/Shrunk|No smaller box/, { timeout: 120_000 });
+});

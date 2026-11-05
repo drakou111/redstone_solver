@@ -29,6 +29,7 @@ const POLL_INTERVAL_MS = 400;
 const FULL_SIGNAL = 15;
 export const DEFAULT_TIME_LIMIT = 60;
 export const DEFAULT_SKETCH_TIME = 3; // seconds per sketch repair step (solver default)
+const SHRINK_CUT_TIME = 120; // seconds one shrink repair attempt may take
 
 // What a right-click places in the spec view (the circuit view always
 // places the block brush).
@@ -47,6 +48,7 @@ export interface Result extends SolveResult {
   layout: World;
   spec: Spec;
   edited: boolean;
+  shrunkFrom?: Vec3; // box size before a shrink
 }
 
 export interface Verification {
@@ -71,6 +73,7 @@ interface State {
   onePlacement: boolean;
   sketchTime: number;
   solving: boolean;
+  shrinking: boolean; // the running job is a shrink
   solveSeconds: number;
   log: string[];
   solveError: string | null;
@@ -98,6 +101,7 @@ interface State {
   setOnePlacement: (one: boolean) => void;
   setSketchTime: (seconds: number) => void;
   startSolve: () => Promise<void>;
+  startShrink: () => Promise<void>;
   cancelSolve: () => Promise<void>;
   setTopLayer: (y: number) => void;
   setSim: (sim: SimState) => void;
@@ -118,6 +122,8 @@ interface State {
 
 let checkTimer: ReturnType<typeof setTimeout> | undefined;
 let pollTimer: ReturnType<typeof setInterval> | undefined;
+// Box size when the running job is a shrink, for the status line.
+let shrinkingFrom: Vec3 | undefined;
 
 function errorText(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
@@ -166,13 +172,15 @@ export const useStore = create<State>((set, get) => {
         return;
       }
       const result = status.result;
+      // A shrink ends with a smaller box: it becomes the spec being edited.
+      if (status.spec) set({ spec: status.spec });
       const spec = get().spec;
       if (!result?.layout || !spec) {
         set({ solveError: result ? `No circuit: ${result.status}` : 'The solver stopped without a result.' });
         return;
       }
       set({
-        result: { ...result, layout: result.layout, spec, edited: false },
+        result: { ...result, layout: result.layout, spec, edited: false, shrunkFrom: shrinkingFrom },
         verification: { checking: false, ok: true },
         view: 'result',
         topLayer: result.layout.size[1] - 1,
@@ -269,6 +277,7 @@ export const useStore = create<State>((set, get) => {
     textureError: null,
     timeLimit: DEFAULT_TIME_LIMIT,
     firstOnly: false,
+    shrinking: false,
     onePlacement: false,
     sketchTime: DEFAULT_SKETCH_TIME,
     solving: false,
@@ -352,7 +361,27 @@ export const useStore = create<State>((set, get) => {
       if (!spec) return;
       try {
         await api.startSolve(spec, { timeLimit, first: firstOnly, onePlacement, sketchTime });
-        set({ solving: true, solveError: null, log: [], solveSeconds: 0 });
+        shrinkingFrom = undefined;
+        set({ shrinking: false, solving: true, solveError: null, log: [], solveSeconds: 0 });
+        clearInterval(pollTimer);
+        pollTimer = setInterval(() => void pollSolve(), POLL_INTERVAL_MS);
+      } catch (error) {
+        set({ solveError: errorText(error) });
+      }
+    },
+
+    startShrink: async () => {
+      const { result, timeLimit, onePlacement, sketchTime } = get();
+      if (!result) return;
+      try {
+        await api.startShrink(result.spec, result.layout, {
+          timeLimit,
+          cutTime: Math.min(SHRINK_CUT_TIME, timeLimit),
+          onePlacement,
+          sketchTime,
+        });
+        shrinkingFrom = result.layout.size;
+        set({ shrinking: true, solving: true, solveError: null, log: [], solveSeconds: 0 });
         clearInterval(pollTimer);
         pollTimer = setInterval(() => void pollSolve(), POLL_INTERVAL_MS);
       } catch (error) {

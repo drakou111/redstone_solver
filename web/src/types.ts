@@ -125,6 +125,7 @@ export interface SolveStatus {
   log: string[];
   error?: string;
   result?: SolveResult;
+  spec?: Spec; // set when the job changed the spec (a shrink ends in a smaller box)
 }
 
 export interface Session {

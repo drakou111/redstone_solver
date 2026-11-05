@@ -110,6 +110,7 @@ function SketchPopover({ onClose }: { onClose: () => void }) {
 
 export function SolveBar() {
   const solving = useStore((s) => s.solving);
+  const shrinking = useStore((s) => s.shrinking);
   const seconds = useStore((s) => s.solveSeconds);
   const log = useStore((s) => s.log);
   const solveError = useStore((s) => s.solveError);
@@ -120,17 +121,35 @@ export function SolveBar() {
   const sketchTime = useStore((s) => s.sketchTime);
   const sketchSize = useStore((s) => s.spec?.hints.length ?? 0);
   const specError = useStore((s) => s.specError);
-  const { setTimeLimit, setFirstOnly, startSolve, cancelSolve } = useStore.getState();
+  const { setTimeLimit, setFirstOnly, startSolve, startShrink, cancelSolve } = useStore.getState();
   const [open, setOpen] = useState<Popover>(null);
   const [exportText, setExportText] = useState<string>('');
   const toggle = (popover: Popover) => setOpen(open === popover ? null : popover);
   const optionsChanged = onePlacement || sketchTime !== DEFAULT_SKETCH_TIME;
 
   let status: React.ReactNode = <span className="muted">Set up the spec on the left, then solve.</span>;
-  if (solving) status = <span className="running">Solving... {seconds.toFixed(0)}s {log.length > 0 && `- ${log[log.length - 1]}`}</span>;
+  if (solving)
+    status = (
+      <span className="running">
+        {shrinking ? 'Shrinking' : 'Solving'}... {seconds.toFixed(0)}s {log.length > 0 && `- ${log[log.length - 1]}`}
+      </span>
+    );
   else if (solveError) status = <span className="bad">{solveError}</span>;
   else if (result?.edited)
     status = <span className="muted">Edited by hand: {result.blockCount} blocks (see the check result in the view)</span>;
+  else if (result?.shrunkFrom && result.shrunkFrom.join() === result.layout.size.join())
+    status = (
+      <span className="muted">
+        No smaller box found: no column or row of {result.layout.size.join('x')} could go within the time limit
+      </span>
+    );
+  else if (result?.shrunkFrom)
+    status = (
+      <span className="good">
+        Shrunk {result.shrunkFrom.join('x')} to {result.layout.size.join('x')}: {result.blockCount} blocks in{' '}
+        {result.seconds.toFixed(0)}s
+      </span>
+    );
   else if (result)
     status = (
       <span className="good">
@@ -186,6 +205,15 @@ export function SolveBar() {
       <button className="ghost" onClick={() => toggle('log')}>
         Log
       </button>
+      {result && !solving && !result.edited && (
+        <button
+          className="ghost"
+          onClick={() => void startShrink()}
+          title="Remove a column or row at a time while the circuit still works (uses the time limit)"
+        >
+          Shrink
+        </button>
+      )}
       {result && (
         <button
           className="ghost"

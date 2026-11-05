@@ -6,6 +6,13 @@ const token = new URLSearchParams(window.location.search).get('token') ?? '';
 
 export class ApiError extends Error {}
 
+export interface ShrinkOptions {
+  timeLimit: number; // the whole shrink
+  cutTime: number; // one repair attempt
+  onePlacement: boolean;
+  sketchTime: number;
+}
+
 export interface SolveOptions {
   timeLimit: number;
   first: boolean;
@@ -35,6 +42,8 @@ export const api = {
   checkSketch: (spec: Spec, onePlacement: boolean) =>
     call<{ passes: boolean; report: string }>('spec/check_sketch', { spec, onePlacement }),
   startSolve: (spec: Spec, options: SolveOptions) => call<object>('solve/start', { spec, options }),
+  startShrink: (spec: Spec, world: World, options: ShrinkOptions) =>
+    call<object>('shrink/start', { spec, world, options }),
   solveStatus: () => call<SolveStatus>('solve/status'),
   cancelSolve: () => call<object>('solve/cancel'),
   resetSim: (world: World, inputs: number[]) => call<SimState>('sim/reset', { world, inputs }),

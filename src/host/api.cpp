@@ -1,6 +1,7 @@
 #include "host/api.hpp"
 
 #include <algorithm>
+#include <chrono>
 #include <format>
 #include <fstream>
 #include <sstream>
@@ -9,6 +10,7 @@
 #include "host/minecraft_assets.hpp"
 #include "redstone/layout_check.hpp"
 #include "redstone/report.hpp"
+#include "redstone/shrink.hpp"
 
 namespace rs::host {
 
@@ -65,6 +67,8 @@ Json Api::handle(std::string_view route, const Json &body) {
     return this->check_sketch(body);
   if (route == "spec/check")
     return this->check_spec(body);
+  if (route == "shrink/start")
+    return this->start_shrink(body);
   if (route == "solve/start")
     return this->start_solve(body);
   if (route == "solve/status")
@@ -148,8 +152,8 @@ VerificationOptions verification_from(const Json &settings) {
 
 Json Api::check_sketch(const Json &body) const {
   Spec spec = spec_from_json(body.at("spec"));
-  LayoutCheck check = check_layout(layout_from_hints(spec), spec,
-                                   verification_from(body));
+  LayoutCheck check =
+      check_layout(layout_from_hints(spec), spec, verification_from(body));
   return {{"passes", check.passes()}, {"report", format_check(check, spec)}};
 }
 
@@ -171,6 +175,46 @@ Json Api::start_solve(const Json &body) {
   return Json::object();
 }
 
+// Shrinks a solved layout: the job ends with the smaller spec (ports where
+// the layout has them, the layout as a sketch) and its verified layout.
+Json Api::start_shrink(const Json &body) {
+  if (this->job_ && !this->job_->is_done())
+    throw std::invalid_argument("a solve is already running");
+  Spec spec = spec_from_json(body.at("spec"));
+  World layout = world_from_json(body.at("world"));
+  const Json &settings = body.value("options", Json::object());
+  ShrinkOptions options;
+  options.time_limit_seconds = settings.value("timeLimit", 600.0);
+  options.cut_seconds = settings.value("cutTime", 120.0);
+  options.solver.sketch_step_seconds = settings.value("sketchTime", 3.0);
+  options.solver.verification = verification_from(settings);
+  if (options.time_limit_seconds <= 0 || options.cut_seconds <= 0)
+    throw std::invalid_argument("time limits must be positive");
+  this->job_ = std::make_unique<SolveJob>(
+      spec, [spec, layout, options](const ProgressCallback &progress,
+                                    std::atomic<bool> *cancel) {
+        auto start = std::chrono::steady_clock::now();
+        ShrinkOptions o = options;
+        o.cancel = cancel;
+        ShrinkResult shrunk = shrink(spec, layout, o, progress);
+        int blocks = 0;
+        for (int i = 0; i < shrunk.layout.volume(); ++i) {
+          BlockType type = shrunk.layout.at(shrunk.layout.position_of(i)).type;
+          if (type != BlockType::Air && type != BlockType::Input &&
+              type != BlockType::Output)
+            ++blocks;
+        }
+        SolveReport report;
+        report.status = SolveStatus::Feasible;
+        report.solution = EncodedSolution{shrunk.layout, blocks, {}, {}, {}};
+        report.seconds = std::chrono::duration<double>(
+                             std::chrono::steady_clock::now() - start)
+                             .count();
+        return JobResult{std::move(report), std::move(shrunk.spec)};
+      });
+  return Json::object();
+}
+
 Json Api::solve_status() const {
   if (!this->job_)
     return {{"running", false}, {"log", Json::array()}};
@@ -181,6 +225,8 @@ Json Api::solve_status() const {
     status["error"] = *error;
   if (auto report = this->job_->report())
     status["result"] = to_json(*report);
+  if (auto spec = this->job_->result_spec())
+    status["spec"] = to_json(*spec);
   return status;
 }
 
