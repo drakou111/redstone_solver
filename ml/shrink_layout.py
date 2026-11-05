@@ -82,7 +82,7 @@ def repaired(spec: Path) -> list[str] | None:
         check=False,
     )
     spec.with_suffix(".log").write_text(run.stdout + run.stderr)
-    if "verified a" not in run.stdout:
+    if "verified a" not in run.stdout + run.stderr:  # progress lines go to stderr
         return None
     lines = [
         l
