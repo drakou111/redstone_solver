@@ -405,6 +405,7 @@ input[type='checkbox'] {
   padding: 10px;
 }
 .popover.log {
+  white-space: pre-wrap;
   width: 560px;
   max-height: 360px;
   overflow: auto;

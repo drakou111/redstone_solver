@@ -58,19 +58,12 @@ test('shrinks a solved circuit into a smaller box', async ({ page }) => {
   await expect(page.locator('.status')).toContainText(/Shrunk|No smaller box/, { timeout: 120_000 });
 });
 
-test('composes a full adder from two half adders', async ({ page }) => {
+test('composes an on/off table from gates', async ({ page }) => {
   await page.goto('');
-  await page.locator('select.examples').selectOption({ label: 'full_adder.txt' });
-  await expect(page.locator('.notice')).toContainText('full_adder.txt');
+  await page.locator('select.examples').selectOption({ label: 'and_gate.txt' });
+  await expect(page.locator('.notice')).toContainText('and_gate.txt');
   await page.locator('select.method').selectOption('compose');
   await page.getByRole('button', { name: 'Compose', exact: true }).click();
-  await expect(page.locator('.status .good')).toContainText('Full adder:', { timeout: 120_000 });
+  await expect(page.locator('.status .good')).toContainText('Composed:', { timeout: 120_000 });
   await expect(page.locator('.output-value').first()).toBeVisible();
-});
-
-test('compose is unavailable without three inputs and two outputs', async ({ page }) => {
-  await page.goto('');
-  await page.locator('select.examples').selectOption({ label: 'not_gate.txt' });
-  await page.locator('select.method').selectOption('compose');
-  await expect(page.getByRole('button', { name: 'Compose', exact: true })).toBeDisabled();
 });

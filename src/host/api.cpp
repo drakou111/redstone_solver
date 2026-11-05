@@ -218,30 +218,30 @@ Json Api::start_shrink(const Json &body) {
   return Json::object();
 }
 
-// Builds a full adder from two half adders; the job ends with the composed
-// spec (its own box, ports and rows, the circuit as a sketch).
+// Composes the spec's on/off table from gate modules; the job ends with the
+// composed spec (its own box and ports, the table's rows, the circuit as a
+// sketch).
 Json Api::start_compose(const Json &body) {
   if (this->job_ && !this->job_->is_done())
     throw std::invalid_argument("a solve is already running");
   const Json &settings = body.value("options", Json::object());
-  ComposeOptions options;
-  if (settings.value("module", std::string("flat")) == "tall") {
-    options.module_size = {5, 3, 3};
-    options.xor_row = 2;
-  }
-  options.module_seconds = settings.value("timeLimit", 300.0);
-  options.stage_seconds = options.module_seconds;
+  NetlistComposeOptions options;
+  options.stage_seconds = settings.value("timeLimit", 120.0);
+  options.gates.seconds_per_size = options.stage_seconds;
   options.solver.verification = verification_from(settings);
-  if (options.module_seconds <= 0)
+  if (options.stage_seconds <= 0)
     throw std::invalid_argument("the time limit must be positive");
   Spec spec = spec_from_json(body.at("spec"));
+  // Answered right away: a table that needs exact strengths cannot be
+  // composed from on/off gates.
+  boolean_table(spec);
   this->job_ = std::make_unique<SolveJob>(
-      spec,
-      [options](const ProgressCallback &progress, std::atomic<bool> *cancel) {
+      spec, [spec, options](const ProgressCallback &progress,
+                            std::atomic<bool> *cancel) {
         auto start = std::chrono::steady_clock::now();
-        ComposeOptions o = options;
+        NetlistComposeOptions o = options;
         o.cancel = cancel;
-        std::optional<ComposeResult> composed = compose_full_adder(o, progress);
+        std::optional<ComposeResult> composed = compose_spec(spec, o, progress);
         SolveReport report;
         report.seconds = std::chrono::duration<double>(
                              std::chrono::steady_clock::now() - start)

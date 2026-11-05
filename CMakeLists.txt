@@ -71,7 +71,6 @@ add_library(redstone_core STATIC
         src/redstone/compose.cpp
         src/redstone/netlist.cpp
         src/redstone/gate_library.cpp
-        src/redstone/compose_netlist.cpp
         src/redstone/sat_engine.cpp
         src/redstone/layout_check.cpp
         src/redstone/circuit_gen.cpp)
@@ -219,7 +218,6 @@ if (REDSTONE_BUILD_TESTS)
             tests/test_compose.cpp
             tests/test_netlist.cpp
             tests/test_gate_library.cpp
-            tests/test_compose_netlist.cpp
             tests/test_circuit_gen.cpp)
     target_link_libraries(redstone_tests PRIVATE redstone_core Catch2::Catch2WithMain)
     target_compile_options(redstone_tests PRIVATE ${REDSTONE_WARNINGS})

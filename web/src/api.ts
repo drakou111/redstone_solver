@@ -7,12 +7,10 @@ const token = new URLSearchParams(window.location.search).get('token') ?? '';
 export class ApiError extends Error {}
 
 export interface ComposeOptions {
-  timeLimit: number; // per step (module, stage 1, stage 2)
+  timeLimit: number; // per step (each gate module, each channel)
   onePlacement: boolean;
-  module: ComposeModule;
 }
 
-export type ComposeModule = 'flat' | 'tall'; // half adder 5x2x4 (one layer) or 5x3x3
 
 export interface ShrinkOptions {
   timeLimit: number; // the whole shrink

@@ -29,9 +29,11 @@ the sliders, step the simulator, edit blocks (every edit is re-checked) and expo
 commands. Block textures are read from your own Minecraft client jar (found automatically for
 Prism and the vanilla launcher); nothing from Minecraft is bundled.
 
-Next to Solve: "Compose full adder" builds a full adder from two solver-made half adders in
-seconds (it places the ports itself), Shrink removes columns and rows from a solved circuit while
-it still works, and Sketch checks, keeps or clears hint blocks (a draft the solver starts from).
+Next to Solve: Compose splits an on/off truth table into the smallest network of 2-input gates,
+builds each gate with the solver and wires them column by column (it places the ports itself and
+handles larger circuits than one solve can), Shrink removes columns, rows and layers from a solved
+circuit while it still works, and Sketch checks, keeps or clears hint blocks (a draft the solver
+starts from).
 Options holds "only as drawn" (faster circuits that may fail when built rotated or elsewhere).
 
 Command line and tests:

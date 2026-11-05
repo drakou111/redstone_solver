@@ -12,72 +12,45 @@ namespace rs {
 
 namespace {
 
-constexpr SignalRange kOff{0, 0};
-constexpr SignalRange kOn{1, kMaxSignal};
-constexpr SignalRange kInputOn{kMaxSignal, kMaxSignal};
-
 using Cells = std::map<std::array<int, 3>, Block>;
 std::array<int, 3> key(Vec3 p) { return {p.x, p.y, p.z}; }
 
-std::string port_lines(const std::vector<Vec3> &inputs,
-                       const std::vector<Vec3> &outputs) {
-  std::string text;
+// One row of a stage: input values and wanted outputs (nothing: any).
+struct StageRow {
+  std::vector<bool> inputs;
+  std::vector<std::optional<bool>> outputs;
+};
+
+Spec make_spec(Vec3 size, const std::vector<Vec3> &inputs,
+               const std::vector<Vec3> &outputs,
+               const std::vector<StageRow> &rows, int horizon) {
+  std::string text = std::format("size {} {} {}\n", size.x, size.y, size.z);
   for (std::size_t i = 0; i < inputs.size(); ++i)
     text += std::format("input IN{} repeater {} {} {} east\n", i + 1,
                         inputs[i].x, inputs[i].y, inputs[i].z);
-  for (std::size_t i = 0; i < outputs.size(); ++i)
-    text += std::format("output OUT{} dust {} {} {}\n", i + 1, outputs[i].x,
-                        outputs[i].y, outputs[i].z);
-  return text;
-}
-
-// Rows of `outputs` (per input vector over `inputs` on/off inputs).
-std::vector<TruthRow>
-truth_rows(int inputs,
-           const std::function<std::vector<bool>(std::vector<bool>)> &f) {
-  std::vector<TruthRow> rows;
-  for (int v = 0; v < (1 << inputs); ++v) {
-    std::vector<bool> in;
-    TruthRow row;
-    for (int i = 0; i < inputs; ++i) {
-      in.push_back(((v >> i) & 1) != 0);
-      row.inputs.push_back(in.back() ? kInputOn : kOff);
-    }
-    for (bool on : f(in))
-      row.outputs.push_back(on ? kOn : kOff);
-    rows.push_back(std::move(row));
-  }
-  return rows;
-}
-
-std::string range_text(SignalRange r) {
-  return r.min == r.max ? std::format("ss{}", r.min)
-                        : std::format("ss{}..{}", r.min, r.max);
-}
-
-// A spec of the given box and ports with `rows`, settling within `horizon`.
-Spec base_spec(Vec3 size, const std::vector<Vec3> &inputs,
-               const std::vector<Vec3> &outputs,
-               const std::vector<TruthRow> &rows, int horizon) {
-  std::string text =
-      std::format("size {} {} {}\n{}timing none\nhorizon {}\n", size.x, size.y,
-                  size.z, port_lines(inputs, outputs), horizon);
-  for (const TruthRow &row : rows) {
+  for (std::size_t o = 0; o < outputs.size(); ++o)
+    text += std::format("output OUT{} dust {} {} {}\n", o + 1, outputs[o].x,
+                        outputs[o].y, outputs[o].z);
+  text += std::format("timing none\nhorizon {}\n", horizon);
+  for (const StageRow &row : rows) {
     text += "row ";
     for (std::size_t i = 0; i < row.inputs.size(); ++i)
-      text += std::format("{}IN{}({})", i ? "," : "", i + 1,
-                          range_text(row.inputs[i]));
+      text += std::format("{}IN{}(ss{})", i ? "," : "", i + 1,
+                          row.inputs[i] ? kMaxSignal : 0);
     text += " ->";
-    for (std::size_t o = 0; o < row.outputs.size(); ++o)
-      text += std::format("{}OUT{}({})", o ? "," : " ", o + 1,
-                          range_text(row.outputs[o]));
+    for (std::size_t o = 0; o < row.outputs.size(); ++o) {
+      std::string range = !row.outputs[o]   ? "ss0..15"
+                          : *row.outputs[o] ? "ss1..15"
+                                            : "ss0";
+      text += std::format("{}OUT{}({})", o ? "," : " ", o + 1, range);
+    }
     text += "\n";
   }
   return parse_spec(text);
 }
 
-// Blocks of a solved layout, its ports turned into the plain blocks they
-// are (a repeater input, dust output), moved by `offset`.
+// Blocks of a layout moved by `offset`, ports turned into the plain blocks
+// they are (repeater inputs, dust outputs).
 void add_layout(Cells &cells, const World &layout, Vec3 offset) {
   for (int i = 0; i < layout.volume(); ++i) {
     Vec3 p = layout.position_of(i);
@@ -92,18 +65,13 @@ void add_layout(Cells &cells, const World &layout, Vec3 offset) {
   }
 }
 
-// Pins `cells` (except where the spec's ports are) and leaves every other
-// cell outside `free` empty.
 void pin(Spec &spec, const Cells &cells,
          const std::function<bool(Vec3)> &free) {
   World base = spec.base_world();
-  auto is_port = [&](Vec3 p) {
-    BlockType t = base.at(p).type;
-    return t == BlockType::Input || t == BlockType::Output;
-  };
   for (int i = 0; i < base.volume(); ++i) {
     Vec3 p = base.position_of(i);
-    if (is_port(p))
+    BlockType t = base.at(p).type;
+    if (t == BlockType::Input || t == BlockType::Output)
       continue;
     if (auto it = cells.find(key(p)); it != cells.end())
       spec.fixed.emplace_back(p, it->second);
@@ -112,118 +80,283 @@ void pin(Spec &spec, const Cells &cells,
   }
 }
 
+// Gates of one level that read the same two signals: one module.
+struct Group {
+  int a = 0, b = 0;       // operand nodes
+  std::vector<int> nodes; // gate nodes, in module output order
+  std::vector<std::uint8_t> functions;
+};
+
+// What a column holds along z: a gate group's module or a pass-through
+// track for one signal.
+struct Slot {
+  int group = -1; // index into groups; -1: a track
+  int node = 0;   // the track's signal
+  int z = 0;
+};
+
+struct Column {
+  int width = 1;
+  std::vector<Slot> slots;
+};
+
 } // namespace
 
 std::optional<ComposeResult>
-compose_full_adder(const ComposeOptions &options,
-                   const ProgressCallback &progress) {
-  const auto [mx, my, mz] = options.module_size;
-  if (mx < 2 || my < 2 || mz < 3 || options.and_row >= options.xor_row ||
-      options.xor_row >= mz || options.gap < 0)
-    throw std::invalid_argument("module size or output rows do not fit");
+compose_netlist(const Netlist &netlist, const BoolTable &table,
+                const NetlistComposeOptions &options,
+                const ProgressCallback &progress) {
   auto say = [&](const std::string &message) {
     if (progress)
       progress(message);
   };
-  auto run = [&](const Spec &spec, double seconds,
-                 const std::string &step) -> std::optional<World> {
-    if (options.cancel && options.cancel->load())
-      return std::nullopt;
-    SolverOptions solver = options.solver;
-    solver.time_limit_seconds = seconds;
-    solver.stop_at_first = true;
-    solver.cancel = options.cancel;
-    SolveReport report = solve(spec, solver);
-    say(std::format("{}: {} ({:.1f}s)", step,
-                    report.solution ? std::string_view("found")
-                                    : to_string(report.status),
-                    report.seconds));
-    if (!report.solution)
-      return std::nullopt;
-    return report.solution->layout;
-  };
+  auto cancelled = [&] { return options.cancel && options.cancel->load(); };
+  const int n = netlist.inputs;
+  const std::vector<int> level = netlist.levels();
+  int depth_levels = 0;
+  for (int node = n; node < static_cast<int>(level.size()); ++node)
+    depth_levels = std::max(depth_levels, level[node]);
 
-  // The half adder module.
-  const Vec3 m_in1{0, 1, 0}, m_in2{0, 1, mz - 1};
-  const Vec3 m_xor{mx - 1, 1, options.xor_row};
-  const Vec3 m_and{mx - 1, 1, options.and_row};
-  Spec module = base_spec(options.module_size, {m_in1, m_in2}, {m_xor, m_and},
-                          truth_rows(2,
-                                     [](std::vector<bool> in) {
-                                       return std::vector<bool>{in[0] != in[1],
-                                                                in[0] && in[1]};
-                                     }),
-                          options.horizon);
-  if (options.clean_faces)
-    for (int x : {0, mx - 1})
-      for (int y = 1; y < my; ++y)
-        for (int z = 0; z < mz; ++z) {
-          Vec3 p{x, y, z};
-          if (p != m_in1 && p != m_in2 && p != m_xor && p != m_and)
-            module.forbidden.push_back(p);
-        }
-  std::optional<World> module_layout =
-      run(module, options.module_seconds, "half adder module");
-  if (!module_layout)
-    return std::nullopt;
-
-  // Geometry: HA2 right after HA1 (plus the gap), its first input in line
-  // with HA1's XOR output; the third input enters one row below HA1.
-  const int x2 = mx + options.gap;
-  const int z2 = options.xor_row;
-  const int z_c = mz;
-  const Vec3 size{x2 + mx, my, std::max(z2 + mz, z_c + 1)};
-  const std::vector<Vec3> inputs{{0, 1, 0}, {0, 1, mz - 1}, {0, 1, z_c}};
-  const Vec3 out1{x2 + mx - 1, 1, z2 + options.xor_row};
-  const Vec3 out2{x2 + mx - 1, 1, z2 + options.and_row};
-  Cells modules;
-  add_layout(modules, *module_layout, {0, 0, 0});
-  add_layout(modules, *module_layout, {x2, 0, z2});
-
-  // Stage 1: route the third input; only the sum is asked for.
-  Spec stage1 = base_spec(size, inputs, {out1},
-                          truth_rows(3,
-                                     [](std::vector<bool> in) {
-                                       return std::vector<bool>{
-                                           (in[0] != in[1]) != in[2]};
-                                     }),
-                          options.horizon);
-  pin(stage1, modules, [&](Vec3 p) {
-    return p.y == 0 || (p.z >= mz && p.x < x2) || (p.x >= mx && p.x < x2);
-  });
-  std::optional<World> layout1 =
-      run(stage1, options.stage_seconds, "stage 1 (third input)");
-  if (!layout1)
-    return std::nullopt;
-
-  // Stage 2: route HA1's AND output north of HA2 into the carry.
-  auto full_adder = [](std::vector<bool> in) {
-    int count = static_cast<int>(in[0]) + static_cast<int>(in[1]) +
-                static_cast<int>(in[2]);
-    return std::vector<bool>{count % 2 == 1, count >= 2};
-  };
-  Spec stage2 = base_spec(size, inputs, {out1, out2}, truth_rows(3, full_adder),
-                          options.horizon);
-  Cells stage1_cells;
-  add_layout(stage1_cells, *layout1, {0, 0, 0});
-  pin(stage2, stage1_cells,
-      [&](Vec3 p) { return p.y == 0 || (p.z < z2 && p.x >= mx - 1); });
-  std::optional<World> layout2 =
-      run(stage2, options.stage_seconds, "stage 2 (carry)");
-  if (!layout2)
-    return std::nullopt;
-
-  // The result: the plain full adder spec with the circuit as its sketch.
-  Spec result = base_spec(size, inputs, {out1, out2}, truth_rows(3, full_adder),
-                          options.horizon);
-  for (int i = 0; i < layout2->volume(); ++i) {
-    Vec3 p = layout2->position_of(i);
-    const Block &block = layout2->at(p);
-    if (block.type != BlockType::Air && block.type != BlockType::Input &&
-        block.type != BlockType::Output)
-      result.hints.emplace_back(p, block);
+  // Group gates by level and operands; build one module per group.
+  std::vector<Group> groups;
+  for (std::size_t g = 0; g < netlist.gates.size(); ++g) {
+    const Gate &gate = netlist.gates[g];
+    int node = n + static_cast<int>(g);
+    auto same = std::find_if(groups.begin(), groups.end(), [&](const Group &x) {
+      return x.a == gate.a && x.b == gate.b && level[x.nodes[0]] == level[node];
+    });
+    if (same == groups.end()) {
+      groups.push_back({gate.a, gate.b, {}, {}});
+      same = groups.end() - 1;
+    }
+    same->nodes.push_back(node);
+    same->functions.push_back(gate.function);
   }
-  return ComposeResult{std::move(result), std::move(*layout2)};
+  GateLibraryOptions gate_options = options.gates;
+  gate_options.solver = options.solver;
+  gate_options.cancel = options.cancel;
+  std::map<std::vector<std::uint8_t>, GateModule> modules;
+  int module_height = 2;
+  for (const Group &group : groups) {
+    if (modules.contains(group.functions))
+      continue;
+    std::optional<GateModule> m =
+        build_gate(group.functions, gate_options, progress);
+    if (!m) {
+      say("no module for one of the gate groups");
+      return std::nullopt;
+    }
+    module_height = std::max(module_height, m->layout.size().y);
+    modules.emplace(group.functions, std::move(*m));
+  }
+  auto module_of = [&](int group) -> const GateModule & {
+    return modules.at(groups[group].functions);
+  };
+
+  // Z layout, column by column: items sorted by where their sources are.
+  // Column 0 holds the inputs, 1..D the gate levels, D + 1 the outputs.
+  auto needed_after = [&](int node, int column) {
+    for (std::size_t g = 0; g < netlist.gates.size(); ++g) {
+      int user = n + static_cast<int>(g);
+      if (level[user] > column &&
+          (netlist.gates[g].a == node || netlist.gates[g].b == node))
+        return true;
+    }
+    return std::find(netlist.outputs.begin(), netlist.outputs.end(), node) !=
+           netlist.outputs.end();
+  };
+  std::vector<Column> columns(depth_levels + 2);
+  std::vector<double> at(level.size(), 0.0); // z a node's signal leaves at
+  for (int i = 0; i < n; ++i) {
+    columns[0].slots.push_back({-1, i, 2 * i});
+    at[i] = 2 * i;
+  }
+  int depth = 2 * n - 1;
+  for (int c = 1; c <= depth_levels; ++c) {
+    struct Item {
+      double key;
+      Slot slot;
+    };
+    std::vector<Item> items;
+    for (std::size_t gi = 0; gi < groups.size(); ++gi)
+      if (level[groups[gi].nodes[0]] == c)
+        items.push_back({(at[groups[gi].a] + at[groups[gi].b]) / 2,
+                         {static_cast<int>(gi), 0, 0}});
+    for (int node = 0; node < static_cast<int>(level.size()); ++node)
+      if (level[node] < c && needed_after(node, c))
+        items.push_back({at[node], {-1, node, 0}});
+    std::stable_sort(
+        items.begin(), items.end(),
+        [](const Item &x, const Item &y) { return x.key < y.key; });
+    int cursor = 0;
+    for (Item &item : items) {
+      item.slot.z = cursor;
+      if (item.slot.group >= 0) {
+        const GateModule &m = module_of(item.slot.group);
+        const Group &group = groups[item.slot.group];
+        columns[c].width = std::max(columns[c].width, m.layout.size().x);
+        for (std::size_t o = 0; o < group.nodes.size(); ++o)
+          at[group.nodes[o]] = cursor + m.outs[o].z;
+        cursor += m.layout.size().z + 1;
+      } else {
+        at[item.slot.node] = cursor;
+        cursor += 2;
+      }
+      columns[c].slots.push_back(item.slot);
+    }
+    depth = std::max(depth, cursor - 1);
+  }
+  {
+    std::vector<std::pair<double, int>> outs;
+    for (std::size_t o = 0; o < netlist.outputs.size(); ++o)
+      outs.emplace_back(at[netlist.outputs[o]], static_cast<int>(o));
+    std::stable_sort(outs.begin(), outs.end());
+    std::vector<Slot> slots(netlist.outputs.size());
+    for (std::size_t k = 0; k < outs.size(); ++k)
+      slots[outs[k].second] = {-1, netlist.outputs[outs[k].second],
+                               2 * static_cast<int>(k)};
+    columns.back().slots = slots;
+    depth = std::max(depth, 2 * static_cast<int>(outs.size()) - 1);
+  }
+  const int size_z = depth + 1;
+
+  std::vector<Vec3> input_ports;
+  for (const Slot &s : columns[0].slots)
+    input_ports.push_back({0, 1, s.z});
+  const int vectors = 1 << n;
+
+  // A spare layer above the modules lets wires cross. Each channel may use
+  // it from the start (a flat-only try that fails costs a full time limit);
+  // an unused top layer is dropped at the end.
+  const int height = module_height + options.extra_layers;
+  Cells placed; // everything verified so far
+  int x = 1;    // first cell east of column 0
+  for (int k = 0; k <= depth_levels; ++k) {
+    const Column &next = columns[k + 1];
+    const bool last = k == depth_levels;
+    bool done = false;
+    for (int width = options.channel_width;
+         width <= options.max_channel_width && !done; ++width)
+      for (bool upper : {options.extra_layers > 0}) {
+        if (done)
+          continue;
+        if (cancelled())
+          return std::nullopt;
+        const int x0 = x + width; // where column k + 1 starts
+        std::vector<Vec3> probes;
+        std::vector<int> probe_nodes;
+        Cells cells = placed;
+        std::vector<std::array<int, 2>> track_rows; // {z, x end}
+        for (const Slot &s : next.slots) {
+          if (last) {
+            probes.push_back({x0, 1, s.z});
+            probe_nodes.push_back(s.node);
+          } else if (s.group >= 0) {
+            const GateModule &m = module_of(s.group);
+            probes.push_back({x0 - 1, 1, s.z + m.in1.z});
+            probe_nodes.push_back(groups[s.group].a);
+            probes.push_back({x0 - 1, 1, s.z + m.in2.z});
+            probe_nodes.push_back(groups[s.group].b);
+            add_layout(cells, m.layout, {x0, 0, s.z});
+          } else {
+            probes.push_back({x0 + next.width - 1, 1, s.z});
+            probe_nodes.push_back(s.node);
+            track_rows.push_back({s.z, x0 + next.width - 1});
+          }
+        }
+        std::vector<StageRow> rows;
+        for (int t = 0; t < vectors; ++t) {
+          StageRow row;
+          std::vector<bool> v = netlist.evaluate(t);
+          for (int i = 0; i < n; ++i)
+            row.inputs.push_back(v[i]);
+          if (last) {
+            for (const auto &column : table.values)
+              row.outputs.push_back(column[t]);
+          } else {
+            for (int node : probe_nodes)
+              row.outputs.push_back(v[node]);
+          }
+          rows.push_back(std::move(row));
+        }
+        const Vec3 size{last ? x0 + 1 : x0 + next.width, height, size_z};
+        Spec spec = make_spec(size, input_ports, probes, rows, options.horizon);
+        pin(spec, cells, [&](Vec3 p) {
+          if (!upper && p.y >= module_height)
+            return false;
+          if (p.x >= x && p.x < x0)
+            return true; // the channel
+          if (p.y == 0 && (p.x == 0 || (last && p.x == x0)))
+            return true; // supports under the input and output ports
+          for (const auto &[z, x_end] : track_rows)
+            if (p.z == z && p.x >= x0 && p.x <= x_end)
+              return true; // a pass-through track
+          return false;
+        });
+        SolverOptions solver = options.solver;
+        solver.time_limit_seconds = width < options.comfortable_width
+                                        ? options.narrow_seconds
+                                        : options.stage_seconds;
+        solver.stop_at_first = true;
+        solver.cancel = options.cancel;
+        SolveReport report = solve(spec, solver);
+        say(std::format("{} {} (width {}{}): {}", last ? "outputs" : "channel",
+                        k + 1, width, upper ? ", upper layer" : "",
+                        report.solution ? std::string_view("wired")
+                                        : to_string(report.status)));
+        if (!report.solution)
+          continue;
+        done = true;
+        if (last) {
+          // The finished circuit: the table's rows, the layout as hints,
+          // without empty top layers.
+          const World &full = report.solution->layout;
+          int top = 0;
+          for (int i = 0; i < full.volume(); ++i) {
+            Vec3 p = full.position_of(i);
+            if (full.at(p).type != BlockType::Air)
+              top = std::max(top, p.y);
+          }
+          Vec3 cropped{size.x, top + 1, size.z};
+          World layout(cropped);
+          Spec result =
+              make_spec(cropped, input_ports, probes, rows, options.horizon);
+          for (int i = 0; i < full.volume(); ++i) {
+            Vec3 p = full.position_of(i);
+            const Block &b = full.at(p);
+            if (b.type == BlockType::Air)
+              continue;
+            layout.set(p, b);
+            if (b.type != BlockType::Input && b.type != BlockType::Output)
+              result.hints.emplace_back(p, b);
+          }
+          return ComposeResult{std::move(result), std::move(layout)};
+        }
+        placed.clear();
+        add_layout(placed, report.solution->layout, {0, 0, 0});
+        x = x0 + next.width;
+      }
+    if (!done)
+      return std::nullopt;
+  }
+  return std::nullopt;
+}
+
+std::optional<ComposeResult> compose_spec(const Spec &spec,
+                                          const NetlistComposeOptions &options,
+                                          const ProgressCallback &progress) {
+  BoolTable table = boolean_table(spec);
+  SynthesisOptions synthesis;
+  synthesis.cancel = options.cancel;
+  std::optional<Netlist> netlist = synthesize(table, synthesis);
+  if (!netlist) {
+    if (progress)
+      progress("no gate network found (too many gates)");
+    return std::nullopt;
+  }
+  if (progress)
+    progress(std::format("gate network:\n{}", netlist->describe()));
+  return compose_netlist(*netlist, table, options, progress);
 }
 
 } // namespace rs

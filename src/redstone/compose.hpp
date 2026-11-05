@@ -3,44 +3,53 @@
 #include <atomic>
 #include <optional>
 
-#include "redstone/solver.hpp"
-#include "redstone/spec.hpp"
+#include "redstone/gate_library.hpp"
+#include "redstone/netlist.hpp"
 #include "redstone/world.hpp"
 
 namespace rs {
 
-// A full adder from two half adders made by the solver:
-//   module: a half adder in a small box (inputs on its west face, XOR and
-//     AND outputs on its east face), faces empty but for the ports so two
-//     copies can touch (or `gap` free columns apart);
-//   stage 1: both copies pinned, HA1's XOR output feeding HA2; the solver
-//     only routes the third input to HA2 and is asked for the sum;
-//   stage 2: stage 1 pinned; the solver routes HA1's AND output past HA2
-//     into HA2's AND output, which becomes the carry.
-// Each solve may only use the cells its wire needs, which keeps it small.
-struct ComposeOptions {
-  Vec3 module_size{5, 2, 4}; // y 2: one layer on a floor
-  int xor_row = 2;           // z of the module's XOR output on its east face
-  int and_row = 0;           // z of its AND output; below xor_row
-  bool clean_faces = true;
-  int gap = 0;
-  int horizon = 80; // two gates in a chain settle slowly
-  double module_seconds = 300.0;
-  double stage_seconds = 300.0;
-  // Threads and verification placements for every solve.
-  SolverOptions solver;
-  std::atomic<bool> *cancel = nullptr;
-};
-
 struct ComposeResult {
-  Spec spec;    // the composed box and ports, the full adder rows, the
-                // circuit as hints
+  Spec spec;    // the composed box, ports and rows, the circuit as hints
   World layout; // verified
 };
 
-// Nothing if a step finds no circuit (the progress log says which).
+// Lays a gate network out in columns, west to east: the input ports, one
+// column per logic level (gate modules stacked along z, plus straight
+// tracks for signals that pass through to a later column), the output
+// ports. Between two columns is a free channel that one solve wires up:
+// the cells feeding the next column are temporary outputs ("probes") whose
+// truth tables come from the network, so each channel is checked on its
+// own while everything west of it stays pinned. Channels may use a spare
+// layer above the modules (room for wires to cross); a channel that fails
+// is retried one column wider. An unused top layer is dropped at the end.
+struct NetlistComposeOptions {
+  int channel_width = 1;
+  int max_channel_width = 6;
+  int extra_layers = 1; // spare layers above the modules for crossings
+  double stage_seconds = 120.0;
+  // Channels narrower than this get a short try first: when they work they
+  // are found quickly, and a long failing try costs a whole stage time.
+  int comfortable_width = 3;
+  double narrow_seconds = 20.0;
+  int horizon = 80;
+  GateLibraryOptions gates;
+  SolverOptions solver; // threads and verification placements
+  std::atomic<bool> *cancel = nullptr;
+};
+
+// The composed circuit for `netlist`; its spec has the table's rows (don't
+// cares as any strength) and the circuit as hints.
 std::optional<ComposeResult>
-compose_full_adder(const ComposeOptions &options,
-                   const ProgressCallback &progress = {});
+compose_netlist(const Netlist &netlist, const BoolTable &table,
+                const NetlistComposeOptions &options,
+                const ProgressCallback &progress = {});
+
+// Reads the spec as an on/off table, finds the smallest gate network and
+// composes it. Throws std::invalid_argument for specs that need exact
+// strengths.
+std::optional<ComposeResult>
+compose_spec(const Spec &spec, const NetlistComposeOptions &options,
+             const ProgressCallback &progress = {});
 
 } // namespace rs
