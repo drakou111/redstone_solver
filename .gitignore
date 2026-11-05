@@ -22,3 +22,6 @@ output/
 .claude/
 CLAUDE.md
 CLAUDE.local.md
+
+# Python
+__pycache__/
