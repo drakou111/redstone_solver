@@ -787,8 +787,22 @@ struct CircuitEncoder::Impl {
         Vec3 behind = pos + offset(opposite(d));
         edge(p, behind, 1, {diode, facing});
         edge(p, behind + offset(opposite(d)), 1, {k[kComparator], facing});
-        for (Dir side : {rotate_clockwise(d), rotate_counter_clockwise(d)})
-          edge(p, pos + offset(side), 1, {diode, facing});
+        // Sides count only for what is actually read there: a repeater is
+        // locked by diodes facing into it, a comparator reads dust and
+        // strong emitters. A plain block beside a side is no dependency.
+        for (Dir side : {rotate_clockwise(d), rotate_counter_clockwise(d)}) {
+          Vec3 q = pos + offset(side);
+          const Cell &n = this->cell_at(q);
+          Dir toward_p = opposite(side);
+          Lit diode_into = this->b.all(
+              {this->b.any_exclusive({n.kind[kRepeater], n.kind[kComparator],
+                                      n.kind[kInputComparator],
+                                      n.kind[kInputRepeater]}),
+               n.facing[index_of(toward_p)]});
+          edge(p, q, 1, {k[kRepeater], facing, diode_into});
+          Lit read = this->b.any({n.dust, this->may_emit(n, toward_p, true)});
+          edge(p, q, 1, {k[kComparator], facing, read});
+        }
       }
     }
   }
