@@ -25,6 +25,7 @@ interface Props {
   topLayer: number;
   forbidden: Vec3[];
   kept: Vec3[];
+  sketch: Vec3[]; // sketch (hint) cells, outlined in their own colour
   regions: RegionOverlay[];
   hover: Hover | null;
   onHover: (hover: Hover | null) => void;
@@ -37,6 +38,7 @@ const GRID_COLOR = '#3a3f4b';
 const BOUNDS_COLOR = '#5b6475';
 const PLACE_COLOR = '#63d07e';
 const REMOVE_COLOR = '#ff5a4d';
+const SKETCH_COLOR = '#f2b134';
 const REGION_INPUT_COLOR = '#3ddc84';
 const REGION_OUTPUT_COLOR = '#ffb03d';
 // Pointer travel (px) above which a press counts as a camera drag, not a click.
@@ -95,7 +97,7 @@ function hoverFromBlock(event: ThreeEvent<PointerEvent | MouseEvent>, cell: Vec3
   return { hit: cell, place: [cell[0] + Math.round(normal.x), cell[1] + Math.round(normal.y), cell[2] + Math.round(normal.z)] };
 }
 
-export function Scene({ world, sim, textures, topLayer, forbidden, kept, regions, hover, onHover, onPlace, onRemove }: Props) {
+export function Scene({ world, sim, textures, topLayer, forbidden, kept, sketch, regions, hover, onHover, onPlace, onRemove }: Props) {
   const [sx, sy, sz] = world.size;
   const top = Math.min(topLayer, sy - 1);
   // Clicking empty space places on the floor, or on the top shown layer when
@@ -219,6 +221,11 @@ export function Scene({ world, sim, textures, topLayer, forbidden, kept, regions
               );
             }),
         )}
+        {sketch
+          .filter((c) => c[1] <= top)
+          .map((c) => (
+            <CellBox key={`sketch:${key(c)}`} cell={c} color={SKETCH_COLOR} opacity={0.6} />
+          ))}
         {kept
           .filter((c) => c[1] <= top)
           .map((c) => (

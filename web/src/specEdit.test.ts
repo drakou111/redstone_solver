@@ -3,8 +3,10 @@ import { describe, expect, it } from 'vitest';
 import {
   addPort,
   editWorld,
+  keepSketch,
   movePort,
   occupantAt,
+  removeHint,
   removePort,
   rotateBlock,
   rotatePort,
@@ -29,6 +31,7 @@ function spec(): Spec {
     tiled: [false, false, false],
     fixed: [],
     forbidden: [],
+    hints: [],
   };
 }
 
@@ -122,5 +125,28 @@ describe('ports the solver places', () => {
     s = setPortFree(s, input, false);
     expect(s.inputs[0]?.region).toEqual([]);
     expect(s.inputs[0]?.position).toEqual([0, 1, 1]);
+  });
+});
+
+describe('sketch (hint) blocks', () => {
+  const withSketch = (): Spec => ({ ...spec(), hints: [{ type: 'dust', position: [1, 1, 0] }] });
+
+  it('show in the editor world and are found by occupantAt', () => {
+    const s = withSketch();
+    expect(specWorld(s).blocks).toContainEqual({ type: 'dust', position: [1, 1, 0] });
+    expect(occupantAt(s, [1, 1, 0])).toEqual({ kind: 'hint', index: 0 });
+  });
+
+  it('give way to a kept block placed in the same cell', () => {
+    const s = setFixed(withSketch(), [1, 1, 0], { type: 'solid' });
+    expect(s.hints).toEqual([]);
+    expect(s.fixed).toEqual([{ type: 'solid', position: [1, 1, 0] }]);
+  });
+
+  it('can be removed, or all kept at once', () => {
+    expect(removeHint(withSketch(), [1, 1, 0]).hints).toEqual([]);
+    const kept = keepSketch(withSketch());
+    expect(kept.hints).toEqual([]);
+    expect(kept.fixed).toEqual([{ type: 'dust', position: [1, 1, 0] }]);
   });
 });

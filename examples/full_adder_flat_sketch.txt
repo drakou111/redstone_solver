@@ -1,0 +1,64 @@
+# Flat full adder (one layer on a floor), drawn as a sketch: the hint lines
+# are a verified circuit found by ml/compose_full_adder.py + shrink_layout.py.
+# Solve keeps the sketch if it works; 'first circuit only' makes that instant.
+size 7 2 5
+input IN1 repeater 0 1 0 east
+input IN2 repeater 0 1 2 east
+input IN3 repeater 0 1 3 east
+output OUT1 dust 6 1 3
+output OUT2 dust 6 1 1
+timing none
+horizon 80
+row IN1(ss0),IN2(ss0),IN3(ss0) -> OUT1(ss0),OUT2(ss0)
+row IN1(ss15),IN2(ss0),IN3(ss0) -> OUT1(ss1..15),OUT2(ss0)
+row IN1(ss0),IN2(ss15),IN3(ss0) -> OUT1(ss1..15),OUT2(ss0)
+row IN1(ss15),IN2(ss15),IN3(ss0) -> OUT1(ss0),OUT2(ss1..15)
+row IN1(ss0),IN2(ss0),IN3(ss15) -> OUT1(ss1..15),OUT2(ss0)
+row IN1(ss15),IN2(ss0),IN3(ss15) -> OUT1(ss0),OUT2(ss1..15)
+row IN1(ss0),IN2(ss15),IN3(ss15) -> OUT1(ss0),OUT2(ss1..15)
+row IN1(ss15),IN2(ss15),IN3(ss15) -> OUT1(ss1..15),OUT2(ss1..15)
+hint 0 0 0 solid
+hint 1 0 0 solid
+hint 2 0 0 solid
+hint 3 0 0 solid
+hint 5 0 0 solid
+hint 1 0 1 solid
+hint 2 0 1 solid
+hint 4 0 1 solid
+hint 5 0 1 solid
+hint 6 0 1 solid
+hint 0 0 2 solid
+hint 1 0 2 solid
+hint 3 0 2 solid
+hint 4 0 2 solid
+hint 5 0 2 solid
+hint 0 0 3 solid
+hint 4 0 3 solid
+hint 5 0 3 solid
+hint 6 0 3 solid
+hint 2 0 4 solid
+hint 3 0 4 solid
+hint 1 1 0 comparator east subtract
+hint 2 1 0 dust
+hint 3 1 0 comparator east subtract
+hint 4 1 0 solid
+hint 5 1 0 comparator west subtract
+hint 6 1 0 barrel 8
+hint 1 1 1 dust
+hint 2 1 1 comparator east subtract
+hint 3 1 1 barrel 13
+hint 4 1 1 dust
+hint 5 1 1 comparator east compare
+hint 1 1 2 comparator north subtract
+hint 3 1 2 comparator south subtract
+hint 4 1 2 dust
+hint 5 1 2 repeater north 2
+hint 1 1 3 barrel 14
+hint 2 1 3 torch west
+hint 3 1 3 target
+hint 4 1 3 comparator east subtract
+hint 5 1 3 dust
+hint 2 1 4 dust
+hint 3 1 4 dust
+hint 4 1 4 target
+hint 5 1 4 torch west

@@ -139,6 +139,12 @@ Json to_json(const Spec &spec) {
   Json forbidden = Json::array();
   for (Vec3 p : spec.forbidden)
     forbidden.push_back(vec3(p));
+  Json hints = Json::array();
+  for (const auto &[position, block] : spec.hints) {
+    Json entry = to_json(block);
+    entry["position"] = vec3(position);
+    hints.push_back(std::move(entry));
+  }
 
   const TimingSpec &t = spec.timing;
   return {{"size", vec3(spec.size)},
@@ -156,7 +162,8 @@ Json to_json(const Spec &spec) {
           {"supportLayer", spec.support_layer},
           {"tiled", Json::array({spec.tiled[0], spec.tiled[1], spec.tiled[2]})},
           {"fixed", fixed},
-          {"forbidden", forbidden}};
+          {"forbidden", forbidden},
+          {"hints", hints}};
 }
 
 Spec spec_from_json(const Json &json) {
@@ -214,6 +221,9 @@ Spec spec_from_json(const Json &json) {
                             block_from_json(entry));
   for (const Json &cell : json.value("forbidden", Json::array()))
     spec.forbidden.push_back(vec3_from(cell, "forbidden cell"));
+  for (const Json &entry : json.value("hints", Json::array()))
+    spec.hints.emplace_back(vec3_from(field(entry, "position"), "position"),
+                            block_from_json(entry));
   spec.validate();
   return spec;
 }

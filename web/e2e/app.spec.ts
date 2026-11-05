@@ -23,3 +23,12 @@ test('solves the delay buffer and simulates it', async ({ page }) => {
   await page.waitForTimeout(800);
   await page.screenshot({ path: 'test-results/solved.png' });
 });
+
+test('opens a sketched full adder and solves it from the sketch', async ({ page }) => {
+  await page.goto('');
+  await page.locator('select.examples').selectOption({ label: 'full_adder_flat_sketch.txt' });
+  await expect(page.locator('.notice')).toContainText('full_adder_flat_sketch.txt');
+  await page.getByLabel('first circuit only').check();
+  await page.getByRole('button', { name: 'Solve' }).click();
+  await expect(page.locator('.status .good')).toContainText('45 blocks', { timeout: 60_000 });
+});

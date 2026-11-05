@@ -123,6 +123,7 @@ function Viewport() {
       topLayer={topLayer}
       forbidden={showResult ? [] : spec.forbidden}
       kept={showResult ? [] : spec.fixed.map((b) => b.position)}
+      sketch={showResult ? [] : spec.hints.map((b) => b.position)}
       regions={regions}
       hover={hover}
       onHover={setHover}

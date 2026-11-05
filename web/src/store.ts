@@ -13,6 +13,7 @@ import {
   type PortRef,
   portAt,
   regionContains,
+  removeHint,
   removePort,
   rotateBlock,
   rotatePort,
@@ -248,6 +249,7 @@ export const useStore = create<State>((set, get) => {
     if (!hit || !occupant) return;
     if (occupant.kind === 'port') updateSpec((s) => removePort(s, occupant.port));
     else if (occupant.kind === 'fixed') updateSpec((s) => setFixed(s, hit, null));
+    else if (occupant.kind === 'hint') updateSpec((s) => removeHint(s, hit));
     else updateSpec((s) => toggleForbidden(s, hit));
   }
 

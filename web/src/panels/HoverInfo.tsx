@@ -64,6 +64,9 @@ export function HoverInfo() {
     } else if (occupant?.kind === 'fixed') {
       const fixed = spec.fixed[occupant.index];
       if (fixed) lines.push(`kept: ${describe(fixed)}`);
+    } else if (occupant?.kind === 'hint') {
+      const hint = spec.hints[occupant.index];
+      if (hint) lines.push(`sketch: ${describe(hint)}`);
     } else if (occupant?.kind === 'forbidden') {
       lines.push('kept empty');
     } else {

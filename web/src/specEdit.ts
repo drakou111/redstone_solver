@@ -20,7 +20,8 @@ export function inside(size: Vec3, p: Vec3): boolean {
 export type Occupant =
   | { kind: 'port'; port: PortRef }
   | { kind: 'fixed'; index: number }
-  | { kind: 'forbidden'; index: number };
+  | { kind: 'forbidden'; index: number }
+  | { kind: 'hint'; index: number };
 
 export function isFree(port: { region: Vec3[] }): boolean {
   return port.region.length > 0;
@@ -50,8 +51,10 @@ export function occupantAt(spec: Spec, p: Vec3): Occupant | null {
   if (output >= 0) return { kind: 'port', port: { input: false, index: output } };
   const fixed = spec.fixed.findIndex((b) => key(b.position) === k);
   if (fixed >= 0) return { kind: 'fixed', index: fixed };
-  const forbidden = (spec.forbidden).findIndex((c) => key(c) === k);
+  const forbidden = spec.forbidden.findIndex((c) => key(c) === k);
   if (forbidden >= 0) return { kind: 'forbidden', index: forbidden };
+  const hint = spec.hints.findIndex((b) => key(b.position) === k);
+  if (hint >= 0) return { kind: 'hint', index: hint };
   return null;
 }
 
@@ -143,10 +146,21 @@ export function rotateBlock(block: Block): Block {
   return { ...block, facing: nextDir(block.facing ?? choices[0] ?? 'north', choices) };
 }
 
+// A kept block replaces any sketch block in the same cell.
 export function setFixed(spec: Spec, position: Vec3, block: Block | null): Spec {
   const fixed = spec.fixed.filter((b) => key(b.position) !== key(position));
   if (block) fixed.push({ ...block, position });
-  return { ...spec, fixed };
+  return { ...spec, fixed, hints: spec.hints.filter((b) => key(b.position) !== key(position)) };
+}
+
+export function removeHint(spec: Spec, position: Vec3): Spec {
+  return { ...spec, hints: spec.hints.filter((b) => key(b.position) !== key(position)) };
+}
+
+// Every sketch block becomes a kept block (the solver may no longer change them).
+export function keepSketch(spec: Spec): Spec {
+  const cells = new Set(spec.hints.map((b) => key(b.position)));
+  return { ...spec, fixed: [...spec.fixed.filter((b) => !cells.has(key(b.position))), ...spec.hints], hints: [] };
 }
 
 export function toggleForbidden(spec: Spec, position: Vec3): Spec {
@@ -169,7 +183,7 @@ export function blockAt(world: World, position: Vec3): PlacedBlock | undefined {
   return world.blocks.find((b) => key(b.position) === k);
 }
 
-// The spec as blocks: ports and kept blocks (what the 3D editor shows).
+// The spec as blocks: ports, kept and sketch blocks (what the 3D editor shows).
 // Ports the solver places have no block yet; their regions are drawn
 // separately.
 export function specWorld(spec: Spec): World {
@@ -181,6 +195,7 @@ export function specWorld(spec: Spec): World {
       isFree(p) ? [] : [{ type: 'output', kind: p.kind, channel, facing: p.facing, position: p.position }],
     ),
     ...spec.fixed,
+    ...spec.hints,
   ];
   return { size: spec.size, blocks };
 }

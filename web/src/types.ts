@@ -53,6 +53,7 @@ export interface Spec {
   tiled: [boolean, boolean, boolean];
   fixed: PlacedBlock[]; // blocks the solver must keep
   forbidden: Vec3[]; // cells the solver must leave empty
+  hints: PlacedBlock[]; // a sketch: blocks the solver tries first but may change
 }
 
 export type BlockType =
