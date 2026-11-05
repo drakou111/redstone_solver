@@ -24,6 +24,9 @@ constexpr std::string_view kUsage =
     "  --time-limit <seconds>  total time budget (default 60)\n"
     "  --threads <n>           solver threads (default: all)\n"
     "  --first                 stop at the first verified circuit\n"
+    "  --one-placement         verify only the layout as drawn (no other\n"
+    "                          rotations or world positions): faster\n"
+    "                          circuits, but they may fail built elsewhere\n"
     "  --log-search            print CP-SAT's search log\n"
     "  --sketch-time <s>       seconds per repair step of a sketch (hint\n"
     "                          lines) before it only guides (default 3)\n"
@@ -111,6 +114,8 @@ CliOptions parse_args(int argc, char **argv) {
       options.solver.threads = static_cast<int>(parse_number(value(), arg));
     else if (arg == "--log-search")
       options.solver.log_search = true;
+    else if (arg == "--one-placement")
+      options.solver.verification.placements = {rs::Placement{}};
     else if (arg == "--first")
       options.solver.stop_at_first = true;
     else if (arg == "--sketch-time")
@@ -173,7 +178,8 @@ int main(int argc, char **argv) {
     if (options.check) {
       rs::World layout = rs::layout_from_hints(spec);
       std::cout << rs::render_layers(layout) << '\n';
-      rs::LayoutCheck check = rs::check_layout(layout, spec);
+      rs::LayoutCheck check =
+          rs::check_layout(layout, spec, options.solver.verification);
       std::cout << rs::format_check(check, spec);
       return check.passes() ? 0 : 1;
     }

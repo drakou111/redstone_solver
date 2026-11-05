@@ -120,3 +120,12 @@ row IN1(ss0) -> OUT1(ss0)
   CHECK(solver_can_express(layout, spec));
   CHECK(check_layout(layout, spec).passes());
 }
+
+TEST_CASE("checking one placement looks at the layout as drawn only") {
+  Spec spec = parse_spec(std::string(kNotGate) + "hint 2 1 0 torch west\n");
+  VerificationOptions one;
+  one.placements = {Placement{}};
+  LayoutCheck check = check_layout(layout_from_hints(spec), spec, one);
+  CHECK(check.passes());
+  CHECK_FALSE(check.elsewhere);
+}

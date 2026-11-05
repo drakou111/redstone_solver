@@ -34,6 +34,12 @@ AND_ROW = 0
 CLEAN = True
 GAP = 0
 HORIZON = 80  # ticks to come to rest (two gates in a chain are slow)
+# Game-tick deadlines (spec 'timing'); None: only coming to rest counts.
+MODULE_TIMING: int | None = None
+# Verify only the layout as drawn: allows faster circuits that may fail when
+# built rotated or elsewhere (dust update order depends on position).
+ONE_PLACEMENT = False
+TIMING: int | None = None
 MODULE_SECONDS = 600
 STAGE_SECONDS = 600
 THREADS = 8
@@ -99,8 +105,7 @@ def spec_text(box: Box, rows: list[str], pinned: dict, free) -> str:
     lines = [
         f"size {box.size[0]} {box.size[1]} {box.size[2]}",
         *box.ports,
-        "timing none",
-        f"horizon {HORIZON}",
+        *([f"timing {TIMING}"] if TIMING else ["timing none", f"horizon {HORIZON}"]),
         *rows,
     ]
     for (x, y, z), words in sorted(pinned.items()):
@@ -126,6 +131,7 @@ def solve(spec: Path, seconds: int, log) -> Path | None:
             "--threads",
             str(THREADS),
             "--first",
+            *(["--one-placement"] if ONE_PLACEMENT else []),
         ],
         capture_output=True,
         text=True,
@@ -158,8 +164,11 @@ def make_module(log) -> Path | None:
     lines = [
         f"size {mx} {my} {mz}",
         *ports,
-        "timing none",
-        "horizon 30",
+        *(
+            [f"timing {MODULE_TIMING}"]
+            if MODULE_TIMING
+            else ["timing none", "horizon 30"]
+        ),
         *HALF_ADDER_ROWS,
     ]
     for x in (0, mx - 1) if CLEAN else ():
@@ -248,7 +257,15 @@ def main() -> None:
     ]
     result.write_text("\n".join(header + hints) + "\n")
     check = subprocess.run(
-        [str(CLI), str(result), "--check"], capture_output=True, text=True, check=False
+        [
+            str(CLI),
+            str(result),
+            "--check",
+            *(["--one-placement"] if ONE_PLACEMENT else []),
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
     )
     verdict = check.stdout.strip().splitlines()[-1]
     log.write(f"{result.name}: {len(hints)} blocks, check {verdict}\n")
