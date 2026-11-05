@@ -30,6 +30,7 @@ private:
   Json check_sketch(const Json &body) const;
   Json start_solve(const Json &body);
   Json start_shrink(const Json &body);
+  Json start_compose(const Json &body);
   Json solve_status() const;
   Json reset_simulator(const Json &body);
   Json simulator_input(const Json &body);

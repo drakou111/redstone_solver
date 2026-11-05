@@ -6,6 +6,14 @@ const token = new URLSearchParams(window.location.search).get('token') ?? '';
 
 export class ApiError extends Error {}
 
+export interface ComposeOptions {
+  timeLimit: number; // per step (module, stage 1, stage 2)
+  onePlacement: boolean;
+  module: ComposeModule;
+}
+
+export type ComposeModule = 'flat' | 'tall'; // half adder 5x2x4 (one layer) or 5x3x3
+
 export interface ShrinkOptions {
   timeLimit: number; // the whole shrink
   cutTime: number; // one repair attempt
@@ -42,6 +50,7 @@ export const api = {
   checkSketch: (spec: Spec, onePlacement: boolean) =>
     call<{ passes: boolean; report: string }>('spec/check_sketch', { spec, onePlacement }),
   startSolve: (spec: Spec, options: SolveOptions) => call<object>('solve/start', { spec, options }),
+  startCompose: (spec: Spec, options: ComposeOptions) => call<object>('compose/start', { spec, options }),
   startShrink: (spec: Spec, world: World, options: ShrinkOptions) =>
     call<object>('shrink/start', { spec, world, options }),
   solveStatus: () => call<SolveStatus>('solve/status'),

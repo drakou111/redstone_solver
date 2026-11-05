@@ -8,6 +8,7 @@
 #include <stdexcept>
 
 #include "host/minecraft_assets.hpp"
+#include "redstone/compose.hpp"
 #include "redstone/layout_check.hpp"
 #include "redstone/report.hpp"
 #include "redstone/shrink.hpp"
@@ -67,6 +68,8 @@ Json Api::handle(std::string_view route, const Json &body) {
     return this->check_sketch(body);
   if (route == "spec/check")
     return this->check_spec(body);
+  if (route == "compose/start")
+    return this->start_compose(body);
   if (route == "shrink/start")
     return this->start_shrink(body);
   if (route == "solve/start")
@@ -211,6 +214,51 @@ Json Api::start_shrink(const Json &body) {
                              std::chrono::steady_clock::now() - start)
                              .count();
         return JobResult{std::move(report), std::move(shrunk.spec)};
+      });
+  return Json::object();
+}
+
+// Builds a full adder from two half adders; the job ends with the composed
+// spec (its own box, ports and rows, the circuit as a sketch).
+Json Api::start_compose(const Json &body) {
+  if (this->job_ && !this->job_->is_done())
+    throw std::invalid_argument("a solve is already running");
+  const Json &settings = body.value("options", Json::object());
+  ComposeOptions options;
+  if (settings.value("module", std::string("flat")) == "tall") {
+    options.module_size = {5, 3, 3};
+    options.xor_row = 2;
+  }
+  options.module_seconds = settings.value("timeLimit", 300.0);
+  options.stage_seconds = options.module_seconds;
+  options.solver.verification = verification_from(settings);
+  if (options.module_seconds <= 0)
+    throw std::invalid_argument("the time limit must be positive");
+  Spec spec = spec_from_json(body.at("spec"));
+  this->job_ = std::make_unique<SolveJob>(
+      spec,
+      [options](const ProgressCallback &progress, std::atomic<bool> *cancel) {
+        auto start = std::chrono::steady_clock::now();
+        ComposeOptions o = options;
+        o.cancel = cancel;
+        std::optional<ComposeResult> composed = compose_full_adder(o, progress);
+        SolveReport report;
+        report.seconds = std::chrono::duration<double>(
+                             std::chrono::steady_clock::now() - start)
+                             .count();
+        if (!composed) {
+          report.status =
+              cancel->load() ? SolveStatus::Cancelled : SolveStatus::OutOfTime;
+          return JobResult{std::move(report), std::nullopt};
+        }
+        report.status = SolveStatus::Feasible;
+        report.solution =
+            EncodedSolution{composed->layout,
+                            static_cast<int>(composed->spec.hints.size()),
+                            {},
+                            {},
+                            {}};
+        return JobResult{std::move(report), std::move(composed->spec)};
       });
   return Json::object();
 }

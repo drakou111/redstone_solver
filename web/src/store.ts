@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import { create } from 'zustand';
 
-import { api } from './api';
+import { api, type ComposeModule } from './api';
 import {
   addPort,
   blockAt,
@@ -44,6 +44,9 @@ export interface Hover {
   place: Vec3 | null;
 }
 
+export type JobKind = 'solve' | 'shrink' | 'compose';
+export type Method = 'solve' | 'compose';
+
 export interface Result extends SolveResult {
   layout: World;
   spec: Spec;
@@ -73,7 +76,9 @@ interface State {
   onePlacement: boolean;
   sketchTime: number;
   solving: boolean;
-  shrinking: boolean; // the running job is a shrink
+  jobKind: JobKind; // what the running (or last) job does
+  method: Method;
+  composeModule: ComposeModule;
   solveSeconds: number;
   log: string[];
   solveError: string | null;
@@ -102,6 +107,9 @@ interface State {
   setSketchTime: (seconds: number) => void;
   startSolve: () => Promise<void>;
   startShrink: () => Promise<void>;
+  startCompose: () => Promise<void>;
+  setMethod: (method: Method) => void;
+  setComposeModule: (module: ComposeModule) => void;
   cancelSolve: () => Promise<void>;
   setTopLayer: (y: number) => void;
   setSim: (sim: SimState) => void;
@@ -176,7 +184,8 @@ export const useStore = create<State>((set, get) => {
       if (status.spec) set({ spec: status.spec });
       const spec = get().spec;
       if (!result?.layout || !spec) {
-        set({ solveError: result ? `No circuit: ${result.status}` : 'The solver stopped without a result.' });
+        const what = get().jobKind === 'compose' ? 'Compose found no full adder (see the log)' : 'No circuit';
+        set({ solveError: result ? `${what}: ${result.status}` : 'The solver stopped without a result.' });
         return;
       }
       set({
@@ -277,7 +286,9 @@ export const useStore = create<State>((set, get) => {
     textureError: null,
     timeLimit: DEFAULT_TIME_LIMIT,
     firstOnly: false,
-    shrinking: false,
+    jobKind: 'solve',
+    method: 'solve',
+    composeModule: 'flat',
     onePlacement: false,
     sketchTime: DEFAULT_SKETCH_TIME,
     solving: false,
@@ -362,7 +373,7 @@ export const useStore = create<State>((set, get) => {
       try {
         await api.startSolve(spec, { timeLimit, first: firstOnly, onePlacement, sketchTime });
         shrinkingFrom = undefined;
-        set({ shrinking: false, solving: true, solveError: null, log: [], solveSeconds: 0 });
+        set({ jobKind: 'solve', solving: true, solveError: null, log: [], solveSeconds: 0 });
         clearInterval(pollTimer);
         pollTimer = setInterval(() => void pollSolve(), POLL_INTERVAL_MS);
       } catch (error) {
@@ -381,13 +392,30 @@ export const useStore = create<State>((set, get) => {
           sketchTime,
         });
         shrinkingFrom = result.layout.size;
-        set({ shrinking: true, solving: true, solveError: null, log: [], solveSeconds: 0 });
+        set({ jobKind: 'shrink', solving: true, solveError: null, log: [], solveSeconds: 0 });
         clearInterval(pollTimer);
         pollTimer = setInterval(() => void pollSolve(), POLL_INTERVAL_MS);
       } catch (error) {
         set({ solveError: errorText(error) });
       }
     },
+
+    startCompose: async () => {
+      const { spec, timeLimit, onePlacement, composeModule } = get();
+      if (!spec) return;
+      try {
+        await api.startCompose(spec, { timeLimit, onePlacement, module: composeModule });
+        shrinkingFrom = undefined;
+        set({ jobKind: 'compose', solving: true, solveError: null, log: [], solveSeconds: 0 });
+        clearInterval(pollTimer);
+        pollTimer = setInterval(() => void pollSolve(), POLL_INTERVAL_MS);
+      } catch (error) {
+        set({ solveError: errorText(error) });
+      }
+    },
+
+    setMethod: (method) => set({ method }),
+    setComposeModule: (module) => set({ composeModule: module }),
 
     cancelSolve: async () => {
       await api.cancelSolve();

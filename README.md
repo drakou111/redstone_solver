@@ -29,6 +29,11 @@ the sliders, step the simulator, edit blocks (every edit is re-checked) and expo
 commands. Block textures are read from your own Minecraft client jar (found automatically for
 Prism and the vanilla launcher); nothing from Minecraft is bundled.
 
+Next to Solve: "Compose full adder" builds a full adder from two solver-made half adders in
+seconds (it places the ports itself), Shrink removes columns and rows from a solved circuit while
+it still works, and Sketch checks, keeps or clears hint blocks (a draft the solver starts from).
+Options holds "only as drawn" (faster circuits that may fail when built rotated or elsewhere).
+
 Command line and tests:
 
 ```

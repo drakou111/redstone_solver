@@ -1,6 +1,6 @@
 import { useState } from 'react';
 
-import { api } from '../api';
+import { api, type ComposeModule } from '../api';
 import { keepSketch } from '../specEdit';
 import { DEFAULT_SKETCH_TIME, useStore } from '../store';
 
@@ -12,7 +12,9 @@ function OptionsPopover({ onClose }: { onClose: () => void }) {
   const onePlacement = useStore((s) => s.onePlacement);
   const sketchTime = useStore((s) => s.sketchTime);
   const solving = useStore((s) => s.solving);
-  const { setOnePlacement, setSketchTime } = useStore.getState();
+  const method = useStore((s) => s.method);
+  const composeModule = useStore((s) => s.composeModule);
+  const { setOnePlacement, setSketchTime, setComposeModule } = useStore.getState();
   return (
     <div className="popover options">
       <div className="popover-head">
@@ -55,8 +57,32 @@ function OptionsPopover({ onClose }: { onClose: () => void }) {
         />
         <span className="muted">s</span>
       </label>
+      {method === 'compose' && (
+        <label className="field option-row">
+          <span>
+            Compose module
+            <div className="muted small">The half adder both halves are built from.</div>
+          </span>
+          <select
+            value={composeModule}
+            disabled={solving}
+            onChange={(e) => setComposeModule(e.target.value as ComposeModule)}
+          >
+            <option value="flat">Flat 5x2x4 (smallest)</option>
+            <option value="tall">3 layers 5x3x3</option>
+          </select>
+        </label>
+      )}
     </div>
   );
+}
+
+// Compose builds a full adder; it needs three inputs and two outputs.
+function composeProblem(spec: { inputs: unknown[]; outputs: unknown[] } | null): string | null {
+  if (!spec) return 'No spec loaded';
+  if (spec.inputs.length !== 3 || spec.outputs.length !== 2)
+    return 'Compose builds a full adder: it needs 3 inputs and 2 outputs (OUT1 sum, OUT2 carry)';
+  return null;
 }
 
 // The sketch (hint blocks): check it as drawn, keep it, or clear it.
@@ -110,7 +136,9 @@ function SketchPopover({ onClose }: { onClose: () => void }) {
 
 export function SolveBar() {
   const solving = useStore((s) => s.solving);
-  const shrinking = useStore((s) => s.shrinking);
+  const jobKind = useStore((s) => s.jobKind);
+  const method = useStore((s) => s.method);
+  const spec = useStore((s) => s.spec);
   const seconds = useStore((s) => s.solveSeconds);
   const log = useStore((s) => s.log);
   const solveError = useStore((s) => s.solveError);
@@ -121,7 +149,10 @@ export function SolveBar() {
   const sketchTime = useStore((s) => s.sketchTime);
   const sketchSize = useStore((s) => s.spec?.hints.length ?? 0);
   const specError = useStore((s) => s.specError);
-  const { setTimeLimit, setFirstOnly, startSolve, startShrink, cancelSolve } = useStore.getState();
+  const { setTimeLimit, setFirstOnly, setMethod, startSolve, startShrink, startCompose, cancelSolve } =
+    useStore.getState();
+  const composeBlocked = composeProblem(spec);
+  const running = { solve: 'Solving', shrink: 'Shrinking', compose: 'Composing' }[jobKind];
   const [open, setOpen] = useState<Popover>(null);
   const [exportText, setExportText] = useState<string>('');
   const toggle = (popover: Popover) => setOpen(open === popover ? null : popover);
@@ -131,7 +162,7 @@ export function SolveBar() {
   if (solving)
     status = (
       <span className="running">
-        {shrinking ? 'Shrinking' : 'Solving'}... {seconds.toFixed(0)}s {log.length > 0 && `- ${log[log.length - 1]}`}
+        {running}... {seconds.toFixed(0)}s {log.length > 0 && `- ${log[log.length - 1]}`}
       </span>
     );
   else if (solveError) status = <span className="bad">{solveError}</span>;
@@ -148,6 +179,12 @@ export function SolveBar() {
       <span className="good">
         Shrunk {result.shrunkFrom.join('x')} to {result.layout.size.join('x')}: {result.blockCount} blocks in{' '}
         {result.seconds.toFixed(0)}s
+      </span>
+    );
+  else if (result && jobKind === 'compose')
+    status = (
+      <span className="good">
+        Full adder: {result.blockCount} blocks, {result.layout.size.join('x')}
       </span>
     );
   else if (result)
@@ -176,13 +213,39 @@ export function SolveBar() {
         />
         <span className="muted">s</span>
       </label>
-      <label className="check" title="Stop at the first circuit that passes the simulator, then remove unneeded blocks">
-        <input type="checkbox" checked={firstOnly} disabled={solving} onChange={(e) => setFirstOnly(e.target.checked)} />
-        first circuit only
-      </label>
+      {method === 'solve' && (
+        <label className="check" title="Stop at the first circuit that passes the simulator, then remove unneeded blocks">
+          <input
+            type="checkbox"
+            checked={firstOnly}
+            disabled={solving}
+            onChange={(e) => setFirstOnly(e.target.checked)}
+          />
+          first circuit only
+        </label>
+      )}
+      <select
+        className="method"
+        value={method}
+        disabled={solving}
+        onChange={(e) => setMethod(e.target.value as 'solve' | 'compose')}
+        title="Solve searches the whole box; Compose builds a full adder from two half adders (much faster, places the ports itself)"
+      >
+        <option value="solve">Solve</option>
+        <option value="compose">Compose full adder</option>
+      </select>
       {solving ? (
         <button className="danger" onClick={() => void cancelSolve()}>
           Cancel
+        </button>
+      ) : method === 'compose' ? (
+        <button
+          className="primary"
+          disabled={!!specError || !!composeBlocked}
+          title={composeBlocked ?? 'Time limit applies to each of its three steps'}
+          onClick={() => void startCompose()}
+        >
+          Compose
         </button>
       ) : (
         <button className="primary" disabled={!!specError} onClick={() => void startSolve()}>
