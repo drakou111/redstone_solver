@@ -23,6 +23,12 @@ ROOT = Path(__file__).resolve().parents[1]
 CLI = ROOT / "build" / "msvc" / "Release" / "redstone_cli.exe"
 OUT_DIR = ROOT / "output" / "compose_full_adder"
 MODULE_SIZE = (5, 3, 3)  # x, y, z of the half adder module
+# Rows of the module's outputs on its east face. HA2 is shifted down by
+# XOR_ROW so its first input meets HA1's XOR output; AND_ROW < XOR_ROW lets
+# HA1's AND output pass north of HA2. XOR_ROW 1 gives a box one row shorter
+# when such a module exists (not for 5x3x3; 6x3x3 gives 12x3x4).
+XOR_ROW = 2
+AND_ROW = 0
 HORIZON = 80  # ticks to come to rest (two gates in a chain are slow)
 MODULE_SECONDS = 600
 STAGE_SECONDS = 600
@@ -141,10 +147,10 @@ def make_module(log) -> Path | None:
     ports = [
         "input IN1 repeater 0 1 0 east",
         f"input IN2 repeater 0 1 {mz - 1} east",
-        f"output OUT1 dust {mx - 1} 1 2",
-        f"output OUT2 dust {mx - 1} 1 0",
+        f"output OUT1 dust {mx - 1} 1 {XOR_ROW}",
+        f"output OUT2 dust {mx - 1} 1 {AND_ROW}",
     ]
-    keep_open = {(0, 1, 0), (0, 1, mz - 1), (mx - 1, 1, 2), (mx - 1, 1, 0)}
+    keep_open = {(0, 1, 0), (0, 1, mz - 1), (mx - 1, 1, XOR_ROW), (mx - 1, 1, AND_ROW)}
     lines = [
         f"size {mx} {my} {mz}",
         *ports,
@@ -170,11 +176,11 @@ def main() -> None:
         return
     module = read_blocks(module_log)
     mx, my, mz = MODULE_SIZE
-    x2, z2 = mx, 2  # HA2 sits right after HA1, two rows lower
+    x2, z2 = mx, XOR_ROW  # HA2 right after HA1, its IN1 at HA1's XOR output
     z_c = mz  # C enters one row below HA1
     size = (x2 + mx, my, max(z2 + mz, z_c + 1))
-    out1 = (x2 + mx - 1, 1, z2 + 2)  # HA2's XOR output
-    out2 = (x2 + mx - 1, 1, z2)  # HA2's AND output
+    out1 = (x2 + mx - 1, 1, z2 + XOR_ROW)  # HA2's XOR output
+    out2 = (x2 + mx - 1, 1, z2 + AND_ROW)  # HA2's AND output
     inputs = [
         "input IN1 repeater 0 1 0 east",
         f"input IN2 repeater 0 1 {mz - 1} east",
