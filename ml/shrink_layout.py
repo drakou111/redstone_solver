@@ -23,6 +23,8 @@ SKETCH_SECONDS = 30
 PARALLEL = 3
 THREADS = 4
 AXES = ("x", "z")
+# Extra solver flags, e.g. ["--one-placement"] for timing checked as drawn.
+EXTRA_ARGS: list[str] = []
 SPEC_KEYS = (
     "size",
     "input",
@@ -76,7 +78,7 @@ def repaired(spec: Path) -> list[str] | None:
             str(THREADS),
             "--first",
         ]
-        + ["--sketch-time", str(SKETCH_SECONDS)],
+        + ["--sketch-time", str(SKETCH_SECONDS), *EXTRA_ARGS],
         capture_output=True,
         text=True,
         check=False,
