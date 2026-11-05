@@ -612,3 +612,58 @@ kbd {
   font-size: 12px;
   padding: 0 8px 0 6px;
 }
+
+/* A ghost button whose settings differ from their defaults. */
+button.ghost.changed::after {
+  content: '';
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  margin-left: 6px;
+  border-radius: 50%;
+  background: var(--accent-2);
+  vertical-align: middle;
+}
+.popover.options {
+  width: 380px;
+  left: 14px;
+  right: auto;
+}
+.popover.sketch {
+  width: 620px;
+  left: 14px;
+  right: auto;
+}
+.option-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 6px 0;
+}
+.popover .option-row {
+  display: flex;
+  width: 100%;
+}
+.popover .option-row > span:first-child,
+.option-row > span {
+  flex: 1;
+  color: var(--text);
+}
+.small {
+  font-size: 12px;
+  margin-top: 2px;
+}
+.button-row {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+.popover pre.report {
+  max-height: 340px;
+  overflow: auto;
+  margin: 6px 0 0;
+  font-family: Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.4;
+  white-space: pre;
+}

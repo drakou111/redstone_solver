@@ -28,6 +28,7 @@ const CHECK_DELAY_MS = 250;
 const POLL_INTERVAL_MS = 400;
 const FULL_SIGNAL = 15;
 export const DEFAULT_TIME_LIMIT = 60;
+export const DEFAULT_SKETCH_TIME = 3; // seconds per sketch repair step (solver default)
 
 // What a right-click places in the spec view (the circuit view always
 // places the block brush).
@@ -67,6 +68,8 @@ interface State {
 
   timeLimit: number;
   firstOnly: boolean;
+  onePlacement: boolean;
+  sketchTime: number;
   solving: boolean;
   solveSeconds: number;
   log: string[];
@@ -92,6 +95,8 @@ interface State {
   loadTextures: (jar?: string) => Promise<void>;
   setTimeLimit: (seconds: number) => void;
   setFirstOnly: (first: boolean) => void;
+  setOnePlacement: (one: boolean) => void;
+  setSketchTime: (seconds: number) => void;
   startSolve: () => Promise<void>;
   cancelSolve: () => Promise<void>;
   setTopLayer: (y: number) => void;
@@ -191,7 +196,7 @@ export const useStore = create<State>((set, get) => {
     set({ result: { ...result, layout, blockCount, edited: true }, verification: { checking: true } });
     await loadIntoSimulator(layout, get().sim?.inputs ?? result.spec.inputs.map(() => 0));
     try {
-      const check = await api.verify(result.spec, layout);
+      const check = await api.verify(result.spec, layout, get().onePlacement);
       if (get().result?.layout !== layout) return;
       set({ verification: { checking: false, ok: check.ok, reason: check.failure?.reason } });
     } catch (error) {
@@ -264,6 +269,8 @@ export const useStore = create<State>((set, get) => {
     textureError: null,
     timeLimit: DEFAULT_TIME_LIMIT,
     firstOnly: false,
+    onePlacement: false,
+    sketchTime: DEFAULT_SKETCH_TIME,
     solving: false,
     solveSeconds: 0,
     log: [],
@@ -337,12 +344,14 @@ export const useStore = create<State>((set, get) => {
 
     setTimeLimit: (seconds) => set({ timeLimit: seconds }),
     setFirstOnly: (first) => set({ firstOnly: first }),
+    setOnePlacement: (one) => set({ onePlacement: one }),
+    setSketchTime: (seconds) => set({ sketchTime: seconds }),
 
     startSolve: async () => {
-      const { spec, timeLimit, firstOnly } = get();
+      const { spec, timeLimit, firstOnly, onePlacement, sketchTime } = get();
       if (!spec) return;
       try {
-        await api.startSolve(spec, { timeLimit, first: firstOnly });
+        await api.startSolve(spec, { timeLimit, first: firstOnly, onePlacement, sketchTime });
         set({ solving: true, solveError: null, log: [], solveSeconds: 0 });
         clearInterval(pollTimer);
         pollTimer = setInterval(() => void pollSolve(), POLL_INTERVAL_MS);

@@ -1,7 +1,112 @@
 import { useState } from 'react';
 
 import { api } from '../api';
-import { useStore } from '../store';
+import { keepSketch } from '../specEdit';
+import { DEFAULT_SKETCH_TIME, useStore } from '../store';
+
+type Popover = 'log' | 'export' | 'options' | 'sketch' | null;
+
+// Settings most solves never touch; the button shows a dot when any differs
+// from its default so a changed setting is never forgotten.
+function OptionsPopover({ onClose }: { onClose: () => void }) {
+  const onePlacement = useStore((s) => s.onePlacement);
+  const sketchTime = useStore((s) => s.sketchTime);
+  const solving = useStore((s) => s.solving);
+  const { setOnePlacement, setSketchTime } = useStore.getState();
+  return (
+    <div className="popover options">
+      <div className="popover-head">
+        <span>Solver options</span>
+        <button className="ghost" onClick={onClose}>
+          Close
+        </button>
+      </div>
+      <label className="check option-row">
+        <input
+          type="checkbox"
+          checked={onePlacement}
+          disabled={solving}
+          onChange={(e) => setOnePlacement(e.target.checked)}
+        />
+        <span>
+          Only as drawn
+          <div className="muted small">
+            Check the circuit facing this way, here only. Allows faster circuits, but they may fail when built rotated
+            or elsewhere.
+          </div>
+        </span>
+      </label>
+      <label className="field option-row">
+        <span>
+          Sketch step time
+          <div className="muted small">How long the solver tries to keep a sketch before freeing it.</div>
+        </span>
+        <input
+          type="number"
+          className="number"
+          style={{ width: 64 }}
+          min={1}
+          value={sketchTime}
+          disabled={solving}
+          onChange={(e) => {
+            const seconds = Number(e.target.value);
+            if (Number.isFinite(seconds) && seconds > 0) setSketchTime(seconds);
+          }}
+        />
+        <span className="muted">s</span>
+      </label>
+    </div>
+  );
+}
+
+// The sketch (hint blocks): check it as drawn, keep it, or clear it.
+function SketchPopover({ onClose }: { onClose: () => void }) {
+  const spec = useStore((s) => s.spec);
+  const onePlacement = useStore((s) => s.onePlacement);
+  const { updateSpec } = useStore.getState();
+  const [check, setCheck] = useState<{ passes: boolean; report: string } | 'checking' | string | null>(null);
+  if (!spec) return null;
+  const runCheck = async () => {
+    setCheck('checking');
+    try {
+      setCheck(await api.checkSketch(spec, onePlacement));
+    } catch (error) {
+      setCheck(error instanceof Error ? error.message : String(error));
+    }
+  };
+  return (
+    <div className="popover sketch">
+      <div className="popover-head">
+        <span>Sketch: {spec.hints.length} blocks the solver tries first</span>
+        <button className="ghost" onClick={onClose}>
+          Close
+        </button>
+      </div>
+      <div className="button-row">
+        <button onClick={() => void runCheck()} title="Simulate the sketch as drawn (other cells empty)">
+          Check
+        </button>
+        <button
+          onClick={() => updateSpec(keepSketch)}
+          title="Turn every sketch block into a kept block the solver may not change"
+        >
+          Keep all
+        </button>
+        <button className="ghost" onClick={() => updateSpec((s) => ({ ...s, hints: [] }))}>
+          Clear
+        </button>
+      </div>
+      {check === 'checking' && <div className="muted">Checking...</div>}
+      {typeof check === 'string' && check !== 'checking' && <div className="bad">{check}</div>}
+      {check && typeof check === 'object' && (
+        <>
+          <div className={check.passes ? 'good' : 'bad'}>{check.passes ? 'The sketch works.' : 'The sketch fails:'}</div>
+          <pre className="report">{check.report}</pre>
+        </>
+      )}
+    </div>
+  );
+}
 
 export function SolveBar() {
   const solving = useStore((s) => s.solving);
@@ -11,10 +116,15 @@ export function SolveBar() {
   const result = useStore((s) => s.result);
   const timeLimit = useStore((s) => s.timeLimit);
   const firstOnly = useStore((s) => s.firstOnly);
+  const onePlacement = useStore((s) => s.onePlacement);
+  const sketchTime = useStore((s) => s.sketchTime);
+  const sketchSize = useStore((s) => s.spec?.hints.length ?? 0);
   const specError = useStore((s) => s.specError);
   const { setTimeLimit, setFirstOnly, startSolve, cancelSolve } = useStore.getState();
-  const [showLog, setShowLog] = useState(false);
-  const [exportText, setExportText] = useState<string | null>(null);
+  const [open, setOpen] = useState<Popover>(null);
+  const [exportText, setExportText] = useState<string>('');
+  const toggle = (popover: Popover) => setOpen(open === popover ? null : popover);
+  const optionsChanged = onePlacement || sketchTime !== DEFAULT_SKETCH_TIME;
 
   let status: React.ReactNode = <span className="muted">Set up the spec on the left, then solve.</span>;
   if (solving) status = <span className="running">Solving... {seconds.toFixed(0)}s {log.length > 0 && `- ${log[log.length - 1]}`}</span>;
@@ -60,26 +170,48 @@ export function SolveBar() {
           Solve
         </button>
       )}
+      <button
+        className={`ghost${optionsChanged ? ' changed' : ''}`}
+        onClick={() => toggle('options')}
+        title={optionsChanged ? 'Some options differ from their defaults' : 'Solver options'}
+      >
+        Options
+      </button>
+      {sketchSize > 0 && (
+        <button className="ghost" onClick={() => toggle('sketch')} title="Check, keep or clear the sketch">
+          Sketch ({sketchSize})
+        </button>
+      )}
       <div className="status">{status}</div>
-      <button className="ghost" onClick={() => setShowLog(!showLog)}>
+      <button className="ghost" onClick={() => toggle('log')}>
         Log
       </button>
       {result && (
-        <button className="ghost" onClick={() => void api.exportCommands(result.layout).then((r) => setExportText(r.text))}>
+        <button
+          className="ghost"
+          onClick={() =>
+            void api.exportCommands(result.layout).then((r) => {
+              setExportText(r.text);
+              setOpen('export');
+            })
+          }
+        >
           Export
         </button>
       )}
-      {showLog && (
+      {open === 'options' && <OptionsPopover onClose={() => setOpen(null)} />}
+      {open === 'sketch' && sketchSize > 0 && <SketchPopover onClose={() => setOpen(null)} />}
+      {open === 'log' && (
         <div className="popover log">
           {log.length === 0 ? <div className="muted">No log yet.</div> : log.map((line, i) => <div key={i}>{line}</div>)}
         </div>
       )}
-      {exportText !== null && (
+      {open === 'export' && (
         <div className="popover export">
           <div className="popover-head">
             <span>/setblock commands (relative to the lowest corner)</span>
             <button onClick={() => void navigator.clipboard.writeText(exportText)}>Copy</button>
-            <button className="ghost" onClick={() => setExportText(null)}>
+            <button className="ghost" onClick={() => setOpen(null)}>
               Close
             </button>
           </div>

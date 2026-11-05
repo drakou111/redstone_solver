@@ -27,6 +27,7 @@ private:
   Json load_spec(const Json &body) const;
   Json save_spec(const Json &body) const;
   Json check_spec(const Json &body) const;
+  Json check_sketch(const Json &body) const;
   Json start_solve(const Json &body);
   Json solve_status() const;
   Json reset_simulator(const Json &body);

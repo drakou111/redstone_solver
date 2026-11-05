@@ -7,6 +7,7 @@
 #include <stdexcept>
 
 #include "host/minecraft_assets.hpp"
+#include "redstone/layout_check.hpp"
 #include "redstone/report.hpp"
 
 namespace rs::host {
@@ -60,6 +61,8 @@ Json Api::handle(std::string_view route, const Json &body) {
     return this->load_spec(body);
   if (route == "spec/save")
     return this->save_spec(body);
+  if (route == "spec/check_sketch")
+    return this->check_sketch(body);
   if (route == "spec/check")
     return this->check_spec(body);
   if (route == "solve/start")
@@ -131,6 +134,25 @@ Json Api::check_spec(const Json &body) const {
   return {{"world", to_json(spec.base_world())}};
 }
 
+namespace {
+
+// "Only as drawn": verify the layout at the identity placement alone.
+VerificationOptions verification_from(const Json &settings) {
+  VerificationOptions options;
+  if (settings.value("onePlacement", false))
+    options.placements = {Placement{}};
+  return options;
+}
+
+} // namespace
+
+Json Api::check_sketch(const Json &body) const {
+  Spec spec = spec_from_json(body.at("spec"));
+  LayoutCheck check = check_layout(layout_from_hints(spec), spec,
+                                   verification_from(body));
+  return {{"passes", check.passes()}, {"report", format_check(check, spec)}};
+}
+
 Json Api::start_solve(const Json &body) {
   if (this->job_ && !this->job_->is_done())
     throw std::invalid_argument("a solve is already running");
@@ -139,6 +161,10 @@ Json Api::start_solve(const Json &body) {
   const Json &settings = body.value("options", Json::object());
   options.time_limit_seconds = settings.value("timeLimit", 60.0);
   options.stop_at_first = settings.value("first", false);
+  options.sketch_step_seconds = settings.value("sketchTime", 3.0);
+  options.verification = verification_from(settings);
+  if (options.sketch_step_seconds <= 0)
+    throw std::invalid_argument("the sketch step time must be positive");
   if (options.time_limit_seconds <= 0)
     throw std::invalid_argument("the time limit must be positive");
   this->job_ = std::make_unique<SolveJob>(std::move(spec), options);
@@ -215,8 +241,8 @@ Json Api::simulator_state() const {
 Json Api::verify(const Json &body) const {
   Spec spec = spec_from_json(body.at("spec"));
   World world = world_from_json(body.at("world"));
-  std::optional<VerificationFailure> failure =
-      verify_layout(world, spec, spec.verification_vectors());
+  std::optional<VerificationFailure> failure = verify_layout(
+      world, spec, spec.verification_vectors(), verification_from(body));
   if (!failure)
     return {{"ok", true}};
   return {{"ok", false}, {"failure", to_json(*failure)}};
