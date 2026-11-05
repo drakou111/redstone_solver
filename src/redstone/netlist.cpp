@@ -50,10 +50,11 @@ struct Value {
   bool constant = false;
 };
 
-// Nothing if no network of `gates` gates exists; sets `stopped` (and
-// returns nothing) when the deadline or cancel ended the search first.
+// Nothing if no network of `gates` gates (at most `max_depth` levels deep,
+// 0: any depth) exists; sets `stopped` (and returns nothing) when the
+// deadline or cancel ended the search first.
 std::optional<Netlist>
-synthesize_with(const BoolTable &table, int gates,
+synthesize_with(const BoolTable &table, int gates, int max_depth,
                 const SynthesisOptions &options,
                 std::chrono::steady_clock::time_point deadline, bool &stopped) {
   const int n = table.inputs;
@@ -127,6 +128,31 @@ synthesize_with(const BoolTable &table, int gates,
             cnf.add(c1);
             cnf.add(c2);
           }
+  }
+
+  // Depth bound: shallow[g][d] means gate g is at most d levels deep; a
+  // gate's selected operands are one level shallower (inputs are level 0).
+  if (max_depth > 0) {
+    std::vector<std::vector<int>> shallow(gates,
+                                          std::vector<int>(max_depth + 1));
+    for (int g = 0; g < gates; ++g) {
+      for (int d = 1; d <= max_depth; ++d)
+        shallow[g][d] = cnf.fresh();
+      cnf.add({shallow[g][max_depth]});
+      for (int d = 1; d < max_depth; ++d)
+        cnf.add({-shallow[g][d], shallow[g][d + 1]});
+      for (const Pair &p : pairs[g])
+        for (int d = 1; d <= max_depth; ++d)
+          for (int operand : {p.a, p.b}) {
+            if (operand < n)
+              continue; // an input is level 0
+            int og = operand - n;
+            if (d == 1)
+              cnf.add({-p.selected, -shallow[g][d]});
+            else
+              cnf.add({-p.selected, -shallow[g][d], shallow[og][d - 1]});
+          }
+    }
   }
 
   // Each output reads one node that matches it wherever it is cared about.
@@ -310,11 +336,33 @@ std::optional<Netlist> synthesize(const BoolTable &table,
         (options.cancel && options.cancel->load()))
       return std::nullopt;
     bool stopped = false;
-    if (auto netlist =
-            synthesize_with(table, gates, options, deadline, stopped))
-      return netlist;
+    std::optional<Netlist> netlist =
+        synthesize_with(table, gates, 0, options, deadline, stopped);
     if (stopped)
       return std::nullopt;
+    if (!netlist)
+      continue;
+    // Same gate count with only the preferred functions, if possible: their
+    // modules are smaller and the networks are the familiar ones.
+    SynthesisOptions chosen = options;
+    chosen.functions.clear();
+    for (std::uint8_t f : options.preferred)
+      if (std::find(options.functions.begin(), options.functions.end(), f) !=
+          options.functions.end())
+        chosen.functions.push_back(f);
+    if (chosen.functions.empty() ||
+        chosen.functions.size() >= options.functions.size() ||
+        !synthesize_with(table, gates, 0, chosen, deadline, stopped))
+      chosen.functions = options.functions;
+    // Then as shallow as possible: fewer levels, fewer channels to wire.
+    for (int depth = 1; depth <= gates; ++depth) {
+      if (auto shallow =
+              synthesize_with(table, gates, depth, chosen, deadline, stopped))
+        return shallow;
+      if (stopped)
+        break;
+    }
+    return netlist;
   }
   return std::nullopt;
 }

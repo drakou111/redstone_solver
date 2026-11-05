@@ -52,6 +52,8 @@ std::vector<std::uint8_t> two_input_functions();
 struct SynthesisOptions {
   int max_gates = 10;
   std::vector<std::uint8_t> functions = two_input_functions();
+  // Used instead when they give a network just as small.
+  std::vector<std::uint8_t> preferred = {0b1000, 0b1110, 0b0110}; // AND OR XOR
   double time_limit_seconds = 60.0;
   std::atomic<bool> *cancel = nullptr;
 };

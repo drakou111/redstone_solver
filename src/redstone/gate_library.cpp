@@ -1,7 +1,9 @@
 #include "redstone/gate_library.hpp"
 
 #include <algorithm>
+#include <cstdlib>
 #include <format>
+#include <functional>
 
 #include "redstone/netlist.hpp"
 
@@ -9,67 +11,103 @@ namespace rs {
 
 namespace {
 
-std::string gate_spec_text(std::uint8_t function, Vec3 size, int out_row,
+std::string gate_spec_text(const std::vector<std::uint8_t> &functions,
+                           Vec3 size, const std::vector<int> &out_rows,
                            int horizon) {
   const auto [mx, my, mz] = size;
   std::string text = std::format("size {} {} {}\n"
                                  "input IN1 repeater 0 1 0 east\n"
-                                 "input IN2 repeater 0 1 {} east\n"
-                                 "output OUT1 dust {} 1 {}\n"
-                                 "timing none\nhorizon {}\n",
-                                 mx, my, mz, mz - 1, mx - 1, out_row, horizon);
+                                 "input IN2 repeater 0 1 {} east\n",
+                                 mx, my, mz, mz - 1);
+  for (std::size_t o = 0; o < out_rows.size(); ++o)
+    text +=
+        std::format("output OUT{} dust {} 1 {}\n", o + 1, mx - 1, out_rows[o]);
+  text += std::format("timing none\nhorizon {}\n", horizon);
   for (int a = 0; a < 2; ++a)
     for (int b = 0; b < 2; ++b) {
-      bool on = ((function >> ((a << 1) | b)) & 1) != 0;
-      text += std::format("row IN1(ss{}),IN2(ss{}) -> OUT1({})\n", 15 * a,
-                          15 * b, on ? "ss1..15" : "ss0");
+      text += std::format("row IN1(ss{}),IN2(ss{}) ->", 15 * a, 15 * b);
+      for (std::size_t o = 0; o < functions.size(); ++o) {
+        bool on = ((functions[o] >> ((a << 1) | b)) & 1) != 0;
+        text += std::format("{}OUT{}({})", o ? "," : " ", o + 1,
+                            on ? "ss1..15" : "ss0");
+      }
+      text += "\n";
     }
   // Clean faces: above the floor, only the ports on the west and east faces.
   for (int y = 1; y < my; ++y)
     for (int z = 0; z < mz; ++z) {
       if (!(y == 1 && (z == 0 || z == mz - 1)))
         text += std::format("empty 0 {} {}\n", y, z);
-      if (!(y == 1 && z == out_row))
+      bool out = y == 1 && std::find(out_rows.begin(), out_rows.end(), z) !=
+                               out_rows.end();
+      if (!out)
         text += std::format("empty {} {} {}\n", mx - 1, y, z);
     }
   return text;
 }
 
+// Choices of output rows on an east face `rows` tall: one row per output,
+// no two next to each other (their dust would join). A single output tries
+// the middle first.
+std::vector<std::vector<int>> output_row_choices(int outputs, int rows) {
+  std::vector<std::vector<int>> choices;
+  std::vector<int> current;
+  std::function<void(int)> pick = [&](int from) {
+    if (static_cast<int>(current.size()) == outputs) {
+      choices.push_back(current);
+      return;
+    }
+    for (int row = from; row < rows; ++row) {
+      current.push_back(row);
+      pick(row + 2);
+      current.pop_back();
+    }
+  };
+  pick(0);
+  if (outputs == 1)
+    std::stable_sort(choices.begin(), choices.end(),
+                     [&](const auto &a, const auto &b) {
+                       return std::abs(2 * a[0] - (rows - 1)) <
+                              std::abs(2 * b[0] - (rows - 1));
+                     });
+  return choices;
+}
+
 } // namespace
 
-std::optional<GateModule> build_gate(std::uint8_t function,
+std::optional<GateModule> build_gate(const std::vector<std::uint8_t> &functions,
                                      const GateLibraryOptions &options,
                                      const ProgressCallback &progress) {
+  std::string names;
+  for (std::uint8_t f : functions)
+    names += (names.empty() ? "" : " + ") + function_name(f);
   for (Vec3 size : options.sizes) {
-    // Output rows from the middle outwards.
-    std::vector<int> rows;
-    for (int d = 0; d < size.z; ++d)
-      for (int row : {size.z / 2 - d, size.z / 2 + d})
-        if (row >= 0 && row < size.z &&
-            std::find(rows.begin(), rows.end(), row) == rows.end())
-          rows.push_back(row);
-    for (int row : rows) {
+    for (const std::vector<int> &rows :
+         output_row_choices(static_cast<int>(functions.size()), size.z)) {
       if (options.cancel && options.cancel->load())
         return std::nullopt;
       Spec spec =
-          parse_spec(gate_spec_text(function, size, row, options.horizon));
+          parse_spec(gate_spec_text(functions, size, rows, options.horizon));
       SolverOptions solver = options.solver;
       solver.time_limit_seconds = options.seconds_per_size;
       solver.stop_at_first = true;
       solver.cancel = options.cancel;
       SolveReport report = solve(spec, solver);
       if (progress)
-        progress(std::format("{} gate in {}x{}x{}, output row {}: {}",
-                             function_name(function), size.x, size.y, size.z,
-                             row,
+        progress(std::format("{} in {}x{}x{}: {}", names, size.x, size.y,
+                             size.z,
                              report.solution ? std::string_view("found")
                                              : to_string(report.status)));
-      if (report.solution)
-        return GateModule{function,
-                          report.solution->layout,
-                          {0, 1, 0},
-                          {0, 1, size.z - 1},
-                          {size.x - 1, 1, row}};
+      if (!report.solution)
+        continue;
+      GateModule module{functions,
+                        report.solution->layout,
+                        {0, 1, 0},
+                        {0, 1, size.z - 1},
+                        {}};
+      for (int row : rows)
+        module.outs.push_back({size.x - 1, 1, row});
+      return module;
     }
   }
   return std::nullopt;

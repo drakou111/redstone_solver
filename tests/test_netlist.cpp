@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <string>
 
 #include "redstone/netlist.hpp"
@@ -103,4 +104,26 @@ TEST_CASE("synthesis handles a multiplexer and a 4-input comparison") {
   REQUIRE(en);
   CHECK(en->gates.size() == 3);
   check_computes(*en, e);
+}
+
+TEST_CASE("synthesis prefers AND, OR and XOR at the same gate count") {
+  BoolTable adder =
+      table_of(3, {{0, 1, 1, 0, 1, 0, 0, 1}, {0, 0, 0, 1, 0, 1, 1, 1}});
+  std::optional<Netlist> fa = synthesize(adder);
+  REQUIRE(fa);
+  CHECK(fa->gates.size() == 5);
+  for (const Gate &g : fa->gates) {
+    std::string name = function_name(g.function);
+    CHECK((name == "AND" || name == "OR" || name == "XOR"));
+  }
+}
+
+TEST_CASE("synthesis keeps the network as shallow as the gate count allows") {
+  BoolTable adder =
+      table_of(3, {{0, 1, 1, 0, 1, 0, 0, 1}, {0, 0, 0, 1, 0, 1, 1, 1}});
+  std::optional<Netlist> fa = synthesize(adder);
+  REQUIRE(fa);
+  std::vector<int> levels = fa->levels();
+  CHECK(*std::max_element(levels.begin(), levels.end()) == 3);
+  check_computes(*fa, adder);
 }
