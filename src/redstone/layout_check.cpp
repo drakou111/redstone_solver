@@ -87,7 +87,37 @@ bool ExpressChecker::can_express(const World &layout) {
 }
 
 bool solver_can_express(const World &layout, const Spec &spec) {
-  return ExpressChecker(spec).can_express(layout);
+  // Every cell kept or left empty: the model holds constants only, so even
+  // large boxes are cheap (an ExpressChecker pays for a model of free cells,
+  // which only makes sense when it checks many layouts).
+  Spec pinned = spec;
+  pinned.fixed.clear();
+  pinned.forbidden.clear();
+  pinned.hints.clear();
+  const World base = spec.base_world();
+  for (int i = 0; i < layout.volume(); ++i) {
+    Vec3 p = layout.position_of(i);
+    BlockType port = base.at(p).type;
+    if (port == BlockType::Input || port == BlockType::Output)
+      continue;
+    const Block &block = layout.at(p);
+    if (block.type == BlockType::Air)
+      pinned.forbidden.push_back(p);
+    else
+      pinned.fixed.emplace_back(p, block);
+  }
+  CircuitEncoder encoder(pinned, ModelPlan{},
+                         EncoderOptions{.enforce_outputs = false,
+                                        .minimize_blocks = false,
+                                        .build_cp_model = false});
+  SatPortfolio sat(1);
+  sat.add(encoder.clauses(), 0);
+  SatPortfolio::Outcome outcome =
+      sat.solve(std::chrono::steady_clock::now() + kExpressCheckTime, nullptr);
+  if (outcome == SatPortfolio::Outcome::Stopped)
+    throw std::runtime_error("checking a layout against the solver's model "
+                             "did not finish");
+  return outcome == SatPortfolio::Outcome::Satisfiable;
 }
 
 bool LayoutCheck::passes() const {
