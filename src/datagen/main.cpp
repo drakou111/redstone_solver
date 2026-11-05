@@ -54,6 +54,8 @@ constexpr std::string_view kUsage =
     "  --search <s>      search s seconds for a circuit computing the spec's\n"
     "                    rows; writes the best as a spec with hints to <out>\n"
     "  --seeds <file>    with --search: start from these layouts (.rsd)\n"
+    "  --accept-worse <p>  with --search: chance to take a mutant one row\n"
+    "                    worse, to leave plateaus (default 0)\n"
     "  --tables <file>   compute the truth table of every layout in an .rsd\n"
     "                    file (outputs ignored) and write them to <out>\n"
     "  --help            show this help\n";
@@ -80,6 +82,8 @@ struct Options {
   double search_seconds = 0;      // > 0: search for the spec's own table
   std::filesystem::path tables;   // layouts to compute the truth tables of
   std::filesystem::path seeds;    // circuits the search starts from
+  // Chance the search takes a mutant one row worse, to leave plateaus.
+  double accept_worse = 0;
 };
 
 struct Sample {
@@ -317,8 +321,11 @@ int run_search(const Options &o, rs::Spec spec,
             since_better = 0;
           // Block count only breaks ties for the best: extra blocks are the
           // room the search needs to build new structure.
+          bool step_down = s.right == score.right - 1 &&
+                           std::uniform_real_distribution<double>(0, 1)(rng) <
+                               o.accept_worse;
           if (s.right > score.right ||
-              (s.right == score.right && s.wrong <= score.wrong)) {
+              (s.right == score.right && s.wrong <= score.wrong) || step_down) {
             current = std::move(child);
             score = s;
             std::lock_guard lock(mutex);
@@ -512,7 +519,13 @@ Options parse(int argc, char **argv) {
       o.keep_constant = true;
     else if (arg == "--seeds")
       o.seeds = value();
-    else if (arg == "--tables")
+    else if (arg == "--accept-worse") {
+      std::string text(value());
+      std::size_t used = 0;
+      o.accept_worse = std::stod(text, &used);
+      if (used != text.size() || o.accept_worse < 0 || o.accept_worse > 1)
+        throw std::invalid_argument("--accept-worse expects 0..1");
+    } else if (arg == "--tables")
       o.tables = value();
     else if (arg == "--search")
       o.search_seconds = static_cast<double>(parse_count(value(), arg));
