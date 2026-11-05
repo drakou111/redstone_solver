@@ -19,10 +19,14 @@ namespace rs {
 // layer above the modules (room for wires to cross); a channel that fails
 // is retried one column wider. An unused top layer is dropped at the end.
 struct NetlistComposeOptions {
-  int channel_width = 3;
+  int channel_width = 1;
   int max_channel_width = 6;
   int extra_layers = 1; // spare layers above the modules for crossings
   double stage_seconds = 120.0;
+  // Channels narrower than this get a short try first: when they work they
+  // are found quickly, and a long failing try costs a whole stage time.
+  int comfortable_width = 3;
+  double narrow_seconds = 20.0;
   int horizon = 80;
   GateLibraryOptions gates;
   SolverOptions solver; // threads and verification placements

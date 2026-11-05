@@ -294,7 +294,9 @@ compose_netlist(const Netlist &netlist, const BoolTable &table,
           return false;
         });
         SolverOptions solver = options.solver;
-        solver.time_limit_seconds = options.stage_seconds;
+        solver.time_limit_seconds = width < options.comfortable_width
+                                        ? options.narrow_seconds
+                                        : options.stage_seconds;
         solver.stop_at_first = true;
         solver.cancel = options.cancel;
         SolveReport report = solve(spec, solver);
