@@ -1,6 +1,7 @@
 #include "redstone/shrink.hpp"
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <format>
 #include <future>
@@ -59,9 +60,66 @@ void shift_blocks(std::vector<std::pair<Vec3, Block>> &blocks, int axis,
 }
 
 struct Attempt {
-  Spec spec;
+  Spec spec; // what is solved: the cut, maybe narrowed to its seam
+  Spec base; // the plain cut, the starting point once it works
   std::string name;
+  double seconds = 0; // at most; also bounded by the shrink's deadline
 };
+
+int coordinate(Vec3 p, int axis) {
+  return axis == 0 ? p.x : axis == 1 ? p.y : p.z;
+}
+
+// The cut with only the slices near its seam left to the solver: blocks
+// further away are kept as they are and their empty cells stay empty. A
+// small problem, so a repair that only needs local changes is found (or
+// ruled out) quickly. Nothing for specs whose ports the solver places.
+std::optional<Spec> near_seam(const Spec &cut, int axis, int index,
+                              int half_width) {
+  for (const InputPort &port : cut.inputs)
+    if (port.is_free())
+      return std::nullopt;
+  for (const OutputPort &port : cut.outputs)
+    if (port.is_free())
+      return std::nullopt;
+  auto near = [&](Vec3 p) {
+    int v = coordinate(p, axis);
+    return v >= index - half_width && v < index + half_width;
+  };
+  Spec local = cut;
+  std::vector<std::pair<Vec3, Block>> hints;
+  for (const auto &[p, block] : cut.hints) {
+    if (near(p))
+      hints.emplace_back(p, block);
+    else
+      local.fixed.emplace_back(p, block);
+  }
+  local.hints = std::move(hints);
+  World taken = local.base_world();
+  for (const auto &[p, block] : local.fixed)
+    taken.set(p, block);
+  for (const auto &[p, block] : local.hints)
+    taken.set(p, block);
+  for (Vec3 p : cut.forbidden)
+    taken.set(p, Block::solid()); // already empty; just not listed twice
+  for (int i = 0; i < taken.volume(); ++i) {
+    Vec3 p = taken.position_of(i);
+    if (!near(p) && taken.at(p).type == BlockType::Air)
+      local.forbidden.push_back(p);
+  }
+  return local;
+}
+
+// Repair tries per cut, cheapest first: a narrow window around the seam,
+// a wider one, then the whole circuit.
+struct Phase {
+  int half_width; // 0: the whole circuit
+  double seconds;
+  std::string_view name;
+};
+constexpr std::array<Phase, 3> kPhases{{{1, 15.0, "near the cut"},
+                                        {2, 40.0, "around the cut"},
+                                        {0, 0.0, "whole circuit"}}};
 
 } // namespace
 
@@ -140,14 +198,44 @@ ShrinkResult shrink(const Spec &spec, const World &layout,
 
   ShrinkResult result{spec_with_layout(spec, layout), layout, 0};
   while (!cancelled() && Clock::now() < deadline) {
-    std::vector<Attempt> attempts;
+    // Cuts with the fewest blocks in the removed slice first.
+    struct Cut {
+      Spec spec;
+      int axis;
+      int index;
+      int blocks;
+    };
+    std::vector<Cut> cuts;
     for (int axis = 0; axis < 3; ++axis)
       for (int k = 0; k < component(result.spec.size, axis); ++k)
-        if (auto cut = cut_slice(result.spec, axis, k))
+        if (auto cut = cut_slice(result.spec, axis, k)) {
+          int blocks = 0;
+          for (const auto &[p, block] : result.spec.hints)
+            blocks += coordinate(p, axis) == k ? 1 : 0;
+          cuts.push_back({std::move(*cut), axis, k, blocks});
+        }
+    std::stable_sort(cuts.begin(), cuts.end(), [](const Cut &a, const Cut &b) {
+      return a.blocks < b.blocks;
+    });
+    std::vector<Attempt> attempts;
+    for (const Phase &phase : kPhases)
+      for (const Cut &cut : cuts) {
+        std::string name = std::format("{} = {} ({})", kAxisNames[cut.axis],
+                                       cut.index, phase.name);
+        double seconds = phase.half_width == 0
+                             ? options.cut_seconds
+                             : std::min(options.cut_seconds, phase.seconds);
+        if (phase.half_width == 0) {
+          attempts.push_back({cut.spec, cut.spec, std::move(name), seconds});
+          continue;
+        }
+        if (auto local =
+                near_seam(cut.spec, cut.axis, cut.index, phase.half_width))
           attempts.push_back(
-              {std::move(*cut), std::format("{} = {}", kAxisNames[axis], k)});
+              {std::move(*local), cut.spec, std::move(name), seconds});
+      }
     say(std::format("{}x{}x{}: trying {} cuts", result.spec.size.x,
-                    result.spec.size.y, result.spec.size.z, attempts.size()));
+                    result.spec.size.y, result.spec.size.z, cuts.size()));
 
     // Workers take cuts in turn; the first verified one stops the rest.
     std::atomic<bool> stop = false;
@@ -161,7 +249,7 @@ ShrinkResult shrink(const Spec &spec, const World &layout,
         if (left <= 0)
           return;
         SolverOptions solver = options.solver;
-        solver.time_limit_seconds = std::min(options.cut_seconds, left);
+        solver.time_limit_seconds = std::min(attempts[i].seconds, left);
         solver.stop_at_first = true;
         solver.cancel = &stop;
         SolveReport report = solve(attempts[i].spec, solver);
@@ -169,7 +257,7 @@ ShrinkResult shrink(const Spec &spec, const World &layout,
           continue;
         std::lock_guard lock(mutex);
         if (!found) {
-          found.emplace(attempts[i].spec, report.solution->layout);
+          found.emplace(attempts[i].base, report.solution->layout);
           say("removed " + attempts[i].name);
           stop = true;
         }
