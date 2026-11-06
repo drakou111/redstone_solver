@@ -204,4 +204,31 @@ class CircuitDraftTest {
         assertThat(port.facing()).isEqualTo(Dir.SOUTH);
         assertThat(draft.getOutputs().getFirst().kind()).isEqualTo("dust");
     }
+
+    @Test
+    void aSavedDraftReadsBackTheSame() {
+        CircuitDraft draft = buffer();
+        draft.markKept(new Cell(11, 64, -5));
+        draft.markEmpty(new Cell(12, 65, -5));
+        draft.setLatestTicks(Optional.of(6));
+        draft.setOtherBlocks(CircuitDraft.OtherBlocks.SKETCH);
+        draft.addRow(TruthRow.parse(" -> OUT1=3"));
+
+        CircuitDraft loaded = CircuitDraft.fromJson(draft.toJson());
+
+        assertThat(loaded.toJson()).isEqualTo(draft.toJson());
+        assertThat(loaded.getRows()).hasSize(3);
+        assertThat(loaded.getLatestTicks()).contains(6);
+        assertThat(loaded.getKeptCells()).containsExactly(new Cell(11, 64, -5));
+    }
+
+    @Test
+    void brokenSavesAreRejectedWithAReason() {
+        JsonObject json = buffer().toJson();
+        json.addProperty("version", 99);
+        assertThatThrownBy(() -> CircuitDraft.fromJson(json)).hasMessageContaining("version 99");
+        JsonObject missing = buffer().toJson();
+        missing.remove("rows");
+        assertThatThrownBy(() -> CircuitDraft.fromJson(missing)).hasMessageContaining("not a valid draft");
+    }
 }

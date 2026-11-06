@@ -14,6 +14,7 @@ import io.github.drakou111.redstonesolver.core.Dir;
 import io.github.drakou111.redstonesolver.core.Port;
 import io.github.drakou111.redstonesolver.core.PortBlock;
 import io.github.drakou111.redstonesolver.core.TruthRow;
+import java.io.UncheckedIOException;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
@@ -34,17 +35,22 @@ public final class ClientRsCommands {
                becomes a port (with its kind and facing).
              /rs row IN1=1..15 -> OUT1=0   (ranges: 0, 15, 1..15, *)
              /rs timing 4 | any,  /rs solve [seconds],  /rs cancel,  /rs place,  /rs discard,  /rs shrink
-             /rs show, /rs remove <port>, /rs rows remove <n>, /rs rows clear, /rs outlines""";
+             /rs show, /rs remove <port>, /rs rows remove <n>, /rs rows clear, /rs outlines
+             /rs save <name> [overwrite], /rs load <name>, /rs drafts, /rs new, /rs export""";
 
     private final ClientState state;
     private final ServerLink server;
+    private final DraftFiles files;
 
-    public ClientRsCommands(ClientState state, ServerLink server) {
+    public ClientRsCommands(ClientState state, ServerLink server, DraftFiles files) {
         this.state = state;
         this.server = server;
+        this.files = files;
     }
 
     public void register(CommandDispatcher<FabricClientCommandSource> dispatcher) {
+        SuggestionProvider<FabricClientCommandSource> draftNames = (context, builder) -> SharedSuggestionProvider.suggest(
+                this.files.listNames(), builder);
         SuggestionProvider<FabricClientCommandSource> portNames = (context, builder) -> {
             List<String> names = new ArrayList<>();
             for (Port port : this.state.getDraft().getInputs()) names.add(port.name());
@@ -85,6 +91,19 @@ public final class ClientRsCommands {
                                         Optional.of(DoubleArgumentType.getDouble(context, "seconds"))))))
                 .then(ClientCommands.literal("shrink").executes(context -> this.run(context, this.server::shrink,
                         "Shrinking the last circuit.")))
+                .then(ClientCommands.literal("export").executes(context -> this.run(context, this.server::export, "")))
+                .then(ClientCommands.literal("save")
+                        .then(ClientCommands.argument("draft", StringArgumentType.word())
+                                .executes(context -> this.save(context, false))
+                                .then(ClientCommands.literal("overwrite").executes(context -> this.save(context, true)))))
+                .then(ClientCommands.literal("load")
+                        .then(ClientCommands.argument("draft", StringArgumentType.word()).suggests(draftNames)
+                                .executes(this::load)))
+                .then(ClientCommands.literal("drafts").executes(this::listDrafts))
+                .then(ClientCommands.literal("new").executes(context -> {
+                    this.state.replaceDraft(new CircuitDraft());
+                    return ok(context, "Started a new, empty draft.");
+                }))
                 .then(ClientCommands.literal("cancel").executes(context -> this.run(context, this.server::cancel,
                         "Cancelling; the best circuit so far (if any) still comes back.")))
                 .then(ClientCommands.literal("place").executes(context -> this.run(context, this.server::place, "")))
@@ -112,6 +131,33 @@ public final class ClientRsCommands {
         } catch (IllegalArgumentException | IllegalStateException e) {
             return fail(context, e.getMessage());
         }
+    }
+
+    private int save(CommandContext<FabricClientCommandSource> context, boolean overwrite) {
+        String name = StringArgumentType.getString(context, "draft");
+        try {
+            this.files.save(name, this.state, overwrite);
+        } catch (IllegalArgumentException | IllegalStateException | UncheckedIOException e) {
+            return fail(context, e.getMessage());
+        }
+        return ok(context, "Saved the draft as " + name + ".");
+    }
+
+    private int load(CommandContext<FabricClientCommandSource> context) {
+        String name = StringArgumentType.getString(context, "draft");
+        try {
+            if (!this.files.load(name, this.state)) return fail(context, "There is no draft named " + name + " (/rs drafts).");
+        } catch (IllegalArgumentException | UncheckedIOException e) {
+            return fail(context, e.getMessage());
+        }
+        return ok(context, "Loaded " + name + ".");
+    }
+
+    private int listDrafts(CommandContext<FabricClientCommandSource> context) {
+        List<String> names = this.files.listNames();
+        return ok(context, names.isEmpty()
+                ? "No saved drafts yet (/rs save <name>). They live in " + this.files.getDirectory()
+                : "Saved drafts: " + String.join(", ", names));
     }
 
     private int removePort(CommandContext<FabricClientCommandSource> context) {

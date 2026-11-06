@@ -419,6 +419,11 @@ public final class SolverScreen extends Screen {
                     "Remove columns, rows and layers from this circuit while it still works (uses the time limit)",
                     () -> this.run(this.server::shrink));
         }
+        if (result.isPresent() && result.get().has("blockCount")) {
+            buttonX += 56 + GAP;
+            this.button(buttonX, buttonY, 50, "Export", "Copy the circuit as /setblock commands to the clipboard",
+                    () -> this.run(this.server::export));
+        }
         if (result.isPresent() && result.get().has("log")) {
             this.button(x + width - 50, buttonY, 50, this.logOpen ? "Log -" : "Log +", "The solver's log", () -> {
                 this.logOpen = !this.logOpen;

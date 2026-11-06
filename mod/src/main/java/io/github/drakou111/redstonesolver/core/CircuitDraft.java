@@ -1,6 +1,7 @@
 package io.github.drakou111.redstonesolver.core;
 
 import com.google.gson.JsonArray;
+import com.google.gson.JsonElement;
 import com.google.gson.JsonNull;
 import com.google.gson.JsonObject;
 import java.util.ArrayList;
@@ -19,6 +20,7 @@ public final class CircuitDraft {
 
     private static final int DEFAULT_SETTLE_TICKS = 4;
     private static final int DEFAULT_HORIZON_TICKS = 20;
+    private static final int SAVE_VERSION = 1;
     public static final String PORT_NAME_PATTERN = "[A-Za-z0-9_]+";
 
     /** Reads the solver block (JSON without position) at a world cell; empty for air. */
@@ -273,6 +275,59 @@ public final class CircuitDraft {
                 origin.plus(Cell.fromJson(entry.get("position"))), facing);
     }
 
+    /** The whole draft in world coordinates, for saving; read back with {@link #fromJson}. */
+    public JsonObject toJson() {
+        JsonObject json = new JsonObject();
+        json.addProperty("version", SAVE_VERSION);
+        if (this.corner1 != null) json.add("corner1", this.corner1.toJson());
+        if (this.corner2 != null) json.add("corner2", this.corner2.toJson());
+        JsonArray ports = new JsonArray();
+        for (Port port : this.ports.values()) {
+            JsonObject entry = new JsonObject();
+            entry.addProperty("name", port.name());
+            entry.addProperty("input", port.input());
+            entry.addProperty("kind", port.kind());
+            entry.add("position", port.position().toJson());
+            entry.addProperty("facing", port.facing().jsonName());
+            ports.add(entry);
+        }
+        json.add("ports", ports);
+        json.add("kept", cellsJson(this.keptCells));
+        json.add("empty", cellsJson(this.emptyCells));
+        JsonArray rows = new JsonArray();
+        for (TruthRow row : this.rows) rows.add(row.toString());
+        json.add("rows", rows);
+        if (this.latestTicks != null) json.addProperty("latestTicks", this.latestTicks);
+        json.addProperty("otherBlocks", this.otherBlocks.name());
+        return json;
+    }
+
+    /** Reads a saved draft; throws IllegalArgumentException with the reason when the file is not a valid draft. */
+    public static CircuitDraft fromJson(JsonObject json) {
+        try {
+            int version = json.get("version").getAsInt();
+            if (version != SAVE_VERSION) throw new IllegalArgumentException("unsupported draft version " + version);
+            CircuitDraft draft = new CircuitDraft();
+            if (json.has("corner1")) draft.corner1 = Cell.fromJson(json.get("corner1"));
+            if (json.has("corner2")) draft.corner2 = Cell.fromJson(json.get("corner2"));
+            for (JsonElement element : json.getAsJsonArray("ports")) {
+                JsonObject entry = element.getAsJsonObject();
+                String facing = entry.get("facing").getAsString();
+                draft.putPort(new Port(entry.get("name").getAsString(), entry.get("input").getAsBoolean(),
+                        entry.get("kind").getAsString(), Cell.fromJson(entry.get("position")),
+                        Dir.parse(facing).orElseThrow(() -> new IllegalArgumentException("unknown facing " + facing))));
+            }
+            for (JsonElement cell : json.getAsJsonArray("kept")) draft.markKept(Cell.fromJson(cell));
+            for (JsonElement cell : json.getAsJsonArray("empty")) draft.markEmpty(Cell.fromJson(cell));
+            for (JsonElement row : json.getAsJsonArray("rows")) draft.addRow(TruthRow.parse(row.getAsString()));
+            if (json.has("latestTicks")) draft.setLatestTicks(Optional.of(json.get("latestTicks").getAsInt()));
+            draft.setOtherBlocks(OtherBlocks.valueOf(json.get("otherBlocks").getAsString()));
+            return draft;
+        } catch (NullPointerException | IllegalStateException | ClassCastException | UnsupportedOperationException e) {
+            throw new IllegalArgumentException("not a valid draft: " + e.getMessage(), e);
+        }
+    }
+
     /** The spec for a draft without kept cells or sketch; see {@link #toSpecJson(BlockSource)}. */
     public JsonObject toSpecJson() {
         return this.toSpecJson(BlockSource.NONE);
@@ -377,6 +432,12 @@ public final class CircuitDraft {
             if (port.input() == input) side.add(port);
         }
         return side;
+    }
+
+    private static JsonArray cellsJson(Set<Cell> cells) {
+        JsonArray array = new JsonArray();
+        for (Cell cell : cells) array.add(cell.toJson());
+        return array;
     }
 
     private static JsonObject positioned(JsonObject block, Cell cell, Box box) {

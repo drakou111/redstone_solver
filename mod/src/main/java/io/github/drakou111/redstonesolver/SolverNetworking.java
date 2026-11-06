@@ -58,6 +58,7 @@ public final class SolverNetworking {
             case "cancel" -> this.solver.cancel();
             case "place" -> this.place(player);
             case "shrink" -> this.shrink(server, player, body);
+            case "export" -> this.export(player);
             case "discard" -> {
                 this.sessions.get(player.getUUID()).setPending(Optional.empty());
                 send(player, "discarded", new JsonObject());
@@ -160,6 +161,14 @@ public final class SolverNetworking {
             if (player != null) json.addProperty("boxOccupied", LayoutPlacer.hasBlocks(player.level(), box));
         }
         sendTo(server, playerId, "result", json);
+    }
+
+    private void export(ServerPlayer player) {
+        LastResult last = this.sessions.get(player.getUUID()).getLast()
+                .orElseThrow(() -> new IllegalStateException("Solve something first; Export works on the last result."));
+        JsonObject body = new JsonObject();
+        body.add("world", last.layoutJson());
+        send(player, "export", this.solver.call("export", body));
     }
 
     private void place(ServerPlayer player) {

@@ -23,9 +23,11 @@ public final class ServerLink {
     private static final double MAX_CUT_SECONDS = 120;
 
     private final ClientState state;
+    private final DraftAutosave autosave;
 
-    public ServerLink(ClientState state) {
+    public ServerLink(ClientState state, DraftAutosave autosave) {
         this.state = state;
+        this.autosave = autosave;
     }
 
     public void register() {
@@ -61,6 +63,7 @@ public final class ServerLink {
         options.addProperty("sketchTime", this.state.getSketchSeconds());
         body.add("options", options);
         this.send("solve", body);
+        this.autosave.saveNow();
         this.state.setSolving(true);
         this.state.setProgress("Starting the solver...");
     }
@@ -78,6 +81,11 @@ public final class ServerLink {
         this.send("shrink", body);
         this.state.setSolving(true);
         this.state.setProgress("Starting the shrink...");
+    }
+
+    /** Asks for the last result as /setblock commands; they arrive as an "export" message. */
+    public void export() {
+        this.send("export", new JsonObject());
     }
 
     public void cancel() {
@@ -114,6 +122,10 @@ public final class ServerLink {
                 this.adoptPlacedResult(player);
             }
             case "discarded" -> this.state.setResultWaiting(false);
+            case "export" -> {
+                Minecraft.getInstance().keyboardHandler.setClipboard(json.get("text").getAsString());
+                player.sendSystemMessage(Chat.good("Copied the /setblock commands to the clipboard (run them from the box's lowest corner)."));
+            }
             case "error" -> {
                 this.state.setSolving(false);
                 player.sendSystemMessage(Chat.error(json.get("message").getAsString()));

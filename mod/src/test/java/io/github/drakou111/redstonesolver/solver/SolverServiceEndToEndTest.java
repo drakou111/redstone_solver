@@ -83,6 +83,10 @@ class SolverServiceEndToEndTest {
             assertThat(outcome.settleTicks()).hasSize(1);
             assertThat(outcome.settleTicks().getFirst()).isPositive();
             assertThat(outcome.analysisError()).isEmpty();
+
+            JsonObject exportBody = new JsonObject();
+            exportBody.add("world", outcome.layoutJson().orElseThrow());
+            assertThat(service.call("export", exportBody).get("text").getAsString()).contains("setblock ~");
         }
     }
 

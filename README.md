@@ -57,7 +57,9 @@ first start). In a world with cheats (keys are rebindable under Controls):
 - R opens the Solver panel: truth table, timing, time limit, Solve or Compose, what to do with your
   own blocks in the box (ignore or use as a sketch), Solve, then Place, Discard or Shrink.
 
-`/rs help` lists the same as typed commands.
+Your draft is saved per world in `config/redstone_solver/drafts` and restored when you come back;
+`/rs save <name>` and `/rs load <name>` keep named copies. Export copies the circuit as `/setblock`
+commands. `/rs help` lists the same as typed commands.
 
 Command line and tests:
 

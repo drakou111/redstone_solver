@@ -86,6 +86,12 @@ public final class SolverService implements AutoCloseable {
         });
     }
 
+    /** A quick request that is not a job (such as export); fails if the solver cannot start. */
+    public JsonObject call(String route, JsonObject body) {
+        if (JOB_ROUTES.contains(route)) throw new IllegalArgumentException("use startJob for " + route);
+        return this.client().call(route, body);
+    }
+
     public void cancel() {
         if (!this.running.get()) throw new SolverException("Nothing is running.");
         this.client().call("solve/cancel", new JsonObject());

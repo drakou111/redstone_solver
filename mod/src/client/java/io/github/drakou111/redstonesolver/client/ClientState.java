@@ -15,7 +15,7 @@ public final class ClientState {
         COMPOSE
     }
 
-    private final CircuitDraft draft = new CircuitDraft();
+    private CircuitDraft draft = new CircuitDraft();
     private double timeLimitSeconds = DEFAULT_TIME_LIMIT_SECONDS;
     private boolean showOutlines = true;
     private boolean solving;
@@ -60,6 +60,11 @@ public final class ClientState {
 
     public CircuitDraft getDraft() {
         return this.draft;
+    }
+
+    public void replaceDraft(CircuitDraft draft) {
+        this.draft = draft;
+        this.version++;
     }
 
     public double getTimeLimitSeconds() {
