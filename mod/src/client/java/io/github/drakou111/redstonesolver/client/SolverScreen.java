@@ -17,6 +17,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.function.Consumer;
+import net.minecraft.ChatFormatting;
 import net.minecraft.client.gui.GuiGraphicsExtractor;
 import net.minecraft.client.gui.components.Button;
 import net.minecraft.client.gui.components.EditBox;
@@ -43,7 +44,8 @@ public final class SolverScreen extends Screen {
     private static final int RESULT_CARD_HEIGHT = 112;
     private static final int MAX_FORMULA_LENGTH = 200;
     private static final int MANY_ROWS = 64;
-    private static final int SOLVE_SECTION_HEIGHT = 5 * (ROW + GAP) + 2 * LINE;
+    private static final Map<String, String> PALETTE_LABELS = Map.of("solid", "wool", "redstone_block",
+            "redstone block", "note_block", "note block");
 
     private static final int PANEL_COLOR = 0xE0101010;
     private static final int CARD_COLOR = 0x60000000;
@@ -66,7 +68,11 @@ public final class SolverScreen extends Screen {
     private int seenVersion;
     private int tableScroll;
     private int visibleRows;
-    private boolean advancedOpen;
+    private boolean dryRun;
+    private int flowLeft;
+    private int flowRight;
+    private int flowX;
+    private int flowY;
     private boolean logOpen;
     private String message = "";
     private String draftName = "";
@@ -106,9 +112,10 @@ public final class SolverScreen extends Screen {
         this.initDrafts(left, draftsTop, leftWidth);
         this.initPorts(left, draftsTop + LINE + ROW + 2 * GAP, leftWidth, bottom - RESULT_CARD_HEIGHT - PAD);
         this.initResult(left, bottom - RESULT_CARD_HEIGHT, leftWidth);
-        int solveTop = bottom - SOLVE_SECTION_HEIGHT - (this.advancedOpen ? ROW + GAP : 0);
+        int solveHeight = this.initSolve(rightLeft, 0, rightWidth, true);
+        int solveTop = bottom - solveHeight;
         this.initTable(rightLeft, top, rightWidth, solveTop - PAD);
-        this.initSolve(rightLeft, solveTop, rightWidth);
+        this.initSolve(rightLeft, solveTop, rightWidth, false);
     }
 
     @Override
@@ -131,10 +138,14 @@ public final class SolverScreen extends Screen {
                 y += LINE;
             }
         }
-        String status = this.state.isSolving() ? this.state.getProgress() : this.message;
+        String status = this.state.isSolving()
+                ? (this.state.isCancelling() ? "Cancelling... " : "") + this.state.getProgress()
+                : this.message;
         if (!status.isEmpty()) {
             int color = this.state.isSolving() ? TEXT_COLOR : status.startsWith("!") ? BAD_COLOR : HINT_COLOR;
-            graphics.text(this.font, status.startsWith("!") ? status.substring(1) : status, this.progressX, this.progressY, color);
+            String shown = this.font.plainSubstrByWidth(status.startsWith("!") ? status.substring(1) : status,
+                    this.width - MARGIN - PAD - this.progressX);
+            graphics.text(this.font, shown, this.progressX, this.progressY, color);
         }
         super.extractRenderState(graphics, mouseX, mouseY, partialTick);
     }
@@ -469,81 +480,76 @@ public final class SolverScreen extends Screen {
         });
     }
 
-    private void initSolve(int x, int y, int width) {
+    // Solve settings; the controls flow left to right and wrap. Returns the height used, so the
+    // section can be measured first (dry run) and then built at the bottom of the panel.
+    private int initSolve(int x, int y, int width, boolean dryRun) {
+        this.dryRun = dryRun;
         CircuitDraft draft = this.state.getDraft();
         this.heading("Solve", x, y);
-        int rowY = y + LINE;
-        int fieldX = x + 70;
+        this.flowStart(x, y + LINE, x + width);
 
-        this.label("Timing", x, rowY + 5, TEXT_COLOR);
-        EditBox timing = this.field(fieldX, rowY, 40, draft.getLatestTicks().map(String::valueOf).orElse("any"),
+        this.flowLabel("Output changes: not before");
+        this.ticksField(draft.getEarliestTicks(), draft::setEarliestTicks, "-",
+                "A delay: outputs keep their old value until this many game ticks after an input changes "
+                        + "(20 per second). Empty or - for none. Equal to 'by' gives an exact delay");
+        this.flowLabel("by");
+        this.ticksField(draft.getLatestTicks(), draft::setLatestTicks, "any",
                 "Outputs must be right this many game ticks after an input changes (20 per second), or any");
-        timing.setResponder(text -> {
-            String trimmed = text.trim();
-            try {
-                draft.setLatestTicks(trimmed.equalsIgnoreCase("any") || trimmed.isEmpty()
-                        ? Optional.empty() : Optional.of(Integer.parseInt(trimmed)));
-                timing.setTextColor(TEXT_COLOR);
-            } catch (IllegalArgumentException e) {
-                timing.setTextColor(BAD_COLOR);
-            }
-        });
-        this.label("game ticks, or any", fieldX + 44, rowY + 5, HINT_COLOR);
+        this.flowHint("ticks");
+        this.flowLabel("Time limit");
+        EditBox limit = this.flowField(36, formatNumber(this.state.getTimeLimitSeconds()),
+                "How long the solver may work, in seconds (Build from gates: per step)");
+        if (limit != null) {
+            limit.setResponder(text -> {
+                try {
+                    this.state.setTimeLimitSeconds(Double.parseDouble(text.trim()));
+                    limit.setTextColor(TEXT_COLOR);
+                } catch (IllegalArgumentException e) {
+                    limit.setTextColor(BAD_COLOR);
+                }
+            });
+        }
+        this.flowHint("s");
 
-        rowY += ROW + GAP;
-        this.label("Time limit", x, rowY + 5, TEXT_COLOR);
-        EditBox limit = this.field(fieldX, rowY, 40, formatNumber(this.state.getTimeLimitSeconds()),
-                "How long the solver may search (for Compose: per step)");
-        limit.setResponder(text -> {
-            try {
-                this.state.setTimeLimitSeconds(Double.parseDouble(text.trim()));
-                limit.setTextColor(TEXT_COLOR);
-            } catch (IllegalArgumentException e) {
-                limit.setTextColor(BAD_COLOR);
-            }
-        });
-        this.label("seconds", fieldX + 44, rowY + 5, HINT_COLOR);
-
-        rowY += ROW + GAP;
-        this.label("Method", x, rowY + 5, TEXT_COLOR);
+        this.flowNewLine();
         boolean compose = this.state.getMethod() == ClientState.Method.COMPOSE;
-        this.button(fieldX, rowY, 80, compose ? "Compose" : "Solve",
-                "Solve: one search of the whole box (smallest circuits). Compose: on/off tables only, built from "
-                        + "gates; handles bigger circuits and places the ports itself (the box grows to fit)",
+        this.flowButton(compose ? "Build from gates" : "Search the box",
+                "Search the box: one search for the smallest circuit in your box. Build from gates: on/off tables "
+                        + "only; builds each gate and wires them up, handles bigger tables, places the ports itself "
+                        + "and stays within your box's height (it is wider than a search result)",
                 () -> {
                     this.state.setMethod(compose ? ClientState.Method.SOLVE : ClientState.Method.COMPOSE);
                     this.rebuildWidgets();
                 });
-
-        rowY += ROW + GAP;
-        this.label("Your blocks", x, rowY + 5, TEXT_COLOR);
+        if (compose) {
+            boolean shrinkAfter = this.state.isAutoShrink();
+            this.flowButton(shrinkAfter ? "Then shrink: on" : "Then shrink: off",
+                    "Shrink the built circuit right away (gates come out spread wide; this takes more time)",
+                    () -> {
+                        this.state.setAutoShrink(!shrinkAfter);
+                        this.rebuildWidgets();
+                    });
+        }
         boolean sketch = draft.getOtherBlocks() == CircuitDraft.OtherBlocks.SKETCH;
-        this.button(fieldX, rowY, 110, sketch ? "Use as sketch" : "Ignore",
-                "What the solver does with blocks you built in the box (other than kept cells): ignore them and "
-                        + "start empty, or start from them and change what does not work",
+        this.flowButton(sketch ? "Your blocks: sketch" : "Your blocks: ignore",
+                "What the solver does with blocks you built in the box (other than kept ones): ignore them and "
+                        + "start empty, or start from them as a sketch and change what does not work",
                 () -> {
                     draft.setOtherBlocks(sketch ? CircuitDraft.OtherBlocks.IGNORE : CircuitDraft.OtherBlocks.SKETCH);
                     this.rebuildWidgets();
                 });
-
-        rowY += ROW + GAP;
-        this.button(x, rowY, 90, this.advancedOpen ? "Advanced -" : "Advanced +", "Settings most solves never need", () -> {
-            this.advancedOpen = !this.advancedOpen;
-            this.rebuildWidgets();
-        });
-        if (this.advancedOpen) {
-            rowY += ROW + GAP;
-            boolean drawn = this.state.isOnePlacement();
-            this.button(x, rowY, 120, drawn ? "Only as drawn: on" : "Only as drawn: off",
-                    "Check the circuit only as built here, facing this way. Allows faster circuits that may fail "
-                            + "when built rotated or elsewhere",
-                    () -> {
-                        this.state.setOnePlacement(!drawn);
-                        this.rebuildWidgets();
-                    });
-            this.label("Sketch step", x + 128, rowY + 5, TEXT_COLOR);
-            EditBox sketchStep = this.field(x + 190, rowY, 34, formatNumber(this.state.getSketchSeconds()),
-                    "Seconds the solver tries to keep a sketch before freeing part of it");
+        boolean drawn = this.state.isOnePlacement();
+        this.flowButton(drawn ? "Only as drawn: on" : "Only as drawn: off",
+                "On: check the circuit only as built here, facing this way. Allows faster circuits that may fail "
+                        + "when built rotated or elsewhere",
+                () -> {
+                    this.state.setOnePlacement(!drawn);
+                    this.rebuildWidgets();
+                });
+        this.flowLabel("Sketch step");
+        EditBox sketchStep = this.flowField(30, formatNumber(this.state.getSketchSeconds()),
+                "Seconds the solver tries to keep a sketch before freeing part of it");
+        if (sketchStep != null) {
             sketchStep.setResponder(text -> {
                 try {
                     this.state.setSketchSeconds(Double.parseDouble(text.trim()));
@@ -554,14 +560,35 @@ public final class SolverScreen extends Screen {
             });
         }
 
-        rowY += ROW + GAP + 2;
-        if (this.state.isSolving()) {
-            this.button(x, rowY, 90, "Cancel", "Stop; the best circuit so far (if any) still comes back", () -> this.run(this.server::cancel));
-        } else {
-            this.button(x, rowY, 90, "Solve", "Send the circuit to the solver", () -> this.run(this.server::solve));
+        this.flowNewLine();
+        this.flowLabel("Blocks:");
+        for (String block : CircuitDraft.DEFAULT_PALETTE) {
+            boolean allowed = draft.allows(block);
+            String name = PALETTE_LABELS.getOrDefault(block, block);
+            Component label = allowed
+                    ? Component.literal(name)
+                    : Component.literal(name).withStyle(ChatFormatting.DARK_GRAY, ChatFormatting.STRIKETHROUGH);
+            this.flowButton(label, this.font.width(name) + 8,
+                    (allowed ? "The solver may use " : "The solver may not use ") + name + "; click to change",
+                    () -> this.run(() -> draft.setAllowed(block, !allowed)));
         }
-        this.progressX = x + 96;
-        this.progressY = rowY + 5;
+
+        this.flowNewLine();
+        if (this.state.isSolving()) {
+            boolean cancelling = this.state.isCancelling();
+            Button cancel = this.flowButton(Component.literal(cancelling ? "Cancelling..." : "Cancel"), 90,
+                    "Stop; the best circuit so far (if any) still comes back", () -> this.run(this.server::cancel));
+            if (cancel != null) cancel.active = !cancelling;
+        } else {
+            this.flowButton(Component.literal("Solve"), 90, "Send the circuit to the solver", () -> this.run(this.server::solve));
+            this.flowButton(Component.literal("Shrink my build"), 100,
+                    "Shrink the circuit you built in the box: it is checked first, then columns, rows and layers are "
+                            + "removed while it still works",
+                    () -> this.run(this.server::shrinkBuild));
+        }
+        this.progressX = x;
+        this.progressY = this.flowY + ROW + 3;
+        return this.progressY + LINE - y;
     }
 
     private void initResult(int x, int y, int width) {
@@ -570,31 +597,98 @@ public final class SolverScreen extends Screen {
         this.resultWidth = width;
         this.heading("Result", x, y);
         Optional<JsonObject> result = this.state.getLastResult();
-        int buttonY = y + RESULT_CARD_HEIGHT - ROW - 2;
-        int buttonX = x;
-        if (result.isPresent() && this.state.isResultWaiting()) {
-            boolean occupied = result.get().has("boxOccupied") && result.get().get("boxOccupied").getAsBoolean();
-            buttonX += this.button(buttonX, buttonY, 80, occupied ? "Replace box" : "Place",
-                    occupied ? "Clears the box (your build in it is lost) and builds the circuit" : "Builds the circuit in the box",
-                    () -> this.run(this.server::place)) + GAP;
-            buttonX += this.button(buttonX, buttonY, 60, "Discard", "Forget this circuit", () -> this.run(this.server::discard)) + GAP;
-        }
-        if (result.isPresent() && result.get().has("blockCount") && !this.state.isSolving()) {
-            this.button(buttonX, buttonY, 56, "Shrink",
-                    "Remove columns, rows and layers from this circuit while it still works (uses the time limit)",
-                    () -> this.run(this.server::shrink));
-        }
-        if (result.isPresent() && result.get().has("blockCount")) {
-            buttonX += 56 + GAP;
-            this.button(buttonX, buttonY, 50, "Export", "Copy the circuit as /setblock commands to the clipboard",
-                    () -> this.run(this.server::export));
-        }
         if (result.isPresent() && result.get().has("log")) {
-            this.button(x + width - 50, buttonY, 50, this.logOpen ? "Log -" : "Log +", "The solver's log", () -> {
+            this.button(x + width - 40, y - 5, 40, this.logOpen ? "Log -" : "Log +", "The solver's log", () -> {
                 this.logOpen = !this.logOpen;
                 this.rebuildWidgets();
             });
         }
+        boolean hasCircuit = result.isPresent() && result.get().has("blockCount");
+        this.flowStart(x, y + RESULT_CARD_HEIGHT - ROW - 2, x + width);
+        if (hasCircuit && this.state.isResultWaiting()) {
+            boolean occupied = result.get().has("boxOccupied") && result.get().get("boxOccupied").getAsBoolean();
+            this.flowButton(Component.literal(occupied ? "Replace box" : "Place"), occupied ? 70 : 50,
+                    occupied ? "Clears the box (blocks in it are lost) and builds the circuit" : "Builds the circuit in the box",
+                    () -> this.run(this.server::place));
+            this.flowButton(Component.literal("Discard"), 50, "Forget this circuit", () -> this.run(this.server::discard));
+        }
+        if (hasCircuit && !this.state.isSolving()) {
+            this.flowButton(Component.literal("Shrink"), 46,
+                    "Remove columns, rows and layers from this circuit while it still works (uses the time limit)",
+                    () -> this.run(this.server::shrink));
+        }
+        if (hasCircuit) {
+            this.flowButton(Component.literal("Export"), 46, "Copy the circuit as /setblock commands to the clipboard",
+                    () -> this.run(this.server::export));
+        }
+    }
+
+    // A ticks field where a word (or nothing) means no limit; red until the text is valid.
+    private void ticksField(Optional<Integer> value, Consumer<Optional<Integer>> setter, String none, String tooltip) {
+        EditBox field = this.flowField(32, value.map(String::valueOf).orElse(none), tooltip);
+        if (field == null) return;
+        field.setResponder(text -> {
+            String trimmed = text.trim();
+            try {
+                boolean empty = trimmed.isEmpty() || trimmed.equals("-") || trimmed.equalsIgnoreCase("any");
+                setter.accept(empty ? Optional.empty() : Optional.of(Integer.parseInt(trimmed)));
+                field.setTextColor(TEXT_COLOR);
+            } catch (IllegalArgumentException e) {
+                field.setTextColor(BAD_COLOR);
+            }
+        });
+    }
+
+    // A tiny flow layout: controls go left to right and wrap to a new row at the right edge.
+    private void flowStart(int left, int y, int right) {
+        this.flowLeft = left;
+        this.flowRight = right;
+        this.flowX = left;
+        this.flowY = y;
+    }
+
+    private void flowNewLine() {
+        if (this.flowX == this.flowLeft) return;
+        this.flowX = this.flowLeft;
+        this.flowY += ROW + GAP;
+    }
+
+    private int flowPlace(int width) {
+        if (this.flowX + width > this.flowRight && this.flowX > this.flowLeft) {
+            this.flowX = this.flowLeft;
+            this.flowY += ROW + GAP;
+        }
+        int x = this.flowX;
+        this.flowX += width + GAP;
+        return x;
+    }
+
+    private void flowLabel(String text) {
+        int x = this.flowPlace(this.font.width(text));
+        if (!this.dryRun) this.label(text, x, this.flowY + 5, TEXT_COLOR);
+    }
+
+    private void flowHint(String text) {
+        int x = this.flowPlace(this.font.width(text) + 4);
+        if (!this.dryRun) this.label(text, x, this.flowY + 5, HINT_COLOR);
+    }
+
+    private EditBox flowField(int width, String value, String tooltip) {
+        int x = this.flowPlace(width);
+        return this.dryRun ? null : this.field(x, this.flowY, width, value, tooltip);
+    }
+
+    private void flowButton(String text, String tooltip, Runnable action) {
+        this.flowButton(Component.literal(text), this.font.width(text) + 12, tooltip, action);
+    }
+
+    private Button flowButton(Component text, int width, String tooltip, Runnable action) {
+        int x = this.flowPlace(width);
+        if (this.dryRun) return null;
+        return this.addRenderableWidget(Button.builder(text, b -> action.run())
+                .bounds(x, this.flowY, width, ROW)
+                .tooltip(Tooltip.create(Component.literal(tooltip)))
+                .build());
     }
 
     private void extractResultText(GuiGraphicsExtractor graphics) {
@@ -628,7 +722,10 @@ public final class SolverScreen extends Screen {
                     result.get("blockCount").getAsInt(), size.get(0).getAsInt(), size.get(1).getAsInt(),
                     size.get(2).getAsInt(), result.get("seconds").getAsDouble()), x, y, GOOD_COLOR);
             y += LINE;
-            if (!optimal) lines.add("(the solver did not prove it is the smallest)");
+            if (result.has("cancelled") && result.get("cancelled").getAsBoolean())
+                lines.add("Stopped early (you cancelled): this is the best found so far.");
+            else if (!optimal) lines.add("(the solver did not prove it is the smallest)");
+            if (result.has("note")) lines.add(result.get("note").getAsString());
             lines.add("Timing: " + this.timingText(result));
             StringBuilder counts = new StringBuilder("Blocks: ");
             boolean first = true;
@@ -675,6 +772,7 @@ public final class SolverScreen extends Screen {
     }
 
     private void heading(String text, int x, int y) {
+        if (this.dryRun) return;
         this.label(text, x, y, HEADING_COLOR);
     }
 

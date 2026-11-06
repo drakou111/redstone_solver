@@ -26,6 +26,8 @@ public final class ClientState {
     private boolean onePlacement;
     private double sketchSeconds = DEFAULT_SKETCH_SECONDS;
     private int version;
+    private boolean autoShrink = true;
+    private boolean cancelling;
 
     /** Grows whenever the solve state changes, so open screens know to refresh their buttons. */
     public int getVersion() {
@@ -56,6 +58,25 @@ public final class ClientState {
     public void setSketchSeconds(double seconds) {
         if (!(seconds > 0)) throw new IllegalArgumentException("the sketch step time must be positive");
         this.sketchSeconds = seconds;
+    }
+
+    /** Build from gates, then shrink the result right away. */
+    public boolean isAutoShrink() {
+        return this.autoShrink;
+    }
+
+    public void setAutoShrink(boolean autoShrink) {
+        this.autoShrink = autoShrink;
+    }
+
+    /** True from asking to cancel until the job ends. */
+    public boolean isCancelling() {
+        return this.cancelling;
+    }
+
+    public void setCancelling(boolean cancelling) {
+        this.cancelling = cancelling;
+        this.version++;
     }
 
     public CircuitDraft getDraft() {
@@ -90,6 +111,7 @@ public final class ClientState {
 
     public void setSolving(boolean solving) {
         this.solving = solving;
+        this.cancelling = false;
         this.version++;
         if (!solving) this.progress = "";
     }

@@ -27,6 +27,9 @@ struct NetlistComposeOptions {
   int channel_width = 1;
   int max_channel_width = 6;
   int extra_layers = 1; // spare layers above the modules for crossings
+  // Most layers the circuit may use (0: no limit). Taller gate shapes and
+  // spare layers that do not fit are left out.
+  int max_height = 0;
   double stage_seconds = 120.0;
   // Channels narrower than this get a short try first: when they work they
   // are found quickly, and a long failing try costs a whole stage time.
@@ -44,6 +47,11 @@ std::optional<ComposeResult>
 compose_netlist(const Netlist &netlist, const BoolTable &table,
                 const NetlistComposeOptions &options,
                 const ProgressCallback &progress = {});
+
+// The gate library options with every module shape taller than `max_height`
+// removed (0 keeps all). Throws std::invalid_argument when none is left.
+GateLibraryOptions gates_within_height(GateLibraryOptions gates,
+                                       int max_height);
 
 // Reads the spec as an on/off table, finds the smallest gate network and
 // composes it. Throws std::invalid_argument for specs that need exact

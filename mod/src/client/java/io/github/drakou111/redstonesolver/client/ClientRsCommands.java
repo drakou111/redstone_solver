@@ -36,7 +36,7 @@ public final class ClientRsCommands {
                becomes a port (with its kind and facing).
              /rs row IN1=1..15 -> OUT1=0   (ranges: 0, 15, 1..15, *)
              /rs formula OUT1 (IN1 + IN2) % 16   (a comparison like IN1 > IN2 means on/off)
-             /rs timing 4 | any,  /rs solve [seconds],  /rs cancel,  /rs place,  /rs discard,  /rs shrink
+             /rs timing 4 | any | <not before> <by>,  /rs solve [seconds],  /rs cancel,  /rs place,  /rs discard,  /rs shrink [build]
              /rs show, /rs remove <port>, /rs rows remove <n>, /rs rows clear, /rs outlines
              /rs save <name> [overwrite], /rs load <name>, /rs drafts, /rs new, /rs export""";
 
@@ -87,7 +87,9 @@ public final class ClientRsCommands {
                 .then(ClientCommands.literal("timing")
                         .then(ClientCommands.literal("any").executes(context -> this.setTiming(context, false)))
                         .then(ClientCommands.argument("ticks", IntegerArgumentType.integer(0))
-                                .executes(context -> this.setTiming(context, true))))
+                                .executes(context -> this.setTiming(context, true))
+                                .then(ClientCommands.argument("latest", IntegerArgumentType.integer(0))
+                                        .executes(this::setDelay))))
                 .then(ClientCommands.literal("show").executes(this::show))
                 .then(ClientCommands.literal("outlines").executes(this::toggleOutlines))
                 .then(ClientCommands.literal("solve")
@@ -96,7 +98,9 @@ public final class ClientRsCommands {
                                 .executes(context -> this.solve(context,
                                         Optional.of(DoubleArgumentType.getDouble(context, "seconds"))))))
                 .then(ClientCommands.literal("shrink").executes(context -> this.run(context, this.server::shrink,
-                        "Shrinking the last circuit.")))
+                        "Shrinking the last circuit."))
+                        .then(ClientCommands.literal("build").executes(context -> this.run(context,
+                                this.server::shrinkBuild, "Checking and shrinking your build."))))
                 .then(ClientCommands.literal("export").executes(context -> this.run(context, this.server::export, "")))
                 .then(ClientCommands.literal("save")
                         .then(ClientCommands.argument("draft", StringArgumentType.word())
@@ -212,8 +216,18 @@ public final class ClientRsCommands {
     private int setTiming(CommandContext<FabricClientCommandSource> context, boolean hasTicks) {
         Optional<Integer> ticks = hasTicks ? Optional.of(IntegerArgumentType.getInteger(context, "ticks")) : Optional.empty();
         this.state.getDraft().setLatestTicks(ticks);
+        this.state.getDraft().setEarliestTicks(Optional.empty());
         return ok(context, ticks.map(t -> "Outputs must be right within " + t + " game ticks.")
                 .orElse("Outputs may take any time to settle."));
+    }
+
+    private int setDelay(CommandContext<FabricClientCommandSource> context) {
+        int earliest = IntegerArgumentType.getInteger(context, "ticks");
+        int latest = IntegerArgumentType.getInteger(context, "latest");
+        if (earliest > latest) return fail(context, "The first number (not before) must not be after the second (by).");
+        this.state.getDraft().setEarliestTicks(Optional.of(earliest));
+        this.state.getDraft().setLatestTicks(Optional.of(latest));
+        return ok(context, "Outputs keep their old value until tick %d and are right by tick %d.".formatted(earliest, latest));
     }
 
     private int toggleOutlines(CommandContext<FabricClientCommandSource> context) {
@@ -237,7 +251,8 @@ public final class ClientRsCommands {
         if (draft.isFormulaMode()) rows = List.of();
         else if (rows.isEmpty()) source.sendFeedback(Chat.hint("  no rows yet (/rs row IN1=1..15 -> OUT1=0)"));
         for (int i = 0; i < rows.size(); i++) source.sendFeedback(Chat.hint("  row %d: %s".formatted(i + 1, rows.get(i))));
-        source.sendFeedback(Chat.hint("  timing: " + draft.getLatestTicks().map(t -> "within " + t + " game ticks").orElse("any")));
+        source.sendFeedback(Chat.hint("  timing: " + draft.getEarliestTicks().map(t -> "not before " + t + ", ").orElse("")
+                + draft.getLatestTicks().map(t -> "within " + t + " game ticks").orElse("any")));
         return 1;
     }
 

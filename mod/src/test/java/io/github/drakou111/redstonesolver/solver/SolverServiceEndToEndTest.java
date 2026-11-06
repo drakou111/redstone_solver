@@ -156,4 +156,75 @@ class SolverServiceEndToEndTest {
             assertThat(outcome.layout()).isPresent();
         }
     }
+
+    @Test
+    void cancellingAShrinkStopsItQuickly() throws Exception {
+        CircuitDraft draft = new CircuitDraft();
+        draft.setCorner1(new Cell(0, 0, 0));
+        draft.setCorner2(new Cell(7, 3, 3));
+        draft.putPort(Port.input("IN1", InputKind.COMPARATOR, new Cell(0, 1, 0), Dir.EAST));
+        draft.putPort(Port.output("OUT1", OutputKind.DUST, new Cell(7, 1, 3), Dir.NORTH));
+        draft.addRow(TruthRow.parse("IN1=1..15 -> OUT1=0"));
+        draft.addRow(TruthRow.parse("IN1=0 -> OUT1=1..15"));
+        JsonObject options = new JsonObject();
+        options.addProperty("timeLimit", TIME_LIMIT_SECONDS);
+        options.addProperty("first", true);
+
+        try (SolverService service = new SolverService(executable)) {
+            JsonObject solveRequest = new JsonObject();
+            solveRequest.add("spec", draft.toSpecJson());
+            solveRequest.add("options", options);
+            SolveOutcome solved = run(service, "solve/start", solveRequest);
+
+            JsonObject shrinkOptions = new JsonObject();
+            shrinkOptions.addProperty("timeLimit", 600);
+            shrinkOptions.addProperty("cutTime", 600);
+            JsonObject shrinkRequest = new JsonObject();
+            shrinkRequest.add("spec", solved.spec().orElseThrow());
+            shrinkRequest.add("world", solved.layoutJson().orElseThrow());
+            shrinkRequest.add("options", shrinkOptions);
+            CompletableFuture<SolveOutcome> done = new CompletableFuture<>();
+            service.startJob("shrink/start", shrinkRequest, new SolverService.Listener() {
+                @Override
+                public void progress(double seconds, String lastLogLine) {
+                }
+
+                @Override
+                public void finished(SolveOutcome outcome) {
+                    done.complete(outcome);
+                }
+            });
+            Thread.sleep(1500);
+            long cancelledAt = System.nanoTime();
+            service.cancel();
+            done.get(60, TimeUnit.SECONDS);
+            double seconds = (System.nanoTime() - cancelledAt) / 1e9;
+            assertThat(seconds).as("seconds from cancel to the end of the shrink").isLessThan(5);
+        }
+    }
+
+    @Test
+    void buildingFromGatesStaysWithinTheHeightLimit() throws Exception {
+        CircuitDraft draft = new CircuitDraft();
+        draft.setCorner1(new Cell(0, 0, 0));
+        draft.setCorner2(new Cell(5, 1, 3));
+        draft.putPort(Port.input("A", InputKind.REPEATER, new Cell(0, 1, 0), Dir.EAST));
+        draft.putPort(Port.input("B", InputKind.REPEATER, new Cell(0, 1, 2), Dir.EAST));
+        draft.putPort(Port.output("OUT1", OutputKind.DUST, new Cell(5, 1, 1), Dir.NORTH));
+        draft.setFormulaMode(true);
+        draft.setFormula("OUT1", "A and B");
+        JsonObject options = new JsonObject();
+        options.addProperty("timeLimit", TIME_LIMIT_SECONDS);
+        options.addProperty("maxHeight", 2);
+        JsonObject request = new JsonObject();
+        request.add("spec", draft.toSpecJson());
+        request.add("options", options);
+
+        try (SolverService service = new SolverService(executable)) {
+            SolveOutcome outcome = run(service, "compose/start", request);
+            assertThat(outcome.error()).isEmpty();
+            assertThat(outcome.layout()).isPresent();
+            assertThat(outcome.layout().get().size().y()).isLessThanOrEqualTo(2);
+        }
+    }
 }

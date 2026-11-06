@@ -20,6 +20,7 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.TreeMap;
 import java.util.UUID;
+import java.util.concurrent.atomic.AtomicBoolean;
 import net.fabricmc.fabric.api.networking.v1.ServerPlayNetworking;
 import net.minecraft.commands.Commands;
 import net.minecraft.server.MinecraftServer;
@@ -32,6 +33,8 @@ public final class SolverNetworking {
 
     private final PlayerSessions sessions;
     private final SolverService solver;
+    // One job runs at a time; set when the player asks to stop it.
+    private final AtomicBoolean cancelRequested = new AtomicBoolean();
 
     public SolverNetworking(PlayerSessions sessions, SolverService solver) {
         this.sessions = sessions;
@@ -55,7 +58,11 @@ public final class SolverNetworking {
         JsonObject body = payload.json().isEmpty() ? new JsonObject() : JsonParser.parseString(payload.json()).getAsJsonObject();
         switch (payload.action()) {
             case "solve" -> this.solve(server, player, body);
-            case "cancel" -> this.solver.cancel();
+            case "cancel" -> {
+                this.cancelRequested.set(true);
+                this.solver.cancel();
+                send(player, "cancelling", new JsonObject());
+            }
             case "place" -> this.place(player);
             case "shrink" -> this.shrink(server, player, body);
             case "export" -> this.export(player);
@@ -69,20 +76,15 @@ public final class SolverNetworking {
 
     /**
      * Body: {spec, origin: [x, y, z], method: "solve" | "compose", options: {timeLimit, onePlacement,
-     * sketchTime}}. The options go to the solver unchanged.
+     * sketchTime, maxHeight, autoShrink}}. The options go to the solver unchanged.
      */
     private void solve(MinecraftServer server, ServerPlayer player, JsonObject body) {
         JsonObject spec = body.getAsJsonObject("spec");
         JsonObject options = body.getAsJsonObject("options");
         if (spec == null || options == null) throw new IllegalArgumentException("a solve needs a spec and options");
         Cell origin = Cell.fromJson(body.get("origin"));
-        Cell size = Cell.fromJson(spec.get("size"));
-        if (size.x() * size.y() * size.z() > MAX_BOX_VOLUME)
-            throw new IllegalArgumentException("The box has %d cells; keep it at %d or fewer."
-                    .formatted(size.x() * size.y() * size.z(), MAX_BOX_VOLUME));
-        double timeLimit = options.get("timeLimit").getAsDouble();
-        if (timeLimit <= 0 || timeLimit > MAX_TIME_LIMIT_SECONDS)
-            throw new IllegalArgumentException("The time limit must be between 1 s and 24 h.");
+        requireSmallEnough(Cell.fromJson(spec.get("size")));
+        requireTimeLimit(options);
         String method = body.has("method") ? body.get("method").getAsString() : "solve";
         String route = switch (method) {
             case "solve" -> "solve/start";
@@ -93,23 +95,51 @@ public final class SolverNetworking {
         JsonObject request = new JsonObject();
         request.add("spec", spec);
         request.add("options", options);
-        this.startJob(server, player, route, request, origin);
+        this.startJob(server, player, route, request, origin, Optional.empty());
     }
 
-    /** Body: {options: {timeLimit, cutTime, onePlacement, sketchTime}}; shrinks the last result. */
+    /**
+     * Body: {options: {timeLimit, cutTime, onePlacement, sketchTime}} shrinks the last result. With
+     * {spec, world, origin} as well it shrinks the circuit built in the world, once it is checked to
+     * work. Placing the result clears the old, bigger box.
+     */
     private void shrink(MinecraftServer server, ServerPlayer player, JsonObject body) {
-        LastResult last = this.sessions.get(player.getUUID()).getLast()
-                .orElseThrow(() -> new IllegalStateException("Solve something first; Shrink works on the last result."));
         JsonObject options = body.getAsJsonObject("options");
         if (options == null) throw new IllegalArgumentException("a shrink needs options");
+        requireTimeLimit(options);
+        JsonObject spec;
+        JsonObject world;
+        Cell origin;
+        if (body.has("world")) {
+            spec = body.getAsJsonObject("spec");
+            world = body.getAsJsonObject("world");
+            origin = Cell.fromJson(body.get("origin"));
+            requireSmallEnough(Cell.fromJson(spec.get("size")));
+            JsonObject check = new JsonObject();
+            check.add("spec", spec);
+            check.add("world", world);
+            check.addProperty("onePlacement", options.has("onePlacement") && options.get("onePlacement").getAsBoolean());
+            JsonObject verdict = this.solver.call("verify", check);
+            if (!verdict.get("ok").getAsBoolean())
+                throw new IllegalStateException("Your build does not work yet, so it cannot be shrunk: "
+                        + describeFailure(verdict.getAsJsonObject("failure")));
+        } else {
+            LastResult last = this.sessions.get(player.getUUID()).getLast()
+                    .orElseThrow(() -> new IllegalStateException("Solve something first; Shrink works on the last result."));
+            spec = last.spec();
+            world = last.layoutJson();
+            origin = last.origin();
+        }
         JsonObject request = new JsonObject();
-        request.add("spec", last.spec());
-        request.add("world", last.layoutJson());
+        request.add("spec", spec);
+        request.add("world", world);
         request.add("options", options);
-        this.startJob(server, player, "shrink/start", request, last.origin());
+        Box oldBox = boxAt(origin, Cell.fromJson(spec.get("size")));
+        this.startJob(server, player, "shrink/start", request, origin, Optional.of(oldBox));
     }
 
-    private void startJob(MinecraftServer server, ServerPlayer player, String route, JsonObject request, Cell origin) {
+    private void startJob(MinecraftServer server, ServerPlayer player, String route, JsonObject request, Cell origin,
+            Optional<Box> alsoClear) {
         UUID playerId = player.getUUID();
         this.sessions.get(playerId).setPending(Optional.empty());
         this.solver.startJob(route, request, new SolverService.Listener() {
@@ -123,14 +153,18 @@ public final class SolverNetworking {
 
             @Override
             public void finished(SolveOutcome outcome) {
-                server.execute(() -> SolverNetworking.this.finish(server, playerId, route, origin, outcome));
+                server.execute(() -> SolverNetworking.this.finish(server, playerId, route, request, origin, alsoClear,
+                        outcome));
             }
         });
+        this.cancelRequested.set(false);
         send(player, "started", new JsonObject());
     }
 
     // The result box starts at the origin; Compose and Shrink may return a different size.
-    private void finish(MinecraftServer server, UUID playerId, String route, Cell origin, SolveOutcome outcome) {
+    private void finish(MinecraftServer server, UUID playerId, String route, JsonObject request, Cell origin,
+            Optional<Box> alsoClear, SolveOutcome outcome) {
+        boolean cancelled = this.cancelRequested.get();
         JsonObject json = new JsonObject();
         JsonArray log = new JsonArray();
         for (String line : outcome.log()) log.add(line);
@@ -138,11 +172,14 @@ public final class SolverNetworking {
         json.addProperty("status", outcome.status());
         json.addProperty("seconds", outcome.seconds());
         json.addProperty("optimal", outcome.optimal());
+        json.addProperty("cancelled", cancelled);
+        json.addProperty("shrunk", route.equals("shrink/start"));
         outcome.error().ifPresent(error -> json.addProperty("error", error));
 
+        ServerPlayer player = server.getPlayerList().getPlayer(playerId);
         if (outcome.layout().isPresent()) {
             Layout layout = outcome.layout().get();
-            Box box = new Box(origin, origin.plus(layout.size()).minus(new Cell(1, 1, 1)));
+            Box box = boxAt(origin, layout.size());
             json.addProperty("blockCount", layout.countPlacedBlocks());
             json.add("size", layout.size().toJson());
             json.add("origin", origin.toJson());
@@ -155,10 +192,33 @@ public final class SolverNetworking {
             // Compose and Shrink change the box or the ports; the client adopts them once placed.
             json.addProperty("reshaped", !route.equals("solve/start"));
             Session session = this.sessions.get(playerId);
-            session.setPending(Optional.of(new PendingResult(layout, box)));
+            session.setPending(Optional.of(new PendingResult(layout, box, alsoClear)));
             session.setLast(Optional.of(new LastResult(outcome.layoutJson().orElseThrow(), outcome.spec().orElseThrow(), origin)));
-            ServerPlayer player = server.getPlayerList().getPlayer(playerId);
-            if (player != null) json.addProperty("boxOccupied", LayoutPlacer.hasBlocks(player.level(), box));
+            if (player != null) {
+                boolean occupied = LayoutPlacer.hasBlocks(player.level(), box)
+                        || alsoClear.map(old -> LayoutPlacer.hasBlocks(player.level(), old)).orElse(false);
+                json.addProperty("boxOccupied", occupied);
+            }
+
+            JsonObject options = request.getAsJsonObject("options");
+            boolean autoShrink = options.has("autoShrink") && options.get("autoShrink").getAsBoolean();
+            if (route.equals("compose/start") && autoShrink && !cancelled && player != null) {
+                JsonObject note = new JsonObject();
+                note.addProperty("seconds", outcome.seconds());
+                note.addProperty("line", "Composed %dx%dx%d (%d blocks); now shrinking it".formatted(layout.size().x(),
+                        layout.size().y(), layout.size().z(), layout.countPlacedBlocks()));
+                send(player, "progress", note);
+                JsonObject shrinkRequest = new JsonObject();
+                shrinkRequest.add("spec", outcome.spec().orElseThrow());
+                shrinkRequest.add("world", outcome.layoutJson().orElseThrow());
+                shrinkRequest.add("options", options);
+                try {
+                    this.startJob(server, player, "shrink/start", shrinkRequest, origin, Optional.of(box));
+                    return;
+                } catch (SolverException e) {
+                    json.addProperty("note", "Composed, but the shrink could not start: " + e.getMessage());
+                }
+            }
         }
         sendTo(server, playerId, "result", json);
     }
@@ -175,9 +235,35 @@ public final class SolverNetworking {
         Session session = this.sessions.get(player.getUUID());
         PendingResult pending = session.getPending()
                 .orElseThrow(() -> new IllegalStateException("No solved circuit to place. Solve first."));
+        pending.alsoClear().ifPresent(old -> LayoutPlacer.clear(player.level(), old));
         LayoutPlacer.place(player.level(), pending.box(), pending.layout());
         session.setPending(Optional.empty());
         send(player, "placed", new JsonObject());
+    }
+
+    private static void requireSmallEnough(Cell size) {
+        int volume = size.x() * size.y() * size.z();
+        if (volume > MAX_BOX_VOLUME)
+            throw new IllegalArgumentException("The box has %d cells; keep it at %d or fewer.".formatted(volume, MAX_BOX_VOLUME));
+    }
+
+    private static void requireTimeLimit(JsonObject options) {
+        double timeLimit = options.get("timeLimit").getAsDouble();
+        if (timeLimit <= 0 || timeLimit > MAX_TIME_LIMIT_SECONDS)
+            throw new IllegalArgumentException("The time limit must be between 1 s and 24 h.");
+    }
+
+    private static Box boxAt(Cell origin, Cell size) {
+        return new Box(origin, origin.plus(size).minus(new Cell(1, 1, 1)));
+    }
+
+    // The verifier's failure: which input switch broke and why.
+    private static String describeFailure(JsonObject failure) {
+        if (failure == null) return "the check failed";
+        String reason = failure.get("reason").getAsString();
+        String to = failure.get("to").toString();
+        if (failure.get("from").isJsonNull()) return "with inputs " + to + ": " + reason;
+        return "switching inputs " + failure.get("from") + " -> " + to + ": " + reason;
     }
 
     private static JsonObject blocksByType(Layout layout) {

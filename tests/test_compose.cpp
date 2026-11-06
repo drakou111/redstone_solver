@@ -71,3 +71,13 @@ TEST_CASE("compose wires a full adder from its five gates") {
     return o == 0 ? count % 2 : count >= 2 ? 1 : 0;
   }));
 }
+
+TEST_CASE("a height limit keeps only gate shapes that fit") {
+  GateLibraryOptions gates;
+  GateLibraryOptions flat = gates_within_height(gates, 2);
+  REQUIRE_FALSE(flat.sizes.empty());
+  for (Vec3 size : flat.sizes)
+    CHECK(size.y <= 2);
+  CHECK(gates_within_height(gates, 0).sizes.size() == gates.sizes.size());
+  CHECK_THROWS_AS(gates_within_height(gates, 1), std::invalid_argument);
+}

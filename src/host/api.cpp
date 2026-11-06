@@ -232,6 +232,9 @@ Json Api::start_compose(const Json &body) {
   NetlistComposeOptions options;
   options.stage_seconds = settings.value("timeLimit", 120.0);
   options.gates.seconds_per_size = options.stage_seconds;
+  options.max_height = settings.value("maxHeight", 0);
+  // Fails here, before the job starts, when no gate fits the height.
+  gates_within_height(options.gates, options.max_height);
   options.solver.verification = verification_from(settings);
   if (options.stage_seconds <= 0)
     throw std::invalid_argument("the time limit must be positive");

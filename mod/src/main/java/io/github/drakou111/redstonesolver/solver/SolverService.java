@@ -71,18 +71,21 @@ public final class SolverService implements AutoCloseable {
             throw new SolverException("The solver is busy with another job; cancel it first.");
 
         Thread.ofVirtual().name("redstone-" + route).start(() -> {
+            SolveOutcome outcome;
             try {
                 SolverClient solver = this.client();
                 solver.call(route, body);
-                listener.finished(this.pollUntilDone(solver, body, listener));
+                outcome = this.pollUntilDone(solver, body, listener);
             } catch (SolverException e) {
-                listener.finished(failure(e.getMessage()));
+                outcome = failure(e.getMessage());
             } catch (RuntimeException e) {
                 LOGGER.log(Level.ERROR, "Solver job failed", e);
-                listener.finished(failure("Unexpected error: " + e));
+                outcome = failure("Unexpected error: " + e);
             } finally {
                 this.running.set(false);
             }
+            // The solver is free again here, so the listener may start the next job.
+            listener.finished(outcome);
         });
     }
 

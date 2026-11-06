@@ -49,11 +49,7 @@ public final class LayoutPlacer {
                     parse(blocks, text))));
         }
 
-        // Clearing drops nothing: neither the old blocks nor what containers held.
-        for (BlockPos pos : positions(box)) {
-            level.setBlock(pos, Blocks.AIR.defaultBlockState(),
-                    Block.UPDATE_ALL | Block.UPDATE_SUPPRESS_DROPS | Block.UPDATE_SKIP_BLOCK_ENTITY_SIDEEFFECTS);
-        }
+        clear(level, box);
         for (boolean supportedPass : new boolean[] {false, true}) {
             for (Placed entry : placed) {
                 if (JavaBlockStates.needsSupport(entry.block()) == supportedPass)
@@ -68,6 +64,14 @@ public final class LayoutPlacer {
         }
         for (Placed entry : placed) {
             if (JavaBlockStates.isContainer(entry.block())) fill(level, entry.pos(), entry.block().signal());
+        }
+    }
+
+    /** Empties the box. Drops nothing: neither the old blocks nor what containers held. */
+    public static void clear(ServerLevel level, Box box) {
+        for (BlockPos pos : positions(box)) {
+            level.setBlock(pos, Blocks.AIR.defaultBlockState(),
+                    Block.UPDATE_ALL | Block.UPDATE_SUPPRESS_DROPS | Block.UPDATE_SKIP_BLOCK_ENTITY_SIDEEFFECTS);
         }
     }
 

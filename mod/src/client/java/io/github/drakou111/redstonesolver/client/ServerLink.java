@@ -6,6 +6,7 @@ import com.google.gson.JsonParser;
 import io.github.drakou111.redstonesolver.Chat;
 import io.github.drakou111.redstonesolver.core.Box;
 import io.github.drakou111.redstonesolver.core.Cell;
+import io.github.drakou111.redstonesolver.core.CircuitDraft;
 import io.github.drakou111.redstonesolver.net.SolverPayloads.ToClient;
 import io.github.drakou111.redstonesolver.net.SolverPayloads.ToServer;
 import java.util.List;
@@ -61,6 +62,11 @@ public final class ServerLink {
         options.addProperty("timeLimit", this.state.getTimeLimitSeconds());
         options.addProperty("onePlacement", this.state.isOnePlacement());
         options.addProperty("sketchTime", this.state.getSketchSeconds());
+        if (this.state.getMethod() == ClientState.Method.COMPOSE) {
+            options.addProperty("maxHeight", box.size().y());
+            options.addProperty("autoShrink", this.state.isAutoShrink());
+            options.addProperty("cutTime", Math.min(MAX_CUT_SECONDS, this.state.getTimeLimitSeconds()));
+        }
         body.add("options", options);
         this.send("solve", body);
         this.autosave.saveNow();
@@ -71,13 +77,8 @@ public final class ServerLink {
     /** Shrinks the last result: removes columns, rows and layers while it still works. */
     public void shrink() {
         if (this.state.isSolving()) throw new IllegalStateException("A solve is already running.");
-        JsonObject options = new JsonObject();
-        options.addProperty("timeLimit", this.state.getTimeLimitSeconds());
-        options.addProperty("cutTime", Math.min(MAX_CUT_SECONDS, this.state.getTimeLimitSeconds()));
-        options.addProperty("onePlacement", this.state.isOnePlacement());
-        options.addProperty("sketchTime", this.state.getSketchSeconds());
         JsonObject body = new JsonObject();
-        body.add("options", options);
+        body.add("options", this.shrinkOptions());
         this.send("shrink", body);
         this.state.setSolving(true);
         this.state.setProgress("Starting the shrink...");
@@ -88,8 +89,29 @@ public final class ServerLink {
         this.send("export", new JsonObject());
     }
 
+    /** Shrinks the circuit built in the box; the server checks that it works first. */
+    public void shrinkBuild() {
+        if (this.state.isSolving()) throw new IllegalStateException("A solve is already running.");
+        Minecraft client = Minecraft.getInstance();
+        if (client.level == null) throw new IllegalStateException("Not in a world.");
+        WorldBlocks blocks = new WorldBlocks(client.level);
+        CircuitDraft draft = this.state.getDraft();
+        draft.refreshPorts(blocks::portBlockAt);
+        JsonObject body = new JsonObject();
+        body.add("spec", draft.toSpecJson(blocks));
+        body.add("world", draft.buildLayoutJson(blocks));
+        body.add("origin", draft.requireBox().min().toJson());
+        body.add("options", this.shrinkOptions());
+        this.send("shrink", body);
+        this.autosave.saveNow();
+        this.state.setSolving(true);
+        this.state.setProgress("Checking your build...");
+    }
+
     public void cancel() {
+        if (!this.state.isSolving()) throw new IllegalStateException("Nothing is running.");
         this.send("cancel", new JsonObject());
+        this.state.setCancelling(true);
     }
 
     public void place() {
@@ -98,6 +120,15 @@ public final class ServerLink {
 
     public void discard() {
         this.send("discard", new JsonObject());
+    }
+
+    private JsonObject shrinkOptions() {
+        JsonObject options = new JsonObject();
+        options.addProperty("timeLimit", this.state.getTimeLimitSeconds());
+        options.addProperty("cutTime", Math.min(MAX_CUT_SECONDS, this.state.getTimeLimitSeconds()));
+        options.addProperty("onePlacement", this.state.isOnePlacement());
+        options.addProperty("sketchTime", this.state.getSketchSeconds());
+        return options;
     }
 
     private void send(String action, JsonObject body) {
@@ -109,6 +140,7 @@ public final class ServerLink {
     private void receive(LocalPlayer player, String event, JsonObject json) {
         switch (event) {
             case "started" -> this.state.setSolving(true);
+            case "cancelling" -> this.state.setCancelling(true);
             case "progress" -> {
                 String text = "Solving... %.0f s  %s".formatted(json.get("seconds").getAsDouble(),
                         json.get("line").getAsString());

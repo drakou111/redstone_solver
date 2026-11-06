@@ -11,8 +11,8 @@ import java.util.UUID;
 
 /** Each player's solved circuits: the one waiting to be placed and the last one. Server thread only. */
 public final class PlayerSessions {
-    /** A solved layout and the world box it was solved for. */
-    public record PendingResult(Layout layout, Box box) {
+    /** A solved layout, the world box it goes in, and an older box to clear first (after a shrink). */
+    public record PendingResult(Layout layout, Box box, Optional<Box> alsoClear) {
     }
 
     /** The last solved circuit (kept after placing) so it can be shrunk: solver JSON and world origin. */

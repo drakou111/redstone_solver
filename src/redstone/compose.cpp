@@ -132,7 +132,8 @@ compose_netlist(const Netlist &netlist, const BoolTable &table,
     same->nodes.push_back(node);
     same->functions.push_back(gate.function);
   }
-  GateLibraryOptions gate_options = options.gates;
+  GateLibraryOptions gate_options =
+      gates_within_height(options.gates, options.max_height);
   gate_options.solver = options.solver;
   gate_options.cancel = options.cancel;
   std::map<std::vector<std::uint8_t>, GateModule> modules;
@@ -228,7 +229,14 @@ compose_netlist(const Netlist &netlist, const BoolTable &table,
   // A spare layer above the modules lets wires cross. Each channel may use
   // it from the start (a flat-only try that fails costs a full time limit);
   // an unused top layer is dropped at the end.
-  const int height = module_height + options.extra_layers;
+  int extra_layers = options.extra_layers;
+  if (options.max_height > 0)
+    extra_layers =
+        std::clamp(options.max_height - module_height, 0, extra_layers);
+  if (extra_layers < options.extra_layers)
+    say(std::format("no spare layer for crossings (height limit {})",
+                    options.max_height));
+  const int height = module_height + extra_layers;
   Cells placed; // everything verified so far
   int x = 1;    // first cell east of column 0
   for (int k = 0; k <= depth_levels; ++k) {
@@ -237,7 +245,7 @@ compose_netlist(const Netlist &netlist, const BoolTable &table,
     bool done = false;
     for (int width = options.channel_width;
          width <= options.max_channel_width && !done; ++width)
-      for (bool upper : {options.extra_layers > 0}) {
+      for (bool upper : {extra_layers > 0}) {
         if (done)
           continue;
         if (cancelled())
@@ -340,6 +348,17 @@ compose_netlist(const Netlist &netlist, const BoolTable &table,
       return std::nullopt;
   }
   return std::nullopt;
+}
+
+GateLibraryOptions gates_within_height(GateLibraryOptions gates,
+                                       int max_height) {
+  if (max_height <= 0)
+    return gates;
+  std::erase_if(gates.sizes, [&](Vec3 size) { return size.y > max_height; });
+  if (gates.sizes.empty())
+    throw std::invalid_argument(std::format(
+        "no gate fits in {} layers; Compose needs at least 2", max_height));
+  return gates;
 }
 
 std::optional<ComposeResult> compose_spec(const Spec &spec,

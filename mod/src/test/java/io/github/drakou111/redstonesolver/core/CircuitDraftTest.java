@@ -231,4 +231,51 @@ class CircuitDraftTest {
         missing.remove("rows");
         assertThatThrownBy(() -> CircuitDraft.fromJson(missing)).hasMessageContaining("not a valid draft");
     }
+
+    @Test
+    void aBuildInTheBoxBecomesALayoutWithPortBlocks() {
+        CircuitDraft draft = buffer();
+        JsonObject solid = new JsonObject();
+        solid.addProperty("type", "solid");
+
+        JsonObject layout = draft.buildLayoutJson(cell -> cell.y() == 64 ? Optional.of(solid) : Optional.empty());
+
+        assertThat(layout.get("size").toString()).isEqualTo("[4,2,1]");
+        assertThat(layout.getAsJsonArray("blocks")).hasSize(6);
+        assertThat(layout.getAsJsonArray("blocks").toString())
+                .contains("{\"type\":\"input\",\"kind\":\"comparator\",\"channel\":0,\"facing\":\"east\",\"position\":[0,1,0]}")
+                .contains("{\"type\":\"output\",\"kind\":\"dust\",\"channel\":0,\"facing\":\"north\",\"position\":[3,1,0]}");
+    }
+
+    @Test
+    void theSolverOnlyGetsTheAllowedBlocks() {
+        CircuitDraft draft = buffer();
+        draft.setAllowed("observer", false);
+        draft.setAllowed("chest", false);
+        assertThat(draft.toSpecJson().getAsJsonArray("palette").toString()).doesNotContain("observer", "chest")
+                .contains("repeater");
+        assertThat(CircuitDraft.fromJson(draft.toJson()).getPalette()).isEqualTo(draft.getPalette());
+
+        for (String block : CircuitDraft.DEFAULT_PALETTE) {
+            if (!block.equals("dust")) draft.setAllowed(block, false);
+        }
+        assertThatThrownBy(() -> draft.setAllowed("dust", false)).hasMessageContaining("at least one");
+        assertThatThrownBy(() -> draft.setAllowed("lamp", true)).hasMessageContaining("unknown block");
+    }
+
+    @Test
+    void aDelayHoldsTheOldOutputUntilTheEarliestTick() {
+        CircuitDraft draft = buffer();
+        draft.setEarliestTicks(Optional.of(4));
+        assertThatThrownBy(draft::toSpecJson).hasMessageContaining("needs a deadline");
+        draft.setLatestTicks(Optional.of(2));
+        assertThatThrownBy(draft::toSpecJson).hasMessageContaining("must not be after");
+        draft.setLatestTicks(Optional.of(4));
+
+        JsonObject timing = draft.toSpecJson().getAsJsonObject("timing");
+        assertThat(timing.get("earliest").getAsInt()).isEqualTo(4);
+        assertThat(timing.get("latest").getAsInt()).isEqualTo(4);
+        assertThat(timing.get("holdPrevious").getAsBoolean()).isTrue();
+        assertThat(CircuitDraft.fromJson(draft.toJson()).getEarliestTicks()).contains(4);
+    }
 }

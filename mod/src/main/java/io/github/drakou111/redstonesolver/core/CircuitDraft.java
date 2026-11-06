@@ -51,11 +51,13 @@ public final class CircuitDraft {
     private final Set<Cell> keptCells = new LinkedHashSet<>();
     private final Set<Cell> emptyCells = new LinkedHashSet<>();
     private final List<TruthRow> rows = new ArrayList<>();
+    private Integer earliestTicks;
     private Integer latestTicks;
     private OtherBlocks otherBlocks = OtherBlocks.IGNORE;
     private boolean formulaMode;
     private final Map<String, String> formulas = new LinkedHashMap<>();
     private final Set<String> analogInputs = new LinkedHashSet<>();
+    private final Set<String> palette = new LinkedHashSet<>(DEFAULT_PALETTE);
 
     public void setCorner1(Cell cell) {
         this.corner1 = cell;
@@ -309,6 +311,31 @@ public final class CircuitDraft {
         return rows;
     }
 
+    /** The blocks the solver may place, in the order of {@link #DEFAULT_PALETTE}. */
+    public List<String> getPalette() {
+        List<String> blocks = new ArrayList<>();
+        for (String block : DEFAULT_PALETTE) {
+            if (this.palette.contains(block)) blocks.add(block);
+        }
+        return blocks;
+    }
+
+    public boolean allows(String block) {
+        return this.palette.contains(block);
+    }
+
+    /** Lets the solver use a block or not; it always keeps at least one. */
+    public void setAllowed(String block, boolean allowed) {
+        if (!DEFAULT_PALETTE.contains(block)) throw new IllegalArgumentException("unknown block " + block);
+        if (allowed) {
+            this.palette.add(block);
+            return;
+        }
+        if (this.palette.size() == 1 && this.palette.contains(block))
+            throw new IllegalArgumentException("the solver needs at least one block to build with");
+        this.palette.remove(block);
+    }
+
     public void addRow(TruthRow row) {
         List<String> inputs = names(this.getInputs());
         List<String> outputs = names(this.getOutputs());
@@ -350,6 +377,19 @@ public final class CircuitDraft {
         this.latestTicks = ticks.orElse(null);
     }
 
+    public Optional<Integer> getEarliestTicks() {
+        return Optional.ofNullable(this.earliestTicks);
+    }
+
+    /**
+     * Outputs keep their old value until this many game ticks after an input change (a delay);
+     * empty means they may change at once.
+     */
+    public void setEarliestTicks(Optional<Integer> ticks) {
+        if (ticks.isPresent() && ticks.get() < 0) throw new IllegalArgumentException("timing must not be negative");
+        this.earliestTicks = ticks.orElse(null);
+    }
+
     /**
      * Makes the box and ports match a placed result whose spec differs from the draft (Compose
      * places the ports itself, Shrink makes the box smaller). Ports keep their names and are matched
@@ -384,6 +424,43 @@ public final class CircuitDraft {
                 origin.plus(Cell.fromJson(entry.get("position"))), facing);
     }
 
+    /**
+     * The circuit built in the box as the solver's layout (positions relative to the box): port
+     * cells become the solver's input and output blocks, every other cell is read from the world.
+     */
+    public JsonObject buildLayoutJson(BlockSource blocks) {
+        Box box = this.requireBox();
+        List<Port> inputs = this.getInputs();
+        List<Port> outputs = this.getOutputs();
+        JsonArray entries = new JsonArray();
+        for (int x = box.min().x(); x <= box.max().x(); x++) {
+            for (int y = box.min().y(); y <= box.max().y(); y++) {
+                for (int z = box.min().z(); z <= box.max().z(); z++) {
+                    Cell cell = new Cell(x, y, z);
+                    Optional<Port> port = this.portAt(cell);
+                    Optional<JsonObject> block = port.isPresent()
+                            ? Optional.of(portBlockJson(port.get(), port.get().input()
+                                    ? inputs.indexOf(port.get()) : outputs.indexOf(port.get())))
+                            : blocks.blockAt(cell);
+                    block.ifPresent(found -> entries.add(positioned(found, cell, box)));
+                }
+            }
+        }
+        JsonObject layout = new JsonObject();
+        layout.add("size", box.size().toJson());
+        layout.add("blocks", entries);
+        return layout;
+    }
+
+    private static JsonObject portBlockJson(Port port, int channel) {
+        JsonObject json = new JsonObject();
+        json.addProperty("type", port.input() ? "input" : "output");
+        json.addProperty("kind", port.kind());
+        json.addProperty("channel", channel);
+        json.addProperty("facing", port.facing().jsonName());
+        return json;
+    }
+
     /** The whole draft in world coordinates, for saving; read back with {@link #fromJson}. */
     public JsonObject toJson() {
         JsonObject json = new JsonObject();
@@ -407,6 +484,7 @@ public final class CircuitDraft {
         for (TruthRow row : this.rows) rows.add(row.toString());
         json.add("rows", rows);
         if (this.latestTicks != null) json.addProperty("latestTicks", this.latestTicks);
+        if (this.earliestTicks != null) json.addProperty("earliestTicks", this.earliestTicks);
         json.addProperty("otherBlocks", this.otherBlocks.name());
         json.addProperty("formulaMode", this.formulaMode);
         JsonObject formulas = new JsonObject();
@@ -415,6 +493,9 @@ public final class CircuitDraft {
         JsonArray analog = new JsonArray();
         for (String name : this.analogInputs) analog.add(name);
         json.add("analogInputs", analog);
+        JsonArray allowed = new JsonArray();
+        for (String block : this.getPalette()) allowed.add(block);
+        json.add("palette", allowed);
         return json;
     }
 
@@ -437,6 +518,7 @@ public final class CircuitDraft {
             for (JsonElement cell : json.getAsJsonArray("empty")) draft.markEmpty(Cell.fromJson(cell));
             for (JsonElement row : json.getAsJsonArray("rows")) draft.addRow(TruthRow.parse(row.getAsString()));
             if (json.has("latestTicks")) draft.setLatestTicks(Optional.of(json.get("latestTicks").getAsInt()));
+            if (json.has("earliestTicks")) draft.setEarliestTicks(Optional.of(json.get("earliestTicks").getAsInt()));
             draft.setOtherBlocks(OtherBlocks.valueOf(json.get("otherBlocks").getAsString()));
             // Formulas came later; older saves have none.
             if (json.has("formulaMode")) draft.setFormulaMode(json.get("formulaMode").getAsBoolean());
@@ -446,6 +528,13 @@ public final class CircuitDraft {
             }
             if (json.has("analogInputs")) {
                 for (JsonElement name : json.getAsJsonArray("analogInputs")) draft.setAnalogInput(name.getAsString(), true);
+            }
+            if (json.has("palette")) {
+                Set<String> allowed = new LinkedHashSet<>();
+                for (JsonElement block : json.getAsJsonArray("palette")) allowed.add(block.getAsString());
+                for (String block : DEFAULT_PALETTE) {
+                    if (!allowed.contains(block)) draft.setAllowed(block, false);
+                }
             }
             return draft;
         } catch (NullPointerException | IllegalStateException | ClassCastException | UnsupportedOperationException e) {
@@ -494,17 +583,23 @@ public final class CircuitDraft {
         }
         spec.add("rows", rows);
 
+        if (this.earliestTicks != null && this.latestTicks == null)
+            throw new IllegalStateException("A delay (not before) also needs a deadline (by): set both timing numbers.");
+        if (this.earliestTicks != null && this.earliestTicks > this.latestTicks)
+            throw new IllegalStateException("Timing: 'not before' must not be after 'by'.");
         JsonObject timing = new JsonObject();
-        timing.add("earliest", JsonNull.INSTANCE);
+        if (this.earliestTicks == null) timing.add("earliest", JsonNull.INSTANCE);
+        else timing.addProperty("earliest", this.earliestTicks);
         if (this.latestTicks == null) timing.add("latest", JsonNull.INSTANCE);
         else timing.addProperty("latest", this.latestTicks);
-        timing.addProperty("holdPrevious", false);
+        // Before the earliest tick the outputs keep their old value: that is what makes it a delay.
+        timing.addProperty("holdPrevious", this.earliestTicks != null);
         timing.addProperty("settle", DEFAULT_SETTLE_TICKS);
         timing.addProperty("horizon", DEFAULT_HORIZON_TICKS);
         spec.add("timing", timing);
 
         JsonArray palette = new JsonArray();
-        for (String block : DEFAULT_PALETTE) palette.add(block);
+        for (String block : this.getPalette()) palette.add(block);
         spec.add("palette", palette);
         spec.addProperty("feedback", false);
         spec.addProperty("supportLayer", true);
