@@ -54,7 +54,8 @@ first start). In a world with cheats (keys are rebindable under Controls):
 - Place a repeater, comparator, dust or barrel where a port goes, look at it and press P: make it an
   input or output (its kind and facing come from the block). P also keeps a block or forces the cell
   in front of it empty.
-- R opens the Solver panel: truth table, timing, time limit, Solve or Compose, what to do with your
+- R opens the Solver panel: truth table (rows, or one formula per output such as `(A + B) % 16` or
+  `A + B >= 16` for on/off), timing, time limit, Solve or Compose, what to do with your
   own blocks in the box (ignore or use as a sketch), Solve, then Place, Discard or Shrink.
 
 Your draft is saved per world in `config/redstone_solver/drafts` and restored when you come back;

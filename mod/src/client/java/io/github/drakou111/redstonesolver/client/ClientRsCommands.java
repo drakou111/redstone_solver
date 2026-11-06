@@ -11,6 +11,7 @@ import io.github.drakou111.redstonesolver.core.Box;
 import io.github.drakou111.redstonesolver.core.Cell;
 import io.github.drakou111.redstonesolver.core.CircuitDraft;
 import io.github.drakou111.redstonesolver.core.Dir;
+import io.github.drakou111.redstonesolver.core.Formula;
 import io.github.drakou111.redstonesolver.core.Port;
 import io.github.drakou111.redstonesolver.core.PortBlock;
 import io.github.drakou111.redstonesolver.core.TruthRow;
@@ -34,6 +35,7 @@ public final class ClientRsCommands {
              /rs input IN1, /rs output OUT1: the repeater, comparator, dust or barrel you look at
                becomes a port (with its kind and facing).
              /rs row IN1=1..15 -> OUT1=0   (ranges: 0, 15, 1..15, *)
+             /rs formula OUT1 (IN1 + IN2) % 16   (a comparison like IN1 > IN2 means on/off)
              /rs timing 4 | any,  /rs solve [seconds],  /rs cancel,  /rs place,  /rs discard,  /rs shrink
              /rs show, /rs remove <port>, /rs rows remove <n>, /rs rows clear, /rs outlines
              /rs save <name> [overwrite], /rs load <name>, /rs drafts, /rs new, /rs export""";
@@ -72,6 +74,10 @@ public final class ClientRsCommands {
                                 .executes(this::removePort)))
                 .then(ClientCommands.literal("row")
                         .then(ClientCommands.argument("row", StringArgumentType.greedyString()).executes(this::addRow)))
+                .then(ClientCommands.literal("formula")
+                        .then(ClientCommands.argument("output", StringArgumentType.word()).suggests(portNames)
+                                .then(ClientCommands.argument("formula", StringArgumentType.greedyString())
+                                        .executes(this::setFormula))))
                 .then(ClientCommands.literal("rows")
                         .executes(this::show)
                         .then(ClientCommands.literal("clear").executes(this::clearRows))
@@ -176,6 +182,22 @@ public final class ClientRsCommands {
         }
     }
 
+    private int setFormula(CommandContext<FabricClientCommandSource> context) {
+        CircuitDraft draft = this.state.getDraft();
+        String output = StringArgumentType.getString(context, "output");
+        String text = StringArgumentType.getString(context, "formula");
+        boolean isOutput = draft.getPort(output).map(port -> !port.input()).orElse(false);
+        if (!isOutput) return fail(context, "There is no output named " + output);
+        try {
+            Formula.parse(text);
+        } catch (IllegalArgumentException e) {
+            return fail(context, e.getMessage());
+        }
+        draft.setFormula(output, text);
+        draft.setFormulaMode(true);
+        return ok(context, output + " = " + text + " (the truth table now uses formulas; R to see them)");
+    }
+
     private int removeRow(CommandContext<FabricClientCommandSource> context) {
         int number = IntegerArgumentType.getInteger(context, "number");
         if (!this.state.getDraft().removeRow(number - 1)) return fail(context, "There is no row " + number);
@@ -207,8 +229,13 @@ public final class ClientRsCommands {
                 b.size().y(), b.size().z())).orElse("No box yet: press J and K on two corners.")));
         for (Port port : draft.getInputs()) source.sendFeedback(Chat.hint("  input  " + port.describe()));
         for (Port port : draft.getOutputs()) source.sendFeedback(Chat.hint("  output " + port.describe()));
+        if (draft.isFormulaMode()) {
+            for (Port output : draft.getOutputs())
+                source.sendFeedback(Chat.hint("  " + output.name() + " = " + draft.getFormula(output.name())));
+        }
         List<TruthRow> rows = draft.getRows();
-        if (rows.isEmpty()) source.sendFeedback(Chat.hint("  no rows yet (/rs row IN1=1..15 -> OUT1=0)"));
+        if (draft.isFormulaMode()) rows = List.of();
+        else if (rows.isEmpty()) source.sendFeedback(Chat.hint("  no rows yet (/rs row IN1=1..15 -> OUT1=0)"));
         for (int i = 0; i < rows.size(); i++) source.sendFeedback(Chat.hint("  row %d: %s".formatted(i + 1, rows.get(i))));
         source.sendFeedback(Chat.hint("  timing: " + draft.getLatestTicks().map(t -> "within " + t + " game ticks").orElse("any")));
         return 1;

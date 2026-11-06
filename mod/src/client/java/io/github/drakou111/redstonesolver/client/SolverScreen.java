@@ -6,6 +6,7 @@ import com.google.gson.JsonObject;
 import io.github.drakou111.redstonesolver.core.Box;
 import io.github.drakou111.redstonesolver.core.Cell;
 import io.github.drakou111.redstonesolver.core.CircuitDraft;
+import io.github.drakou111.redstonesolver.core.Formula;
 import io.github.drakou111.redstonesolver.core.Port;
 import io.github.drakou111.redstonesolver.core.SignalRange;
 import io.github.drakou111.redstonesolver.core.TruthRow;
@@ -40,6 +41,8 @@ public final class SolverScreen extends Screen {
     private static final int SMALL_BUTTON = 16;
     private static final int MAX_LOG_LINES = 12;
     private static final int RESULT_CARD_HEIGHT = 112;
+    private static final int MAX_FORMULA_LENGTH = 200;
+    private static final int MANY_ROWS = 64;
     private static final int SOLVE_SECTION_HEIGHT = 5 * (ROW + GAP) + 2 * LINE;
 
     private static final int PANEL_COLOR = 0xE0101010;
@@ -72,6 +75,11 @@ public final class SolverScreen extends Screen {
     private int resultLeft;
     private int resultWidth;
     private int progressX;
+    private String formulaStatus = "";
+    private boolean formulaStatusGood;
+    private int formulaStatusX;
+    private int formulaStatusY;
+    private int formulaStatusWidth;
     private int progressY;
 
     public SolverScreen(ClientState state, ServerLink server, DraftFiles files) {
@@ -116,6 +124,13 @@ public final class SolverScreen extends Screen {
                 this.resultTop + RESULT_CARD_HEIGHT, CARD_COLOR);
         for (Label label : this.labels) graphics.text(this.font, label.text(), label.x(), label.y(), label.color());
         this.extractResultText(graphics);
+        if (this.state.getDraft().isFormulaMode() && !this.formulaStatus.isEmpty()) {
+            int y = this.formulaStatusY;
+            for (FormattedCharSequence part : this.font.split(Component.literal(this.formulaStatus), this.formulaStatusWidth)) {
+                graphics.text(this.font, part, this.formulaStatusX, y, this.formulaStatusGood ? GOOD_COLOR : BAD_COLOR);
+                y += LINE;
+            }
+        }
         String status = this.state.isSolving() ? this.state.getProgress() : this.message;
         if (!status.isEmpty()) {
             int color = this.state.isSolving() ? TEXT_COLOR : status.startsWith("!") ? BAD_COLOR : HINT_COLOR;
@@ -292,8 +307,21 @@ public final class SolverScreen extends Screen {
             this.visibleRows = 0;
             return;
         }
-        this.label("Ranges: 0, 15, 1..15, or * for anything. Scroll for more rows.", x, y + LINE, HINT_COLOR);
-        int headerY = y + 2 * LINE + 2;
+        boolean formulas = draft.isFormulaMode();
+        this.button(x + this.font.width("Truth table") + 2 * GAP, y - 5, 96, formulas ? "Using: formulas" : "Using: rows",
+                "Rows: type the output range for each input case. Formulas: one formula per output, such as "
+                        + "(A + B) % 16, expanded into every case for you",
+                () -> {
+                    draft.setFormulaMode(!formulas);
+                    this.rebuildWidgets();
+                });
+        if (formulas) {
+            this.initFormulas(x, y + ROW, width, inputs, outputs);
+            this.visibleRows = 0;
+            return;
+        }
+        this.label("Ranges: 0, 15, 1..15, or * for anything. Scroll for more rows.", x, y + ROW, HINT_COLOR);
+        int headerY = y + ROW + LINE + 2;
         int columnX = x;
         for (Port port : inputs) {
             this.label(port.name(), columnX + 2, headerY, INPUT_COLOR);
@@ -329,6 +357,83 @@ public final class SolverScreen extends Screen {
         if (rows.size() > this.visibleRows) {
             this.label("rows %d-%d of %d".formatted(this.tableScroll + 1,
                     Math.min(rows.size(), this.tableScroll + this.visibleRows), rows.size()), x + 76, addY + 5, HINT_COLOR);
+        }
+    }
+
+    // One formula field per output and an on/off or 0-15 switch per input.
+    private void initFormulas(int x, int y, int width, List<Port> inputs, List<Port> outputs) {
+        CircuitDraft draft = this.state.getDraft();
+        this.label("Use input names with + - * / %, min max abs, < <= > >= == !=, and or not, ? :", x, y, HINT_COLOR);
+        this.label("A comparison or and/or/not means on/off; anything else is the exact strength.", x, y + LINE,
+                HINT_COLOR);
+
+        int rowY = y + 2 * LINE + 2;
+        this.label("Inputs:", x, rowY + 5, TEXT_COLOR);
+        int buttonX = x + this.font.width("Inputs:") + GAP;
+        for (Port input : inputs) {
+            boolean analog = draft.isAnalogInput(input.name());
+            String text = input.name() + (analog ? ": 0-15" : ": on/off");
+            int buttonWidth = this.font.width(text) + 12;
+            if (buttonX + buttonWidth > x + width) {
+                rowY += ROW + 2;
+                buttonX = x;
+            }
+            buttonX += this.button(buttonX, rowY, buttonWidth, text,
+                    "on/off: the formula sees this input as 0 or 15. 0-15: every strength is tried (16 times the cases)",
+                    () -> {
+                        draft.setAnalogInput(input.name(), !analog);
+                        this.rebuildWidgets();
+                    }) + GAP;
+        }
+
+        rowY += ROW + GAP;
+        int labelWidth = 0;
+        for (Port output : outputs) labelWidth = Math.max(labelWidth, this.font.width(output.name() + " ="));
+        for (Port output : outputs) {
+            this.label(output.name() + " =", x, rowY + 5, OUTPUT_COLOR);
+            int fieldX = x + labelWidth + GAP;
+            EditBox field = this.field(fieldX, rowY, x + width - fieldX, draft.getFormula(output.name()),
+                    "Formula for " + output.name() + ", for example (A + B) % 16 or A + B >= 16");
+            field.setMaxLength(MAX_FORMULA_LENGTH);
+            field.setResponder(text -> {
+                draft.setFormula(output.name(), text);
+                field.setTextColor(formulaProblem(text, inputs).isEmpty() ? TEXT_COLOR : BAD_COLOR);
+                this.updateFormulaStatus();
+            });
+            field.setTextColor(formulaProblem(draft.getFormula(output.name()), inputs).isEmpty() ? TEXT_COLOR : BAD_COLOR);
+            rowY += ROW + 2;
+        }
+        this.formulaStatusX = x;
+        this.formulaStatusY = rowY + 4;
+        this.formulaStatusWidth = width;
+        this.updateFormulaStatus();
+    }
+
+    private void updateFormulaStatus() {
+        try {
+            int rows = this.state.getDraft().formulaRows().size();
+            this.formulaStatus = "Makes %d rows (every input case).".formatted(rows)
+                    + (rows > MANY_ROWS ? " That many makes solving slow." : "");
+            this.formulaStatusGood = true;
+        } catch (IllegalArgumentException e) {
+            this.formulaStatus = e.getMessage();
+            this.formulaStatusGood = false;
+        }
+    }
+
+    // Empty when the text is a formula over existing inputs; a blank field is not a problem yet.
+    private static Optional<String> formulaProblem(String text, List<Port> inputs) {
+        if (text.isBlank()) return Optional.empty();
+        try {
+            Formula formula = Formula.parse(text);
+            for (String name : formula.variables()) {
+                boolean known = false;
+                for (Port input : inputs) known |= input.name().equals(name);
+                if (!known) return Optional.of("there is no input named " + name);
+            }
+            return Optional.empty();
+        } catch (IllegalArgumentException e) {
+            return Optional.of(e.getMessage());
         }
     }
 

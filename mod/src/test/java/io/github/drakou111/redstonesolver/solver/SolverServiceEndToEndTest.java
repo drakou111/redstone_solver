@@ -137,4 +137,23 @@ class SolverServiceEndToEndTest {
             assertThat(Cell.fromJson(shrunk.spec().orElseThrow().get("size"))).isEqualTo(size);
         }
     }
+
+    @Test
+    void solvesAGateWrittenAsAFormula() throws Exception {
+        CircuitDraft draft = notGate();
+        draft.clearRows();
+        draft.setFormulaMode(true);
+        draft.setFormula("OUT1", "not IN1");
+        JsonObject options = new JsonObject();
+        options.addProperty("timeLimit", TIME_LIMIT_SECONDS);
+        JsonObject request = new JsonObject();
+        request.add("spec", draft.toSpecJson());
+        request.add("options", options);
+
+        try (SolverService service = new SolverService(executable)) {
+            SolveOutcome outcome = run(service, "solve/start", request);
+            assertThat(outcome.error()).isEmpty();
+            assertThat(outcome.layout()).isPresent();
+        }
+    }
 }

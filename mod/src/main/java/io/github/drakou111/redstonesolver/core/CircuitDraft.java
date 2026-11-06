@@ -21,6 +21,9 @@ public final class CircuitDraft {
     private static final int DEFAULT_SETTLE_TICKS = 4;
     private static final int DEFAULT_HORIZON_TICKS = 20;
     private static final int SAVE_VERSION = 1;
+    /** Formulas are expanded over every input combination; more would make the solver crawl. */
+    public static final int MAX_FORMULA_COMBINATIONS = 4096;
+    private static final int ON_SIGNAL = 15;
     public static final String PORT_NAME_PATTERN = "[A-Za-z0-9_]+";
 
     /** Reads the solver block (JSON without position) at a world cell; empty for air. */
@@ -50,6 +53,9 @@ public final class CircuitDraft {
     private final List<TruthRow> rows = new ArrayList<>();
     private Integer latestTicks;
     private OtherBlocks otherBlocks = OtherBlocks.IGNORE;
+    private boolean formulaMode;
+    private final Map<String, String> formulas = new LinkedHashMap<>();
+    private final Set<String> analogInputs = new LinkedHashSet<>();
 
     public void setCorner1(Cell cell) {
         this.corner1 = cell;
@@ -91,6 +97,8 @@ public final class CircuitDraft {
     }
 
     public boolean removePort(String name) {
+        this.formulas.remove(name);
+        this.analogInputs.remove(name);
         return this.ports.remove(name) != null;
     }
 
@@ -112,6 +120,14 @@ public final class CircuitDraft {
         this.ports.clear();
         this.ports.putAll(renamed);
         for (int i = 0; i < this.rows.size(); i++) this.rows.set(i, this.rows.get(i).withRenamedPort(oldName, newName));
+        Map<String, String> renamedFormulas = new LinkedHashMap<>();
+        for (Map.Entry<String, String> entry : this.formulas.entrySet()) {
+            String key = entry.getKey().equals(oldName) ? newName : entry.getKey();
+            renamedFormulas.put(key, Formula.renameVariable(entry.getValue(), oldName, newName));
+        }
+        this.formulas.clear();
+        this.formulas.putAll(renamedFormulas);
+        if (this.analogInputs.remove(oldName)) this.analogInputs.add(newName);
     }
 
     /**
@@ -198,6 +214,99 @@ public final class CircuitDraft {
 
     public void setOtherBlocks(OtherBlocks otherBlocks) {
         this.otherBlocks = otherBlocks;
+    }
+
+    /** In formula mode the truth table comes from one formula per output instead of rows. */
+    public boolean isFormulaMode() {
+        return this.formulaMode;
+    }
+
+    public void setFormulaMode(boolean formulaMode) {
+        this.formulaMode = formulaMode;
+    }
+
+    /** The formula text typed for an output (may be invalid; see {@link #formulaRows()}). */
+    public String getFormula(String output) {
+        return this.formulas.getOrDefault(output, "");
+    }
+
+    public void setFormula(String output, String text) {
+        if (text.isBlank()) this.formulas.remove(output);
+        else this.formulas.put(output, text);
+    }
+
+    /** True when formulas try this input at every value 0..15; otherwise only off (0) and on (15). */
+    public boolean isAnalogInput(String input) {
+        return this.analogInputs.contains(input);
+    }
+
+    public void setAnalogInput(String input, boolean analog) {
+        if (analog) this.analogInputs.add(input);
+        else this.analogInputs.remove(input);
+    }
+
+    /** How many rows the formulas expand into with the current input value settings. */
+    public long formulaCombinations() {
+        long combinations = 1;
+        for (Port input : this.getInputs()) combinations *= this.isAnalogInput(input.name()) ? ON_SIGNAL + 1 : 2;
+        return combinations;
+    }
+
+    /**
+     * Expands the formulas into one row per input combination (on/off inputs at 0 and 15, the
+     * others at 0..15). Throws IllegalArgumentException naming the output and the problem.
+     */
+    public List<TruthRow> formulaRows() {
+        List<Port> inputs = this.getInputs();
+        List<Port> outputs = this.getOutputs();
+        long combinations = this.formulaCombinations();
+        if (combinations > MAX_FORMULA_COMBINATIONS)
+            throw new IllegalArgumentException("%d input combinations is too many (at most %d); set fewer inputs to 0-15"
+                    .formatted(combinations, MAX_FORMULA_COMBINATIONS));
+        List<String> inputNames = names(inputs);
+        Map<String, Formula> parsed = new LinkedHashMap<>();
+        for (Port output : outputs) {
+            String text = this.getFormula(output.name());
+            if (text.isBlank()) throw new IllegalArgumentException(output.name() + " has no formula");
+            Formula formula;
+            try {
+                formula = Formula.parse(text);
+            } catch (IllegalArgumentException e) {
+                throw new IllegalArgumentException(output.name() + ": " + e.getMessage(), e);
+            }
+            for (String name : formula.variables()) {
+                if (!inputNames.contains(name))
+                    throw new IllegalArgumentException(output.name() + ": there is no input named " + name);
+            }
+            parsed.put(output.name(), formula);
+        }
+
+        List<TruthRow> rows = new ArrayList<>();
+        int[] values = new int[inputs.size()];
+        for (long index = 0; index < combinations; index++) {
+            long rest = index;
+            Map<String, Integer> assignment = new LinkedHashMap<>();
+            Map<String, SignalRange> rowInputs = new LinkedHashMap<>();
+            for (int i = 0; i < inputs.size(); i++) {
+                String name = inputs.get(i).name();
+                int choices = this.isAnalogInput(name) ? ON_SIGNAL + 1 : 2;
+                int pick = (int) (rest % choices);
+                rest /= choices;
+                values[i] = this.isAnalogInput(name) ? pick : pick * ON_SIGNAL;
+                assignment.put(name, values[i]);
+                rowInputs.put(name, new SignalRange(values[i], values[i]));
+            }
+            Map<String, SignalRange> rowOutputs = new LinkedHashMap<>();
+            for (Map.Entry<String, Formula> entry : parsed.entrySet()) {
+                try {
+                    rowOutputs.put(entry.getKey(), entry.getValue().outputFor(assignment));
+                } catch (IllegalArgumentException e) {
+                    throw new IllegalArgumentException(entry.getKey() + " " + e.getMessage(), e);
+                }
+            }
+            rows.add(new TruthRow(rowInputs, rowOutputs));
+        }
+        return rows;
     }
 
     public void addRow(TruthRow row) {
@@ -299,6 +408,13 @@ public final class CircuitDraft {
         json.add("rows", rows);
         if (this.latestTicks != null) json.addProperty("latestTicks", this.latestTicks);
         json.addProperty("otherBlocks", this.otherBlocks.name());
+        json.addProperty("formulaMode", this.formulaMode);
+        JsonObject formulas = new JsonObject();
+        for (Map.Entry<String, String> entry : this.formulas.entrySet()) formulas.addProperty(entry.getKey(), entry.getValue());
+        json.add("formulas", formulas);
+        JsonArray analog = new JsonArray();
+        for (String name : this.analogInputs) analog.add(name);
+        json.add("analogInputs", analog);
         return json;
     }
 
@@ -322,6 +438,15 @@ public final class CircuitDraft {
             for (JsonElement row : json.getAsJsonArray("rows")) draft.addRow(TruthRow.parse(row.getAsString()));
             if (json.has("latestTicks")) draft.setLatestTicks(Optional.of(json.get("latestTicks").getAsInt()));
             draft.setOtherBlocks(OtherBlocks.valueOf(json.get("otherBlocks").getAsString()));
+            // Formulas came later; older saves have none.
+            if (json.has("formulaMode")) draft.setFormulaMode(json.get("formulaMode").getAsBoolean());
+            if (json.has("formulas")) {
+                for (Map.Entry<String, JsonElement> entry : json.getAsJsonObject("formulas").entrySet())
+                    draft.setFormula(entry.getKey(), entry.getValue().getAsString());
+            }
+            if (json.has("analogInputs")) {
+                for (JsonElement name : json.getAsJsonArray("analogInputs")) draft.setAnalogInput(name.getAsString(), true);
+            }
             return draft;
         } catch (NullPointerException | IllegalStateException | ClassCastException | UnsupportedOperationException e) {
             throw new IllegalArgumentException("not a valid draft: " + e.getMessage(), e);
@@ -343,7 +468,8 @@ public final class CircuitDraft {
         List<Port> outputs = this.getOutputs();
         if (inputs.isEmpty()) throw new IllegalStateException("Add an input first (look at a cell and press P).");
         if (outputs.isEmpty()) throw new IllegalStateException("Add an output first (look at a cell and press P).");
-        if (this.rows.isEmpty()) throw new IllegalStateException("Add a truth table row first.");
+        List<TruthRow> tableRows = this.formulaMode ? this.formulaRows() : this.rows;
+        if (tableRows.isEmpty()) throw new IllegalStateException("Add a truth table row first.");
         for (Port port : this.ports.values()) {
             if (!box.contains(port.position()))
                 throw new IllegalStateException(port.name() + " is outside the box; move it or the box");
@@ -360,7 +486,7 @@ public final class CircuitDraft {
         spec.add("inputs", portsJson(inputs, box));
         spec.add("outputs", portsJson(outputs, box));
         JsonArray rows = new JsonArray();
-        for (TruthRow row : this.rows) {
+        for (TruthRow row : tableRows) {
             JsonObject entry = new JsonObject();
             entry.add("inputs", rangesJson(row.rangesFor(names(inputs), true)));
             entry.add("outputs", rangesJson(row.rangesFor(names(outputs), false)));
