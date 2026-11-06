@@ -21,14 +21,16 @@ import net.minecraft.world.phys.HitResult;
 public final class SolverKeys {
     private final ClientState state;
     private final ServerLink server;
+    private final DraftFiles files;
     private final KeyMapping corner1;
     private final KeyMapping corner2;
     private final KeyMapping cellMenu;
     private final KeyMapping panel;
 
-    public SolverKeys(ClientState state, ServerLink server) {
+    public SolverKeys(ClientState state, ServerLink server, DraftFiles files) {
         this.state = state;
         this.server = server;
+        this.files = files;
         KeyMapping.Category category = KeyMapping.Category.register(
                 Identifier.fromNamespaceAndPath(RedstoneSolverMod.MOD_ID, "main"));
         this.corner1 = KeyMappingHelper.registerKeyMapping(
@@ -50,7 +52,7 @@ public final class SolverKeys {
         while (this.corner2.consumeClick()) this.setCorner(client, false);
         while (this.cellMenu.consumeClick()) this.openCellMenu(client);
         while (this.panel.consumeClick()) {
-            if (client.player != null) client.setScreenAndShow(new SolverScreen(this.state, this.server));
+            if (client.player != null) client.setScreenAndShow(new SolverScreen(this.state, this.server, this.files));
         }
     }
 

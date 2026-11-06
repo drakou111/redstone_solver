@@ -14,7 +14,7 @@ public final class RedstoneSolverClient implements ClientModInitializer {
         autosave.register();
         ServerLink server = new ServerLink(state, autosave);
         server.register();
-        new SolverKeys(state, server).register();
+        new SolverKeys(state, server, files).register();
         new DraftRenderer(state).register();
         ClientRsCommands commands = new ClientRsCommands(state, server, files);
         ClientCommandRegistrationCallback.EVENT.register((dispatcher, registryAccess) -> commands.register(dispatcher));

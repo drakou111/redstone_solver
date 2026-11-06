@@ -9,6 +9,7 @@ import io.github.drakou111.redstonesolver.core.CircuitDraft;
 import io.github.drakou111.redstonesolver.core.Port;
 import io.github.drakou111.redstonesolver.core.SignalRange;
 import io.github.drakou111.redstonesolver.core.TruthRow;
+import java.io.UncheckedIOException;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -57,6 +58,7 @@ public final class SolverScreen extends Screen {
 
     private final ClientState state;
     private final ServerLink server;
+    private final DraftFiles files;
     private final List<Label> labels = new ArrayList<>();
     private int seenVersion;
     private int tableScroll;
@@ -64,16 +66,19 @@ public final class SolverScreen extends Screen {
     private boolean advancedOpen;
     private boolean logOpen;
     private String message = "";
+    private String draftName = "";
+    private String confirmOverwrite = "";
     private int resultTop;
     private int resultLeft;
     private int resultWidth;
     private int progressX;
     private int progressY;
 
-    public SolverScreen(ClientState state, ServerLink server) {
+    public SolverScreen(ClientState state, ServerLink server, DraftFiles files) {
         super(Component.literal("Redstone Solver"));
         this.state = state;
         this.server = server;
+        this.files = files;
     }
 
     @Override
@@ -89,7 +94,9 @@ public final class SolverScreen extends Screen {
         int bottom = this.height - MARGIN - PAD;
 
         this.initBox(left, top);
-        this.initPorts(left, top + 4 * LINE + 2 * ROW + 2 * GAP, leftWidth, bottom - RESULT_CARD_HEIGHT - PAD);
+        int draftsTop = top + 4 * LINE + 2 * ROW + 2 * GAP;
+        this.initDrafts(left, draftsTop, leftWidth);
+        this.initPorts(left, draftsTop + LINE + ROW + 2 * GAP, leftWidth, bottom - RESULT_CARD_HEIGHT - PAD);
         this.initResult(left, bottom - RESULT_CARD_HEIGHT, leftWidth);
         int solveTop = bottom - SOLVE_SECTION_HEIGHT - (this.advancedOpen ? ROW + GAP : 0);
         this.initTable(rightLeft, top, rightWidth, solveTop - PAD);
@@ -176,6 +183,59 @@ public final class SolverScreen extends Screen {
         for (EditBox field : fields) field.setResponder(apply);
         this.label("Or press J and K on two corner blocks. Bottom layer: supports.", x, y + LINE + 2 * (ROW + GAP) + 2,
                 HINT_COLOR);
+    }
+
+    // Named drafts: save, load or start over without typing commands.
+    private void initDrafts(int x, int y, int width) {
+        this.heading("Drafts", x, y);
+        List<String> names = this.files.listNames();
+        String saved = names.isEmpty() ? "none saved yet" : String.join(", ", names);
+        int labelX = x + this.font.width("Drafts") + 2 * GAP;
+        this.label(this.font.plainSubstrByWidth("Saved: " + saved, Math.max(0, width - (labelX - x))), labelX, y, HINT_COLOR);
+        int rowY = y + LINE;
+        EditBox name = this.field(x, rowY, 80, this.draftName, "Draft name (letters, digits, _ and -)");
+        name.setResponder(text -> {
+            this.draftName = text.trim();
+            this.confirmOverwrite = "";
+        });
+        int buttonX = x + 80 + GAP;
+        boolean confirming = !this.confirmOverwrite.isEmpty() && this.confirmOverwrite.equals(this.draftName);
+        buttonX += this.button(buttonX, rowY, confirming ? 64 : 40, confirming ? "Replace?" : "Save",
+                "Save the box, ports, truth table and settings under this name", this::saveDraft) + GAP;
+        buttonX += this.button(buttonX, rowY, 40, "Load", "Load the draft with this name (your current one is replaced)",
+                this::loadDraft) + GAP;
+        this.button(buttonX, rowY, 40, "New", "Start an empty draft (save first if you want to keep this one)", () -> {
+            this.state.replaceDraft(new CircuitDraft());
+            this.message = "Started a new, empty draft.";
+            this.rebuildWidgets();
+        });
+    }
+
+    private void saveDraft() {
+        boolean overwrite = !this.confirmOverwrite.isEmpty() && this.confirmOverwrite.equals(this.draftName);
+        try {
+            this.files.save(this.draftName, this.state, overwrite);
+            this.message = "Saved as " + this.draftName + ".";
+            this.confirmOverwrite = "";
+        } catch (IllegalStateException e) {
+            this.message = "!" + this.draftName + " exists; click Replace? to overwrite it.";
+            this.confirmOverwrite = this.draftName;
+        } catch (IllegalArgumentException | UncheckedIOException e) {
+            this.message = "!" + e.getMessage();
+        }
+        this.rebuildWidgets();
+    }
+
+    private void loadDraft() {
+        try {
+            this.message = this.files.load(this.draftName, this.state)
+                    ? "Loaded " + this.draftName + "."
+                    : "!There is no draft named " + this.draftName + ".";
+        } catch (IllegalArgumentException | UncheckedIOException e) {
+            this.message = "!" + e.getMessage();
+        }
+        this.tableScroll = 0;
+        this.rebuildWidgets();
     }
 
     private void initPorts(int x, int y, int width, int bottom) {
