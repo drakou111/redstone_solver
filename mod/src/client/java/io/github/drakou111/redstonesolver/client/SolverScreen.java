@@ -17,13 +17,15 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.function.Consumer;
-import net.minecraft.ChatFormatting;
 import net.minecraft.client.gui.GuiGraphicsExtractor;
+import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.client.gui.components.Button;
 import net.minecraft.client.gui.components.EditBox;
 import net.minecraft.client.gui.components.Tooltip;
 import net.minecraft.client.gui.screens.Screen;
 import net.minecraft.network.chat.Component;
+import net.minecraft.resources.Identifier;
+import net.minecraft.world.item.ItemStack;
 import net.minecraft.util.FormattedCharSequence;
 
 /**
@@ -44,11 +46,24 @@ public final class SolverScreen extends Screen {
     private static final int RESULT_CARD_HEIGHT = 112;
     private static final int MAX_FORMULA_LENGTH = 200;
     private static final int MANY_ROWS = 64;
-    private static final Map<String, String> PALETTE_LABELS = Map.of("solid", "wool", "redstone_block",
-            "redstone block", "note_block", "note block");
+    private static final Map<String, String> PALETTE_LABELS = Map.ofEntries(Map.entry("solid", "Solid block (wool)"),
+            Map.entry("glass", "Glass (does not conduct)"), Map.entry("dust", "Redstone dust"),
+            Map.entry("torch", "Redstone torch"), Map.entry("redstone_block", "Redstone block"),
+            Map.entry("repeater", "Repeater"), Map.entry("comparator", "Comparator"), Map.entry("target", "Target"),
+            Map.entry("note_block", "Note block"), Map.entry("hopper", "Hopper"), Map.entry("barrel", "Barrel"),
+            Map.entry("chest", "Chest"));
+    private static final Map<String, String> PALETTE_ITEMS = Map.ofEntries(Map.entry("solid", "cyan_wool"),
+            Map.entry("glass", "cyan_stained_glass"), Map.entry("dust", "redstone"), Map.entry("torch", "redstone_torch"),
+            Map.entry("redstone_block", "redstone_block"), Map.entry("repeater", "repeater"),
+            Map.entry("comparator", "comparator"), Map.entry("target", "target"), Map.entry("note_block", "note_block"),
+            Map.entry("hopper", "hopper"), Map.entry("barrel", "barrel"), Map.entry("chest", "chest"));
 
     private static final int PANEL_COLOR = 0xE0101010;
-    private static final int CARD_COLOR = 0x60000000;
+    private static final int CARD_COLOR = 0x70000000;
+    private static final int CARD_EDGE_COLOR = 0x60FF5555;
+    private static final int CARD_PAD = 4;
+    private static final int SECTION_GAP = 2 * CARD_PAD + 4;
+    private static final int BOX_SECTION_HEIGHT = 3 * LINE + 2 * ROW + 2 * GAP;
     private static final int BORDER_COLOR = 0xFF8B1A1A;
     private static final int HEADING_COLOR = 0xFFFF5555;
     private static final int TEXT_COLOR = 0xFFFFFFFF;
@@ -61,10 +76,15 @@ public final class SolverScreen extends Screen {
     private record Label(String text, int x, int y, int color) {
     }
 
+    // A darker panel behind one section.
+    private record Card(int left, int top, int right, int bottom) {
+    }
+
     private final ClientState state;
     private final ServerLink server;
     private final DraftFiles files;
     private final List<Label> labels = new ArrayList<>();
+    private final List<Card> cards = new ArrayList<>();
     private int seenVersion;
     private int tableScroll;
     private int visibleRows;
@@ -98,24 +118,37 @@ public final class SolverScreen extends Screen {
     @Override
     protected void init() {
         this.labels.clear();
+        this.cards.clear();
         this.seenVersion = this.state.getVersion();
-        int left = MARGIN + PAD;
-        int top = MARGIN + PAD;
-        int inner = this.width - 2 * (MARGIN + PAD);
+        int left = MARGIN + CARD_PAD + PAD;
+        int top = MARGIN + CARD_PAD + PAD;
+        int inner = this.width - 2 * (MARGIN + CARD_PAD + PAD);
         int leftWidth = Math.max(200, inner * 2 / 5);
-        int rightLeft = left + leftWidth + 2 * PAD;
+        int rightLeft = left + leftWidth + 2 * CARD_PAD + SECTION_GAP;
         int rightWidth = left + inner - rightLeft;
-        int bottom = this.height - MARGIN - PAD;
+        int bottom = this.height - MARGIN - CARD_PAD - PAD;
 
+        // Left column: box, drafts, ports, result. Right: truth table, blocks, solve.
+        int draftsTop = top + BOX_SECTION_HEIGHT + SECTION_GAP;
+        int portsTop = draftsTop + LINE + ROW + SECTION_GAP;
+        int resultTop = bottom - RESULT_CARD_HEIGHT;
         this.initBox(left, top);
-        int draftsTop = top + 4 * LINE + 2 * ROW + 2 * GAP;
+        this.card(left, top, leftWidth, draftsTop - SECTION_GAP);
         this.initDrafts(left, draftsTop, leftWidth);
-        this.initPorts(left, draftsTop + LINE + ROW + 2 * GAP, leftWidth, bottom - RESULT_CARD_HEIGHT - PAD);
-        this.initResult(left, bottom - RESULT_CARD_HEIGHT, leftWidth);
-        int solveHeight = this.initSolve(rightLeft, 0, rightWidth, true);
-        int solveTop = bottom - solveHeight;
-        this.initTable(rightLeft, top, rightWidth, solveTop - PAD);
+        this.card(left, draftsTop, leftWidth, portsTop - SECTION_GAP);
+        this.initPorts(left, portsTop, leftWidth, resultTop - SECTION_GAP);
+        this.card(left, portsTop, leftWidth, resultTop - SECTION_GAP);
+        this.initResult(left, resultTop, leftWidth);
+        this.card(left, resultTop, leftWidth, bottom);
+
+        int solveTop = bottom - this.initSolve(rightLeft, 0, rightWidth, true);
+        int blocksTop = solveTop - SECTION_GAP - this.initBlocks(rightLeft, 0, rightWidth, true);
+        this.initTable(rightLeft, top, rightWidth, blocksTop - SECTION_GAP);
+        this.card(rightLeft, top, rightWidth, blocksTop - SECTION_GAP);
+        this.initBlocks(rightLeft, blocksTop, rightWidth, false);
+        this.card(rightLeft, blocksTop, rightWidth, solveTop - SECTION_GAP);
         this.initSolve(rightLeft, solveTop, rightWidth, false);
+        this.card(rightLeft, solveTop, rightWidth, bottom);
     }
 
     @Override
@@ -127,8 +160,10 @@ public final class SolverScreen extends Screen {
     public void extractRenderState(GuiGraphicsExtractor graphics, int mouseX, int mouseY, float partialTick) {
         graphics.fill(MARGIN, MARGIN, this.width - MARGIN, this.height - MARGIN, PANEL_COLOR);
         graphics.outline(MARGIN, MARGIN, this.width - 2 * MARGIN, this.height - 2 * MARGIN, BORDER_COLOR);
-        graphics.fill(this.resultLeft - 2, this.resultTop - 2, this.resultLeft + this.resultWidth + 2,
-                this.resultTop + RESULT_CARD_HEIGHT, CARD_COLOR);
+        for (Card card : this.cards) {
+            graphics.fill(card.left(), card.top(), card.right(), card.bottom(), CARD_COLOR);
+            graphics.fill(card.left(), card.top(), card.right(), card.top() + 1, CARD_EDGE_COLOR);
+        }
         for (Label label : this.labels) graphics.text(this.font, label.text(), label.x(), label.y(), label.color());
         this.extractResultText(graphics);
         if (this.state.getDraft().isFormulaMode() && !this.formulaStatus.isEmpty()) {
@@ -561,19 +596,6 @@ public final class SolverScreen extends Screen {
         }
 
         this.flowNewLine();
-        this.flowLabel("Blocks:");
-        for (String block : CircuitDraft.DEFAULT_PALETTE) {
-            boolean allowed = draft.allows(block);
-            String name = PALETTE_LABELS.getOrDefault(block, block);
-            Component label = allowed
-                    ? Component.literal(name)
-                    : Component.literal(name).withStyle(ChatFormatting.DARK_GRAY, ChatFormatting.STRIKETHROUGH);
-            this.flowButton(label, this.font.width(name) + 8,
-                    (allowed ? "The solver may use " : "The solver may not use ") + name + "; click to change",
-                    () -> this.run(() -> draft.setAllowed(block, !allowed)));
-        }
-
-        this.flowNewLine();
         if (this.state.isSolving()) {
             boolean cancelling = this.state.isCancelling();
             Button cancel = this.flowButton(Component.literal(cancelling ? "Cancelling..." : "Cancel"), 90,
@@ -621,6 +643,35 @@ public final class SolverScreen extends Screen {
             this.flowButton(Component.literal("Export"), 46, "Copy the circuit as /setblock commands to the clipboard",
                     () -> this.run(this.server::export));
         }
+    }
+
+    // The blocks the solver may build with, as inventory slots. Returns the height used.
+    private int initBlocks(int x, int y, int width, boolean dryRun) {
+        CircuitDraft draft = this.state.getDraft();
+        List<String> blocks = CircuitDraft.DEFAULT_PALETTE;
+        int perRow = Math.max(1, (width + 2) / (BlockToggle.SIZE + 2));
+        int rows = (blocks.size() + perRow - 1) / perRow;
+        int height = LINE + 2 + rows * (BlockToggle.SIZE + 2);
+        if (dryRun) return height;
+
+        this.heading("Blocks it may use", x, y);
+        this.label("%d of %d (click to change)".formatted(draft.getPalette().size(), blocks.size()),
+                x + this.font.width("Blocks it may use") + 2 * GAP, y, HINT_COLOR);
+        for (int i = 0; i < blocks.size(); i++) {
+            String block = blocks.get(i);
+            boolean allowed = draft.allows(block);
+            int slotX = x + (i % perRow) * (BlockToggle.SIZE + 2);
+            int slotY = y + LINE + 2 + (i / perRow) * (BlockToggle.SIZE + 2);
+            ItemStack icon = new ItemStack(BuiltInRegistries.ITEM.getValue(
+                    Identifier.withDefaultNamespace(PALETTE_ITEMS.get(block))));
+            this.addRenderableWidget(new BlockToggle(slotX, slotY, this.font, PALETTE_LABELS.get(block), icon, allowed,
+                    () -> this.run(() -> draft.setAllowed(block, !allowed))));
+        }
+        return height;
+    }
+
+    private void card(int x, int top, int width, int bottom) {
+        this.cards.add(new Card(x - CARD_PAD, top - CARD_PAD, x + width + CARD_PAD, bottom + CARD_PAD));
     }
 
     // A ticks field where a word (or nothing) means no limit; red until the text is valid.
