@@ -250,9 +250,9 @@ class CircuitDraftTest {
     @Test
     void theSolverOnlyGetsTheAllowedBlocks() {
         CircuitDraft draft = buffer();
-        draft.setAllowed("observer", false);
+        draft.setAllowed("target", false);
         draft.setAllowed("chest", false);
-        assertThat(draft.toSpecJson().getAsJsonArray("palette").toString()).doesNotContain("observer", "chest")
+        assertThat(draft.toSpecJson().getAsJsonArray("palette").toString()).doesNotContain("target", "chest", "observer")
                 .contains("repeater");
         assertThat(CircuitDraft.fromJson(draft.toJson()).getPalette()).isEqualTo(draft.getPalette());
 

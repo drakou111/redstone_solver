@@ -16,7 +16,7 @@ import java.util.function.Function;
 /** One player's circuit description in world coordinates, edited by keys, the panel and /rs. */
 public final class CircuitDraft {
     public static final List<String> DEFAULT_PALETTE = List.of("solid", "glass", "dust", "torch", "redstone_block",
-            "repeater", "comparator", "target", "note_block", "hopper", "barrel", "chest", "observer");
+            "repeater", "comparator", "target", "note_block", "hopper", "barrel", "chest");
 
     private static final int DEFAULT_SETTLE_TICKS = 4;
     private static final int DEFAULT_HORIZON_TICKS = 20;

@@ -72,7 +72,8 @@ public final class WorldBlocks implements CircuitDraft.BlockSource {
                     ? "subtract" : "compare");
             return json;
         }
-        if (state.is(Blocks.OBSERVER)) return facing(type("observer"), dir(state.getValue(BlockStateProperties.FACING)));
+        if (state.is(Blocks.OBSERVER))
+            throw new IllegalArgumentException("observers are not used; remove the one at " + pos.toShortString());
         if (state.is(Blocks.REDSTONE_BLOCK)) return type("redstone_block");
         if (state.is(Blocks.TARGET)) return type("target");
         if (state.is(Blocks.NOTE_BLOCK)) return type("note_block");
