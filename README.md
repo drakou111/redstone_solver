@@ -36,6 +36,23 @@ circuit while it still works, and Sketch checks, keeps or clears hint blocks (a 
 starts from).
 Options holds "only as drawn" (faster circuits that may fail when built rotated or elsewhere).
 
+## Minecraft mod (Fabric, 26.3)
+
+`mod/` is a Fabric mod that runs the same solver from inside the game. Build the solver first, then
+the mod (needs JDK 25 or newer):
+
+```
+cd mod
+./gradlew build          # jar in mod/build/libs; tests run the solver if it is built
+./gradlew runClient      # a dev game that already points at build/msvc/Release/redstone_solver.exe
+```
+
+To use the jar in your own game, set `solver_exe` in `config/redstone_solver.properties` (created on
+first start). In a world with cheats: `/rs wand`, left- and right-click two corners of the box (the
+bottom layer is for supports), look where a port goes and run `/rs input IN1 comparator` or
+`/rs output OUT1 dust`, add rows like `/rs row IN1=1..15 -> OUT1=0`, then `/rs solve` and click
+Place. `/rs help` lists the rest.
+
 Command line and tests:
 
 ```

@@ -1,0 +1,19 @@
+{
+	"schemaVersion": 1,
+	"id": "redstone_solver",
+	"version": "${version}",
+	"name": "Redstone Solver",
+	"description": "Describe a redstone circuit in the world (box, ports, truth table) and let the solver build it.",
+	"authors": ["drakou111"],
+	"environment": "*",
+	"entrypoints": {
+		"main": ["io.github.drakou111.redstonesolver.RedstoneSolverMod"],
+		"client": ["io.github.drakou111.redstonesolver.client.RedstoneSolverClient"]
+	},
+	"depends": {
+		"fabricloader": ">=0.20.1",
+		"minecraft": "~26.3",
+		"java": ">=25",
+		"fabric-api": "*"
+	}
+}
