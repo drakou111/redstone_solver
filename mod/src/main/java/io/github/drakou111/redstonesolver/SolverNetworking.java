@@ -181,6 +181,7 @@ public final class SolverNetworking {
         json.addProperty("optimal", outcome.optimal());
         json.addProperty("cancelled", cancelled);
         json.addProperty("shrunk", route.equals("shrink/start"));
+        json.addProperty("builtFromGates", route.equals("compose/start"));
         outcome.error().ifPresent(error -> json.addProperty("error", error));
 
         ServerPlayer player = server.getPlayerList().getPlayer(playerId);

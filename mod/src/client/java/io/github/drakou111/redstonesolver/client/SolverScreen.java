@@ -788,6 +788,7 @@ public final class SolverScreen extends Screen {
             else if (!optimal) lines.add("(the solver did not prove it is the smallest)");
             if (result.has("note")) lines.add(result.get("note").getAsString());
             lines.add("Timing: " + this.timingText(result));
+            this.deadlineNote(result).ifPresent(lines::add);
             StringBuilder counts = new StringBuilder("Blocks: ");
             boolean first = true;
             for (Map.Entry<String, JsonElement> entry : result.getAsJsonObject("blocksByType").entrySet()) {
@@ -806,6 +807,22 @@ public final class SolverScreen extends Screen {
                 y += LINE;
             }
         }
+    }
+
+    // Build from gates does not aim for the timing setting; say how this result compares.
+    private Optional<String> deadlineNote(JsonObject result) {
+        boolean fromGates = result.has("builtFromGates") && result.get("builtFromGates").getAsBoolean();
+        Optional<Integer> latest = this.state.getDraft().getLatestTicks();
+        if (!fromGates || latest.isEmpty()) return Optional.empty();
+        JsonArray settle = result.getAsJsonArray("settleTicks");
+        if (settle == null || settle.isEmpty()) return Optional.of("Build from gates ignores your timing setting.");
+        int slowest = 0;
+        for (JsonElement ticks : settle) slowest = Math.max(slowest, ticks.getAsInt());
+        String exact = this.state.getDraft().getEarliestTicks().isPresent() ? " (and does not hold outputs)" : "";
+        return Optional.of(slowest <= latest.get()
+                ? "Build from gates ignores timing%s, but this one is within your %d ticks.".formatted(exact, latest.get())
+                : "Misses your deadline: %d ticks, you asked for %d. Build from gates ignores timing%s."
+                        .formatted(slowest, latest.get(), exact));
     }
 
     private String timingText(JsonObject result) {
