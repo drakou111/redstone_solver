@@ -39,7 +39,7 @@ Options holds "only as drawn" (faster circuits that may fail when built rotated 
 ## Minecraft mod (Fabric, 26.3)
 
 `mod/` is a Fabric mod that runs the same solver from inside the game. Build the solver first, then
-the mod (needs JDK 25 or newer):
+the mod (Gradle runs itself on a JDK 25 it finds installed, whatever JAVA_HOME says):
 
 ```
 cd mod
