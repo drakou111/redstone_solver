@@ -31,6 +31,10 @@ enum class BlockType : std::uint8_t {
   Observer,
   Input,  // user-placed signal source driven by the truth table
   Output, // user-placed probe read by the truth table
+  // Test blocks for building around a circuit; the solver never places them.
+  Lever,  // value 1: on
+  Button, // stone button: on for 20 game ticks after a press
+  Lamp,   // redstone lamp: lit while powered
 };
 
 enum class ComparatorMode : std::uint8_t { Compare, Subtract };
@@ -50,10 +54,11 @@ enum class InputKind : std::uint8_t { Comparator, Container, Repeater, Dust };
 enum class OutputKind : std::uint8_t { Dust, Repeater, Comparator };
 
 // Static description of one cell. Meaning of `facing` per type:
-//   Torch: direction from the torch to the block it is attached to (Down =
-//   standing torch). Repeater, Comparator and repeater/comparator ports:
-//   direction the signal travels. Observer: direction of the watched face; it
-//   outputs on the opposite side.
+//   Torch, Lever, Button: direction from it to the block it is attached to
+//   (Down = standing on the floor; levers and buttons may also hang, Up).
+//   Repeater, Comparator and repeater/comparator ports: direction the signal
+//   travels. Observer: direction of the watched face; it outputs on the
+//   opposite side.
 struct Block {
   BlockType type = BlockType::Air;
   Dir facing = Dir::Down;
@@ -78,6 +83,9 @@ struct Block {
   static Block comparator(Dir output,
                           ComparatorMode mode = ComparatorMode::Compare);
   static Block observer(Dir watched);
+  static Block lever(Dir attached_to, bool on = false);
+  static Block button(Dir attached_to);
+  static constexpr Block lamp() { return {BlockType::Lamp}; }
   static Block input(int channel, InputKind kind, Dir output = Dir::North);
   static Block output(int channel, OutputKind kind,
                       Dir signal_direction = Dir::North);
@@ -148,6 +156,7 @@ constexpr bool is_conductor(const Block &b) {
   case BlockType::Target:
   case BlockType::NoteBlock:
   case BlockType::Barrel:
+  case BlockType::Lamp:
     return true;
   case BlockType::Input:
     return is_container_input(b);
@@ -175,6 +184,8 @@ constexpr bool is_signal_source(const Block &b) {
   case BlockType::Comparator:
   case BlockType::Target:
   case BlockType::Observer:
+  case BlockType::Lever:
+  case BlockType::Button:
     return true;
   case BlockType::Input:
     return is_diode_input(b) || is_dust(b);
@@ -196,6 +207,7 @@ constexpr bool supports_on_top(const Block &b) {
   case BlockType::Barrel:
   case BlockType::Observer:
   case BlockType::Hopper:
+  case BlockType::Lamp:
     return true;
   case BlockType::Input:
     return is_container_input(b);

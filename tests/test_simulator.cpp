@@ -389,3 +389,58 @@ TEST_CASE(
   CHECK_THROWS_AS(Block::input(0, InputKind::Repeater, Dir::Up),
                   std::invalid_argument);
 }
+
+TEST_CASE("a lever powers dust next to it and strongly powers its block") {
+  // Lever on the west side of a solid block; dust east of the block and dust
+  // right next to the lever.
+  World world = with_glass_floor({4, 2, 2});
+  world.set({1, 1, 0}, Block::solid());
+  world.set({0, 1, 0}, Block::lever(Dir::East));
+  world.set({2, 1, 0}, Block::dust());
+  world.set({0, 1, 1}, Block::dust());
+  Simulator sim = settled(world);
+  CHECK(sim.state_at({2, 1, 0}).power == 0);
+
+  sim.use({0, 1, 0});
+  REQUIRE(sim.run_until_quiet(kSettleTicks));
+  CHECK(sim.state_at({0, 1, 0}).on);
+  CHECK(sim.state_at({2, 1, 0}).power == 15); // through the powered block
+  CHECK(sim.state_at({0, 1, 1}).power == 15); // straight from the lever
+
+  sim.use({0, 1, 0});
+  REQUIRE(sim.run_until_quiet(kSettleTicks));
+  CHECK(sim.state_at({2, 1, 0}).power == 0);
+  CHECK(sim.state_at({0, 1, 1}).power == 0);
+}
+
+TEST_CASE("a button stays pressed for 20 ticks and a lamp dims 4 ticks late") {
+  World world = with_glass_floor({3, 2, 1});
+  world.set({0, 1, 0}, Block::solid());
+  world.set({1, 1, 0}, Block::button(Dir::West));
+  world.set({2, 1, 0}, Block::lamp());
+  Simulator sim = settled(world);
+  CHECK_FALSE(sim.state_at({2, 1, 0}).on);
+
+  sim.use({1, 1, 0});
+  CHECK(sim.state_at({1, 1, 0}).on);
+  CHECK(sim.state_at({2, 1, 0}).on); // lamps light at once
+  advance(sim, 19);
+  CHECK(sim.state_at({1, 1, 0}).on);
+  advance(sim, 1);
+  CHECK_FALSE(sim.state_at({1, 1, 0}).on);
+  CHECK(sim.state_at({2, 1, 0}).on); // still lit
+  advance(sim, 4);
+  CHECK_FALSE(sim.state_at({2, 1, 0}).on);
+}
+
+TEST_CASE("a lever needs a block to hang on, and only levers and buttons are "
+          "used") {
+  World floating({2, 2, 1});
+  floating.set({0, 1, 0}, Block::lever(Dir::East));
+  CHECK_FALSE(floating.validate().empty());
+
+  World world = with_glass_floor({2, 2, 1});
+  world.set({0, 1, 0}, Block::lamp());
+  Simulator sim(world);
+  CHECK_THROWS_AS(sim.use({0, 1, 0}), std::invalid_argument);
+}

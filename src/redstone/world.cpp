@@ -98,6 +98,15 @@ std::vector<std::string> World::validate() const {
         errors.push_back(where + " has no valid block to attach to");
       break;
     }
+    case BlockType::Lever:
+    case BlockType::Button: {
+      const Block &support = this->at(p + offset(b.facing));
+      bool ok = b.facing == Dir::Down ? supports_on_top(support)
+                                      : supports_on_side(support);
+      if (!ok)
+        errors.push_back(where + " has no valid block to attach to");
+      break;
+    }
     case BlockType::Chest:
       for (Dir d : kHorizontalDirs)
         if (this->at(p + offset(d)).type == BlockType::Chest)

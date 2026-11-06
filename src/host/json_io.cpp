@@ -50,6 +50,12 @@ std::string_view type_name(BlockType type) {
     return "input";
   case BlockType::Output:
     return "output";
+  case BlockType::Lever:
+    return "lever";
+  case BlockType::Button:
+    return "button";
+  case BlockType::Lamp:
+    return "lamp";
   default:
     return palette_name(type);
   }
@@ -62,6 +68,12 @@ BlockType type_from(const std::string &name) {
     return BlockType::Input;
   if (name == "output")
     return BlockType::Output;
+  if (name == "lever")
+    return BlockType::Lever;
+  if (name == "button")
+    return BlockType::Button;
+  if (name == "lamp")
+    return BlockType::Lamp;
   if (std::optional<BlockType> type = parse_palette_block(name))
     return *type;
   fail(std::format("unknown block type '{}'", name));
@@ -233,7 +245,12 @@ Json to_json(const Block &b) {
   switch (b.type) {
   case BlockType::Torch:
   case BlockType::Observer:
+  case BlockType::Button:
     json["facing"] = to_string(b.facing);
+    break;
+  case BlockType::Lever:
+    json["facing"] = to_string(b.facing);
+    json["on"] = b.value != 0;
     break;
   case BlockType::Repeater:
     json["facing"] = to_string(b.facing);
@@ -315,6 +332,12 @@ Block block_from_json(const Json &json) {
     return Block::output(integer(field(json, "channel"), "channel"), *kind,
                          facing());
   }
+  case BlockType::Lever:
+    return Block::lever(facing(), json.value("on", false));
+  case BlockType::Button:
+    return Block::button(facing());
+  case BlockType::Lamp:
+    return Block::lamp();
   }
   fail("unknown block type");
 }

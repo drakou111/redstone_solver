@@ -66,6 +66,14 @@ Block Block::comparator(Dir output, ComparatorMode mode) {
 
 Block Block::observer(Dir watched) { return {BlockType::Observer, watched}; }
 
+Block Block::lever(Dir attached_to, bool on) {
+  return {BlockType::Lever, attached_to, static_cast<std::uint8_t>(on)};
+}
+
+Block Block::button(Dir attached_to) {
+  return {BlockType::Button, attached_to};
+}
+
 Block Block::input(int channel, InputKind kind, Dir output) {
   Block block{BlockType::Input, output, static_cast<std::uint8_t>(kind),
               checked_channel(channel)};
@@ -168,6 +176,13 @@ std::string to_string(const Block &block) {
     return std::format("output{}({}, {})", block.channel,
                        output_kind_name(block.output_kind()),
                        to_string(block.facing));
+  case BlockType::Lever:
+    return std::format("lever(on {}, {})", to_string(block.facing),
+                       block.value != 0 ? "on" : "off");
+  case BlockType::Button:
+    return std::format("button(on {})", to_string(block.facing));
+  case BlockType::Lamp:
+    return "lamp";
   }
   return "?";
 }

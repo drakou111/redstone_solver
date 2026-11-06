@@ -58,6 +58,12 @@ std::string code(const Block &b) {
     return std::format("b{}", b.stored_signal());
   case BlockType::Chest:
     return std::format("k{}", b.stored_signal());
+  case BlockType::Lever:
+    return std::format("L{}", dir_letter(b.facing));
+  case BlockType::Button:
+    return std::format("B{}", dir_letter(b.facing));
+  case BlockType::Lamp:
+    return "m";
   case BlockType::Observer:
     return std::format("o{}", dir_letter(b.facing));
   case BlockType::Input:
@@ -88,6 +94,7 @@ std::string render_layers(const World &world) {
           "c<facing><c|s> comparator\n"
           "        o<watched side> observer  h/b/k<ss> hopper/barrel/chest  "
           "I<n>/O<n> ports\n"
+          "        L/B<attached side> lever/button  m lamp\n"
           "        sides: n s e w u d (repeater/comparator facing = direction "
           "the signal travels)\n";
   return text;
@@ -163,6 +170,20 @@ std::string java_block(const Block &b, const Simulator &sim, Vec3 p) {
                        sim.dust_points(p, Dir::South) ? "side" : "none",
                        sim.dust_points(p, Dir::East) ? "side" : "none",
                        sim.dust_points(p, Dir::West) ? "side" : "none");
+  case BlockType::Lever:
+  case BlockType::Button: {
+    std::string name = b.type == BlockType::Lever ? "lever" : "stone_button";
+    std::string face = b.facing == Dir::Down ? "floor"
+                       : b.facing == Dir::Up ? "ceiling"
+                                             : "wall";
+    // On a wall, Java's facing points away from the block it hangs on.
+    Dir facing = is_horizontal(b.facing) ? opposite(b.facing) : Dir::North;
+    return std::format(
+        "{}[face={},facing={},powered={}]", name, face, state_name(facing),
+        b.type == BlockType::Lever && b.value != 0 ? "true" : "false");
+  }
+  case BlockType::Lamp:
+    return "redstone_lamp";
   case BlockType::Air:
     return "";
   }

@@ -52,6 +52,10 @@ public:
   int input(int channel) const;
   int output(int channel) const;
 
+  // A player's right-click: flips a lever, presses a button (released 20
+  // game ticks later). Throws for other blocks.
+  void use(Vec3 p);
+
   // Advances one game tick.
   void tick();
   // Ticks until nothing is scheduled. Returns false if still busy after

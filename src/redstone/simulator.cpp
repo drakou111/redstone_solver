@@ -12,6 +12,8 @@ constexpr int kMaxChannels = 256;
 constexpr int kTorchDelay = 2;
 constexpr int kComparatorDelay = 2;
 constexpr int kObserverDelay = 2;
+constexpr int kButtonPressTicks = 20; // stone button
+constexpr int kLampOffDelay = 4;
 constexpr int kGameTicksPerRepeaterStep = 2;
 // RedstoneTorchBlock burnout: 8 turn-offs within 60 game ticks, retry after
 // 160.
@@ -60,6 +62,8 @@ Simulator::Simulator(const World &world, Placement placement)
     const Block &b = this->block(world.position_of(c));
     if (b.type == BlockType::Torch)
       this->states_[c].on = true;
+    if (b.type == BlockType::Lever)
+      this->states_[c].on = b.value != 0;
     if (b.type == BlockType::Input)
       this->input_cells_[b.channel] = c;
     if (b.type == BlockType::Output)
@@ -75,6 +79,27 @@ Simulator::Simulator(const World &world, Placement placement)
 
 // ---------------------------------------------------------------------------------------------
 // Public interface
+
+void Simulator::use(Vec3 p) {
+  if (!this->in_bounds(p))
+    throw std::invalid_argument("nothing to use outside the world");
+  const Block &b = this->block(p);
+  CellState s = this->states_[this->cell(p)];
+  if (b.type == BlockType::Lever) {
+    s.on = !s.on;
+  } else if (b.type == BlockType::Button) {
+    if (s.on)
+      return; // already pressed
+    s.on = true;
+    this->schedule(p, kButtonPressTicks);
+  } else {
+    throw std::invalid_argument("only levers and buttons can be used");
+  }
+  // LeverBlock/ButtonBlock.updateNeighbours: around itself and around the
+  // block it is attached to.
+  this->set_state(p, s, true);
+  this->update_neighbors_at(p + offset(b.facing));
+}
 
 void Simulator::set_input(int channel, int signal) {
   if (channel < 0 || channel >= kMaxChannels || this->input_cells_[channel] < 0)
@@ -236,6 +261,9 @@ int Simulator::weak_emit(Vec3 p, Dir d, bool dust_signals) const {
   switch (b.type) {
   case BlockType::Torch:
     return s.on && d != b.facing ? kMaxSignal : 0;
+  case BlockType::Lever:
+  case BlockType::Button:
+    return s.on ? kMaxSignal : 0;
   case BlockType::RedstoneBlock:
     return kMaxSignal;
   case BlockType::Repeater:
@@ -263,6 +291,8 @@ int Simulator::strong_emit(Vec3 p, Dir d, bool dust_signals) const {
     return this->states_[this->cell(p)].on && d == Dir::Up ? kMaxSignal : 0;
   if (b.type == BlockType::RedstoneBlock)
     return 0;
+  if (b.type == BlockType::Lever || b.type == BlockType::Button)
+    return this->states_[this->cell(p)].on && d == b.facing ? kMaxSignal : 0;
   return this->weak_emit(p, d, dust_signals);
 }
 
@@ -542,6 +572,17 @@ void Simulator::neighbor_changed(Vec3 p) {
   case BlockType::Comparator:
     this->comparator_check_tick(p);
     break;
+  case BlockType::Lamp: {
+    // RedstoneLampBlock: lights at once, goes dark a few ticks later.
+    bool powered = this->has_neighbor_signal(p);
+    if (s.on && !powered) {
+      this->schedule(p, kLampOffDelay);
+    } else if (!s.on && powered) {
+      s.on = true;
+      this->set_state(p, s, false);
+    }
+    break;
+  }
   case BlockType::NoteBlock:
   case BlockType::Hopper: {
     bool powered = this->has_neighbor_signal(p);
@@ -659,6 +700,21 @@ void Simulator::run_scheduled_tick(int cell) {
   case BlockType::Observer:
     this->observer_tick(p);
     break;
+  case BlockType::Lamp: {
+    CellState s = this->states_[cell];
+    if (s.on && !this->has_neighbor_signal(p)) {
+      s.on = false;
+      this->set_state(p, s, false);
+    }
+    break;
+  }
+  case BlockType::Button: {
+    CellState s = this->states_[cell];
+    s.on = false;
+    this->set_state(p, s, true);
+    this->update_neighbors_at(p + offset(this->block(p).facing));
+    break;
+  }
   default:
     break;
   }
