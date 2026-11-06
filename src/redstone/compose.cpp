@@ -1,5 +1,7 @@
 #include "redstone/compose.hpp"
 
+#include "redstone/compose_parts.hpp"
+
 #include <algorithm>
 #include <array>
 #include <format>
@@ -10,16 +12,7 @@
 
 namespace rs {
 
-namespace {
-
-using Cells = std::map<std::array<int, 3>, Block>;
-std::array<int, 3> key(Vec3 p) { return {p.x, p.y, p.z}; }
-
-// One row of a stage: input values and wanted outputs (nothing: any).
-struct StageRow {
-  std::vector<bool> inputs;
-  std::vector<std::optional<bool>> outputs;
-};
+namespace compose_parts {
 
 Spec make_spec(Vec3 size, const std::vector<Vec3> &inputs,
                const std::vector<Vec3> &outputs,
@@ -49,8 +42,6 @@ Spec make_spec(Vec3 size, const std::vector<Vec3> &inputs,
   return parse_spec(text);
 }
 
-// Blocks of a layout moved by `offset`, ports turned into the plain blocks
-// they are (repeater inputs, dust outputs).
 void add_layout(Cells &cells, const World &layout, Vec3 offset) {
   for (int i = 0; i < layout.volume(); ++i) {
     Vec3 p = layout.position_of(i);
@@ -80,12 +71,54 @@ void pin(Spec &spec, const Cells &cells,
   }
 }
 
-// Gates of one level that read the same two signals: one module.
-struct Group {
-  int a = 0, b = 0;       // operand nodes
-  std::vector<int> nodes; // gate nodes, in module output order
-  std::vector<std::uint8_t> functions;
-};
+std::vector<Group> group_gates(const Netlist &netlist,
+                               const std::vector<int> &level) {
+  const int n = netlist.inputs;
+  std::vector<Group> groups;
+  for (std::size_t g = 0; g < netlist.gates.size(); ++g) {
+    const Gate &gate = netlist.gates[g];
+    int node = n + static_cast<int>(g);
+    auto same = std::find_if(groups.begin(), groups.end(), [&](const Group &x) {
+      return x.a == gate.a && x.b == gate.b && level[x.nodes[0]] == level[node];
+    });
+    if (same == groups.end()) {
+      groups.push_back({gate.a, gate.b, {}, {}});
+      same = groups.end() - 1;
+    }
+    same->nodes.push_back(node);
+    same->functions.push_back(gate.function);
+  }
+  return groups;
+}
+
+std::optional<std::map<std::vector<std::uint8_t>, GateModule>>
+build_modules(const std::vector<Group> &groups,
+              const NetlistComposeOptions &options, int &module_height,
+              const ProgressCallback &progress) {
+  GateLibraryOptions gate_options =
+      gates_within_height(options.gates, options.max_height);
+  gate_options.solver = options.solver;
+  gate_options.cancel = options.cancel;
+  std::map<std::vector<std::uint8_t>, GateModule> modules;
+  module_height = 2;
+  for (const Group &group : groups) {
+    if (modules.contains(group.functions))
+      continue;
+    std::optional<GateModule> m =
+        build_gate(group.functions, gate_options, progress);
+    if (!m)
+      return std::nullopt;
+    module_height = std::max(module_height, m->layout.size().y);
+    modules.emplace(group.functions, std::move(*m));
+  }
+  return modules;
+}
+
+} // namespace compose_parts
+
+namespace {
+
+using namespace compose_parts;
 
 // What a column holds along z: a gate group's module or a pass-through
 // track for one signal.
@@ -118,38 +151,15 @@ compose_netlist(const Netlist &netlist, const BoolTable &table,
     depth_levels = std::max(depth_levels, level[node]);
 
   // Group gates by level and operands; build one module per group.
-  std::vector<Group> groups;
-  for (std::size_t g = 0; g < netlist.gates.size(); ++g) {
-    const Gate &gate = netlist.gates[g];
-    int node = n + static_cast<int>(g);
-    auto same = std::find_if(groups.begin(), groups.end(), [&](const Group &x) {
-      return x.a == gate.a && x.b == gate.b && level[x.nodes[0]] == level[node];
-    });
-    if (same == groups.end()) {
-      groups.push_back({gate.a, gate.b, {}, {}});
-      same = groups.end() - 1;
-    }
-    same->nodes.push_back(node);
-    same->functions.push_back(gate.function);
-  }
-  GateLibraryOptions gate_options =
-      gates_within_height(options.gates, options.max_height);
-  gate_options.solver = options.solver;
-  gate_options.cancel = options.cancel;
-  std::map<std::vector<std::uint8_t>, GateModule> modules;
+  std::vector<Group> groups = group_gates(netlist, level);
   int module_height = 2;
-  for (const Group &group : groups) {
-    if (modules.contains(group.functions))
-      continue;
-    std::optional<GateModule> m =
-        build_gate(group.functions, gate_options, progress);
-    if (!m) {
-      say("no module for one of the gate groups");
-      return std::nullopt;
-    }
-    module_height = std::max(module_height, m->layout.size().y);
-    modules.emplace(group.functions, std::move(*m));
+  std::optional<std::map<std::vector<std::uint8_t>, GateModule>> built =
+      build_modules(groups, options, module_height, progress);
+  if (!built) {
+    say("no module for one of the gate groups");
+    return std::nullopt;
   }
+  const std::map<std::vector<std::uint8_t>, GateModule> &modules = *built;
   auto module_of = [&](int group) -> const GateModule & {
     return modules.at(groups[group].functions);
   };
