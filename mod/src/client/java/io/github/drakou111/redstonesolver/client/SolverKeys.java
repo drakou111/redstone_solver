@@ -22,6 +22,7 @@ public final class SolverKeys {
     private final ClientState state;
     private final KeyMapping corner1;
     private final KeyMapping corner2;
+    private final KeyMapping cellMenu;
 
     public SolverKeys(ClientState state) {
         this.state = state;
@@ -31,6 +32,8 @@ public final class SolverKeys {
                 new KeyMapping("key.redstone_solver.corner1", InputConstants.KEY_J, category));
         this.corner2 = KeyMappingHelper.registerKeyMapping(
                 new KeyMapping("key.redstone_solver.corner2", InputConstants.KEY_K, category));
+        this.cellMenu = KeyMappingHelper.registerKeyMapping(
+                new KeyMapping("key.redstone_solver.cell", InputConstants.KEY_P, category));
     }
 
     public void register() {
@@ -40,6 +43,7 @@ public final class SolverKeys {
     private void tick(Minecraft client) {
         while (this.corner1.consumeClick()) this.setCorner(client, true);
         while (this.corner2.consumeClick()) this.setCorner(client, false);
+        while (this.cellMenu.consumeClick()) this.openCellMenu(client);
     }
 
     private void setCorner(Minecraft client, boolean first) {
@@ -64,6 +68,20 @@ public final class SolverKeys {
         Cell size = box.get().size();
         player.sendOverlayMessage(Chat.hint("Box: %d x %d x %d. The bottom layer is for supports."
                 .formatted(size.x(), size.y(), size.z())));
+    }
+
+    private void openCellMenu(Minecraft client) {
+        LocalPlayer player = client.player;
+        if (player == null || client.level == null) return;
+        Optional<Cell> placement = lookedAtPlacement(client);
+        if (placement.isEmpty()) {
+            player.sendOverlayMessage(Chat.hint("Look at a block: the menu is for the cell in front of it."));
+            return;
+        }
+        Optional<Cell> looked = lookedAtBlock(client).map(pos -> new Cell(pos.getX(), pos.getY(), pos.getZ()));
+        String name = looked.map(cell -> new WorldBlocks(client.level).nameAt(cell)).orElse("nothing");
+        client.setScreenAndShow(new CellMenuScreen(this.state, placement.get(), looked,
+                ClientRsCommands.toDir(player.getDirection()), name));
     }
 
     static Optional<BlockPos> lookedAtBlock(Minecraft client) {

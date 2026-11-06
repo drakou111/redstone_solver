@@ -10,6 +10,7 @@ import io.github.drakou111.redstonesolver.net.SolverPayloads.ToServer;
 import java.util.Map;
 import java.util.Optional;
 import net.fabricmc.fabric.api.client.networking.v1.ClientPlayNetworking;
+import net.minecraft.client.Minecraft;
 import net.minecraft.client.player.LocalPlayer;
 import net.minecraft.network.chat.Component;
 import net.minecraft.network.chat.MutableComponent;
@@ -38,7 +39,9 @@ public final class ServerLink {
         if (this.state.isSolving()) throw new IllegalStateException("A solve is already running.");
         Box box = this.state.getDraft().requireBox();
         JsonObject body = new JsonObject();
-        body.add("spec", this.state.getDraft().toSpecJson());
+        Minecraft client = Minecraft.getInstance();
+        if (client.level == null) throw new IllegalStateException("Not in a world.");
+        body.add("spec", this.state.getDraft().toSpecJson(new WorldBlocks(client.level)));
         body.add("origin", box.min().toJson());
         body.addProperty("timeLimit", this.state.getTimeLimitSeconds());
         this.send("solve", body);

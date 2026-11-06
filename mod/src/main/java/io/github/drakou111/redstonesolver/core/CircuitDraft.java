@@ -5,11 +5,13 @@ import com.google.gson.JsonNull;
 import com.google.gson.JsonObject;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 
-/** One player's circuit description in world coordinates, built up by commands and the wand. */
+/** One player's circuit description in world coordinates, edited by keys, the panel and /rs. */
 public final class CircuitDraft {
     public static final List<String> DEFAULT_PALETTE = List.of("solid", "glass", "dust", "torch", "redstone_block",
             "repeater", "comparator", "target", "note_block", "hopper", "barrel", "chest", "observer");
@@ -17,11 +19,33 @@ public final class CircuitDraft {
     private static final int DEFAULT_SETTLE_TICKS = 4;
     private static final int DEFAULT_HORIZON_TICKS = 20;
 
+    /** Reads the solver block (JSON without position) at a world cell; empty for air. */
+    @FunctionalInterface
+    public interface BlockSource {
+        /** For drafts that never read the world (no kept cells, other blocks ignored). */
+        BlockSource NONE = cell -> {
+            throw new IllegalStateException("this draft cannot read blocks from the world");
+        };
+
+        Optional<JsonObject> blockAt(Cell cell);
+    }
+
+    /** What the solver does with blocks in the box that are neither ports nor kept cells. */
+    public enum OtherBlocks {
+        /** The solver starts from an empty box. */
+        IGNORE,
+        /** The solver starts from them as a sketch it may change. */
+        SKETCH
+    }
+
     private Cell corner1;
     private Cell corner2;
     private final Map<String, Port> ports = new LinkedHashMap<>();
+    private final Set<Cell> keptCells = new LinkedHashSet<>();
+    private final Set<Cell> emptyCells = new LinkedHashSet<>();
     private final List<TruthRow> rows = new ArrayList<>();
     private Integer latestTicks;
+    private OtherBlocks otherBlocks = OtherBlocks.IGNORE;
 
     public void setCorner1(Cell cell) {
         this.corner1 = cell;
@@ -43,14 +67,12 @@ public final class CircuitDraft {
 
     public Box requireBox() {
         return this.getBox().orElseThrow(() -> new IllegalStateException(
-                "Select the box first: left-click one corner and right-click the other with the wand."));
+                "Set the box first: press J on one corner block and K on the opposite one."));
     }
 
     /** Adds the port, or replaces the port of the same name. */
     public void putPort(Port port) {
-        Box box = this.requireBox();
-        if (!box.contains(port.position()))
-            throw new IllegalArgumentException("%s at %s is outside the box".formatted(port.name(), port.position()));
+        this.requireInsideBox(port.position(), port.name());
         Port existing = this.ports.get(port.name());
         if (existing != null && existing.input() != port.input())
             throw new IllegalArgumentException(
@@ -59,11 +81,28 @@ public final class CircuitDraft {
             if (!other.name().equals(port.name()) && other.position().equals(port.position()))
                 throw new IllegalArgumentException(other.name() + " is already at " + port.position());
         }
+        this.keptCells.remove(port.position());
+        this.emptyCells.remove(port.position());
         this.ports.put(port.name(), port);
     }
 
     public boolean removePort(String name) {
         return this.ports.remove(name) != null;
+    }
+
+    public Optional<Port> portAt(Cell cell) {
+        for (Port port : this.ports.values()) {
+            if (port.position().equals(cell)) return Optional.of(port);
+        }
+        return Optional.empty();
+    }
+
+    /** The first of PREFIX1, PREFIX2, ... that no port uses. */
+    public String nextFreeName(String prefix) {
+        for (int number = 1; ; number++) {
+            String name = prefix + number;
+            if (!this.ports.containsKey(name)) return name;
+        }
     }
 
     public List<Port> getInputs() {
@@ -72,6 +111,46 @@ public final class CircuitDraft {
 
     public List<Port> getOutputs() {
         return this.portsOfSide(false);
+    }
+
+    /** The solver must keep the block that stands in this cell when solving starts. */
+    public void markKept(Cell cell) {
+        this.requireInsideBox(cell, "the kept cell");
+        this.requireNoPort(cell);
+        this.emptyCells.remove(cell);
+        this.keptCells.add(cell);
+    }
+
+    /** The solver must leave this cell empty. */
+    public void markEmpty(Cell cell) {
+        this.requireInsideBox(cell, "the empty cell");
+        this.requireNoPort(cell);
+        this.keptCells.remove(cell);
+        this.emptyCells.add(cell);
+    }
+
+    /** Removes any port, keep or empty mark from the cell; false if it had none. */
+    public boolean clearCell(Cell cell) {
+        boolean changed = this.keptCells.remove(cell) | this.emptyCells.remove(cell);
+        Optional<Port> port = this.portAt(cell);
+        if (port.isPresent()) changed |= this.removePort(port.get().name());
+        return changed;
+    }
+
+    public Set<Cell> getKeptCells() {
+        return Set.copyOf(this.keptCells);
+    }
+
+    public Set<Cell> getEmptyCells() {
+        return Set.copyOf(this.emptyCells);
+    }
+
+    public OtherBlocks getOtherBlocks() {
+        return this.otherBlocks;
+    }
+
+    public void setOtherBlocks(OtherBlocks otherBlocks) {
+        this.otherBlocks = otherBlocks;
     }
 
     public void addRow(TruthRow row) {
@@ -84,6 +163,11 @@ public final class CircuitDraft {
             if (!outputs.contains(name)) throw new IllegalArgumentException("there is no output named " + name);
         }
         this.rows.add(row);
+    }
+
+    public void setRow(int index, TruthRow row) {
+        if (index < 0 || index >= this.rows.size()) throw new IllegalArgumentException("there is no row " + (index + 1));
+        this.rows.set(index, row);
     }
 
     public List<TruthRow> getRows() {
@@ -110,18 +194,31 @@ public final class CircuitDraft {
         this.latestTicks = ticks.orElse(null);
     }
 
-    /** The spec in the solver's JSON format, with positions relative to the box's lowest corner. */
+    /** The spec for a draft without kept cells or sketch; see {@link #toSpecJson(BlockSource)}. */
     public JsonObject toSpecJson() {
+        return this.toSpecJson(BlockSource.NONE);
+    }
+
+    /**
+     * The spec in the solver's JSON format, with positions relative to the box's lowest corner.
+     * Kept cells and (in sketch mode) the other blocks of the box are read from {@code blocks}.
+     */
+    public JsonObject toSpecJson(BlockSource blocks) {
         Box box = this.requireBox();
         List<Port> inputs = this.getInputs();
         List<Port> outputs = this.getOutputs();
-        if (inputs.isEmpty()) throw new IllegalStateException("Add an input first: /rs input IN1 comparator");
-        if (outputs.isEmpty()) throw new IllegalStateException("Add an output first: /rs output OUT1 dust");
-        if (this.rows.isEmpty())
-            throw new IllegalStateException("Add a truth table row first: /rs row IN1=1..15 -> OUT1=0");
+        if (inputs.isEmpty()) throw new IllegalStateException("Add an input first (look at a cell and press P).");
+        if (outputs.isEmpty()) throw new IllegalStateException("Add an output first (look at a cell and press P).");
+        if (this.rows.isEmpty()) throw new IllegalStateException("Add a truth table row first.");
         for (Port port : this.ports.values()) {
             if (!box.contains(port.position()))
                 throw new IllegalStateException(port.name() + " is outside the box; move it or the box");
+        }
+        for (Cell cell : this.keptCells) {
+            if (!box.contains(cell)) throw new IllegalStateException("A kept cell at " + cell + " is outside the box");
+        }
+        for (Cell cell : this.emptyCells) {
+            if (!box.contains(cell)) throw new IllegalStateException("An empty cell at " + cell + " is outside the box");
         }
 
         JsonObject spec = new JsonObject();
@@ -154,10 +251,45 @@ public final class CircuitDraft {
         JsonArray tiled = new JsonArray();
         for (int axis = 0; axis < 3; axis++) tiled.add(false);
         spec.add("tiled", tiled);
-        spec.add("fixed", new JsonArray());
-        spec.add("forbidden", new JsonArray());
-        spec.add("hints", new JsonArray());
+
+        JsonArray fixed = new JsonArray();
+        for (Cell cell : this.keptCells) {
+            JsonObject block = blocks.blockAt(cell).orElseThrow(() -> new IllegalStateException(
+                    "The kept cell at " + cell + " is empty; place a block there or clear the mark"));
+            fixed.add(positioned(block, cell, box));
+        }
+        spec.add("fixed", fixed);
+        JsonArray forbidden = new JsonArray();
+        for (Cell cell : this.emptyCells) forbidden.add(cell.minus(box.min()).toJson());
+        spec.add("forbidden", forbidden);
+        spec.add("hints", this.otherBlocks == OtherBlocks.SKETCH ? this.sketchJson(box, blocks) : new JsonArray());
         return spec;
+    }
+
+    private JsonArray sketchJson(Box box, BlockSource blocks) {
+        JsonArray hints = new JsonArray();
+        for (int x = box.min().x(); x <= box.max().x(); x++) {
+            for (int y = box.min().y(); y <= box.max().y(); y++) {
+                for (int z = box.min().z(); z <= box.max().z(); z++) {
+                    Cell cell = new Cell(x, y, z);
+                    if (this.keptCells.contains(cell) || this.emptyCells.contains(cell) || this.portAt(cell).isPresent())
+                        continue;
+                    blocks.blockAt(cell).ifPresent(block -> hints.add(positioned(block, cell, box)));
+                }
+            }
+        }
+        return hints;
+    }
+
+    private void requireInsideBox(Cell cell, String what) {
+        Box box = this.requireBox();
+        if (!box.contains(cell)) throw new IllegalArgumentException("%s at %s is outside the box".formatted(what, cell));
+    }
+
+    private void requireNoPort(Cell cell) {
+        Optional<Port> port = this.portAt(cell);
+        if (port.isPresent())
+            throw new IllegalArgumentException(port.get().name() + " is in that cell; clear it first");
     }
 
     private List<Port> portsOfSide(boolean input) {
@@ -166,6 +298,12 @@ public final class CircuitDraft {
             if (port.input() == input) side.add(port);
         }
         return side;
+    }
+
+    private static JsonObject positioned(JsonObject block, Cell cell, Box box) {
+        JsonObject entry = block.deepCopy();
+        entry.add("position", cell.minus(box.min()).toJson());
+        return entry;
     }
 
     private static List<String> names(List<Port> ports) {

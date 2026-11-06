@@ -20,6 +20,9 @@ public final class DraftRenderer {
     private static final int CORNER_COLOR = 0xFFFFD800;
     private static final int INPUT_COLOR = 0xFF3CDC3C;
     private static final int OUTPUT_COLOR = 0xFFE03C3C;
+    private static final int KEPT_COLOR = 0xFF4C8CFF;
+    private static final int EMPTY_COLOR = 0xFFFF4040;
+    private static final float MARK_LINE_WIDTH = 1.5f;
     private static final float BOX_LINE_WIDTH = 2.5f;
     private static final float PORT_LINE_WIDTH = 2.0f;
     private static final int PORT_FILL_ALPHA = 0x40000000;
@@ -55,6 +58,8 @@ public final class DraftRenderer {
             Gizmos.cuboid(outline, GizmoStyle.stroke(BOX_COLOR, BOX_LINE_WIDTH));
             for (Port port : draft.getInputs()) drawPort(port, INPUT_COLOR);
             for (Port port : draft.getOutputs()) drawPort(port, OUTPUT_COLOR);
+            for (Cell cell : draft.getKeptCells()) Gizmos.cuboid(cellBox(cell), GizmoStyle.stroke(KEPT_COLOR, MARK_LINE_WIDTH));
+            for (Cell cell : draft.getEmptyCells()) drawEmpty(cell);
         }
     }
 
@@ -70,6 +75,14 @@ public final class DraftRenderer {
             Vec3 half = new Vec3(step.x(), step.y(), step.z()).scale(ARROW_LENGTH / 2);
             Gizmos.arrow(center.subtract(half), center.add(half), color).setAlwaysOnTop();
         }
+    }
+
+    // An X on the floor of the cell.
+    private static void drawEmpty(Cell cell) {
+        Gizmos.cuboid(cellBox(cell), GizmoStyle.stroke(EMPTY_COLOR, MARK_LINE_WIDTH));
+        double y = cell.y() + CELL_INSET;
+        Gizmos.line(new Vec3(cell.x(), y, cell.z()), new Vec3(cell.x() + 1, y, cell.z() + 1), EMPTY_COLOR, MARK_LINE_WIDTH);
+        Gizmos.line(new Vec3(cell.x() + 1, y, cell.z()), new Vec3(cell.x(), y, cell.z() + 1), EMPTY_COLOR, MARK_LINE_WIDTH);
     }
 
     private static AABB cellBox(Cell cell) {

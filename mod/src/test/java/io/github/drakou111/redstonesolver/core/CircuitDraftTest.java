@@ -76,9 +76,56 @@ class CircuitDraftTest {
     @Test
     void incompleteDraftsExplainWhatIsMissing() {
         CircuitDraft draft = new CircuitDraft();
-        assertThatThrownBy(draft::toSpecJson).hasMessageContaining("Select the box");
+        assertThatThrownBy(draft::toSpecJson).hasMessageContaining("Set the box");
         draft.setCorner1(new Cell(0, 0, 0));
         draft.setCorner2(new Cell(3, 1, 0));
-        assertThatThrownBy(draft::toSpecJson).hasMessageContaining("/rs input");
+        assertThatThrownBy(draft::toSpecJson).hasMessageContaining("Add an input");
+    }
+
+    @Test
+    void keptCellsAreReadFromTheWorldAndEmptyCellsForbidden() {
+        CircuitDraft draft = buffer();
+        draft.markKept(new Cell(11, 64, -5));
+        draft.markEmpty(new Cell(12, 65, -5));
+        JsonObject solid = new JsonObject();
+        solid.addProperty("type", "solid");
+
+        JsonObject spec = draft.toSpecJson(cell -> cell.equals(new Cell(11, 64, -5)) ? Optional.of(solid) : Optional.empty());
+
+        assertThat(spec.getAsJsonArray("fixed").toString()).isEqualTo("[{\"type\":\"solid\",\"position\":[1,0,0]}]");
+        assertThat(spec.getAsJsonArray("forbidden").toString()).isEqualTo("[[2,1,0]]");
+        assertThat(spec.getAsJsonArray("hints")).isEmpty();
+        assertThatThrownBy(() -> draft.toSpecJson(cell -> Optional.empty())).hasMessageContaining("is empty");
+    }
+
+    @Test
+    void sketchModeTurnsOtherBlocksIntoHints() {
+        CircuitDraft draft = buffer();
+        draft.markKept(new Cell(11, 64, -5));
+        draft.setOtherBlocks(CircuitDraft.OtherBlocks.SKETCH);
+        JsonObject dust = new JsonObject();
+        dust.addProperty("type", "dust");
+
+        JsonObject spec = draft.toSpecJson(cell -> Optional.of(dust));
+
+        // 8 cells minus the two ports and the kept cell.
+        assertThat(spec.getAsJsonArray("hints")).hasSize(5);
+        assertThat(spec.getAsJsonArray("fixed")).hasSize(1);
+    }
+
+    @Test
+    void marksReplaceEachOtherAndClearRemovesThem() {
+        CircuitDraft draft = buffer();
+        Cell cell = new Cell(11, 65, -5);
+        draft.markKept(cell);
+        draft.markEmpty(cell);
+        assertThat(draft.getKeptCells()).isEmpty();
+        assertThat(draft.getEmptyCells()).containsExactly(cell);
+        assertThat(draft.clearCell(cell)).isTrue();
+        assertThat(draft.clearCell(new Cell(10, 65, -5))).isTrue();
+        assertThat(draft.getInputs()).isEmpty();
+        assertThatThrownBy(() -> draft.markKept(new Cell(13, 65, -5))).hasMessageContaining("OUT1 is in that cell");
+        assertThat(draft.nextFreeName("IN")).isEqualTo("IN1");
+        assertThat(draft.nextFreeName("OUT")).isEqualTo("OUT2");
     }
 }
