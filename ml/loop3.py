@@ -31,7 +31,7 @@ INIT_FROM = ROOT / "output" / "ml" / "box9x5x9_run6" / "checkpoint.pt"
 DATAGEN = ROOT / "build" / "msvc" / "Release" / "redstone_datagen.exe"
 OUT_DIR = ROOT / "output" / "ml" / "box9x5x9_random1"
 
-ROUNDS = 20
+ROUNDS = 30
 # Search assist: the model's closest sketches seed a hill-climbing search
 # for these goals, run while the next round trains.
 SEARCH_GOALS = ("full_adder", "OUT1=xor3", "chain_xor_ab_xor3")
