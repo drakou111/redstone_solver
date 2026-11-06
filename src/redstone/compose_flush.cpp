@@ -215,7 +215,8 @@ std::optional<ComposeResult> compose_flush(const Netlist &netlist,
     // An OR of on/off signals is two dust lines meeting (dust carries the
     // stronger signal); so is an XOR whose inputs are never on together.
     // Tried first: it needs no module at all.
-    if (group.functions.size() == 1 && source[group.a] && source[group.b]) {
+    if (options.flush_joins && group.functions.size() == 1 && source[group.a] &&
+        source[group.b]) {
       const std::uint8_t f = group.functions[0];
       bool joinable = f == kOr;
       if (f == kXor) {

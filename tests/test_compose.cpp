@@ -105,3 +105,33 @@ TEST_CASE("flush placement builds a compact flat full adder") {
   CHECK_FALSE(verify_layout(result->layout, result->spec,
                             result->spec.verification_vectors()));
 }
+
+TEST_CASE("compose and shrink keeps the smaller variant, verified") {
+  Spec spec = spec_of(3, 2, [](int t, int o) {
+    int count = (t & 1) + ((t >> 1) & 1) + ((t >> 2) & 1);
+    return o == 0 ? count % 2 : count >= 2 ? 1 : 0;
+  });
+  NetlistComposeOptions options;
+  options.max_height = 2;
+  std::optional<ComposeResult> plain = compose_spec(spec, options);
+  REQUIRE(plain);
+
+  ShrinkOptions shrink;
+  shrink.time_limit_seconds = 40;
+  shrink.cut_seconds = 15;
+  std::vector<std::string> log;
+  std::optional<ComposeResult> result = compose_and_shrink(
+      spec, options, shrink, [&](std::string_view m) { log.emplace_back(m); });
+  std::string text;
+  for (const auto &line : log)
+    text += line + "\n";
+  INFO(text);
+  REQUIRE(result);
+  CHECK(text.find("ORs as joined wires") != std::string::npos);
+  CHECK(text.find("ORs as modules") != std::string::npos);
+  Vec3 a = result->layout.size();
+  Vec3 b = plain->layout.size();
+  CHECK(a.x * a.y * a.z <= b.x * b.y * b.z);
+  CHECK_FALSE(verify_layout(result->layout, result->spec,
+                            result->spec.verification_vectors()));
+}

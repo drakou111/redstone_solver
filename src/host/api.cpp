@@ -233,6 +233,11 @@ Json Api::start_compose(const Json &body) {
   options.stage_seconds = settings.value("timeLimit", 120.0);
   options.gates.seconds_per_size = options.stage_seconds;
   options.max_height = settings.value("maxHeight", 0);
+  // With a shrink time, every variant is built and shrunk; the best is kept.
+  const double shrink_seconds = settings.value("shrinkTimeLimit", 0.0);
+  const double cut_seconds = settings.value("cutTime", 120.0);
+  if (shrink_seconds < 0 || cut_seconds <= 0)
+    throw std::invalid_argument("shrink times must be positive");
   // Fails here, before the job starts, when no gate fits the height.
   gates_within_height(options.gates, options.max_height);
   options.solver.verification = verification_from(settings);
@@ -243,12 +248,21 @@ Json Api::start_compose(const Json &body) {
   // composed from on/off gates.
   boolean_table(spec);
   this->job_ = std::make_unique<SolveJob>(
-      spec, [spec, options](const ProgressCallback &progress,
-                            std::atomic<bool> *cancel) {
+      spec, [spec, options, shrink_seconds, cut_seconds](
+                const ProgressCallback &progress, std::atomic<bool> *cancel) {
         auto start = std::chrono::steady_clock::now();
         NetlistComposeOptions o = options;
         o.cancel = cancel;
-        std::optional<ComposeResult> composed = compose_spec(spec, o, progress);
+        std::optional<ComposeResult> composed;
+        if (shrink_seconds > 0) {
+          ShrinkOptions s;
+          s.time_limit_seconds = shrink_seconds;
+          s.cut_seconds = cut_seconds;
+          s.solver.verification = options.solver.verification;
+          composed = compose_and_shrink(spec, o, s, progress);
+        } else {
+          composed = compose_spec(spec, o, progress);
+        }
         SolveReport report;
         report.seconds = std::chrono::duration<double>(
                              std::chrono::steady_clock::now() - start)

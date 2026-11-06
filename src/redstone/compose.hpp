@@ -5,6 +5,7 @@
 
 #include "redstone/gate_library.hpp"
 #include "redstone/netlist.hpp"
+#include "redstone/shrink.hpp"
 #include "redstone/world.hpp"
 
 namespace rs {
@@ -41,6 +42,9 @@ struct NetlistComposeOptions {
   std::atomic<bool> *cancel = nullptr;
   // Flush placement first (compact, see compose_flush); columns if it fails.
   bool flush = true;
+  // Let flush placement make ORs (and XORs of signals never on together)
+  // from two joining dust lines instead of a module.
+  bool flush_joins = true;
   int flush_candidates = 6;    // positions tried per gate, best first
   double flush_seconds = 30.0; // per position
 };
@@ -59,6 +63,15 @@ std::optional<ComposeResult>
 compose_flush(const Netlist &netlist, const BoolTable &table,
               const NetlistComposeOptions &options,
               const ProgressCallback &progress = {});
+
+// Composes the spec in its variants (ORs as joined wires or as modules),
+// shrinks each with an equal share of `shrink.time_limit_seconds` and keeps
+// the smallest. The shrink is greedy, so a smaller start does not always end
+// smaller; trying both is what finds the compact one.
+std::optional<ComposeResult>
+compose_and_shrink(const Spec &spec, const NetlistComposeOptions &options,
+                   const ShrinkOptions &shrink,
+                   const ProgressCallback &progress = {});
 
 // The gate library options with every module shape taller than `max_height`
 // removed (0 keeps all). Throws std::invalid_argument when none is left.

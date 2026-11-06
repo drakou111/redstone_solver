@@ -65,10 +65,12 @@ public final class ServerLink {
         options.addProperty("onePlacement", this.state.isOnePlacement());
         options.addProperty("sketchTime", this.state.getSketchSeconds());
         if (compose) {
-            options.addProperty("shrinkTimeLimit", this.state.getTimeLimitSeconds());
             options.addProperty("maxHeight", this.state.getDraft().specSize().y());
-            options.addProperty("autoShrink", this.state.isAutoShrink());
-            options.addProperty("cutTime", Math.min(MAX_CUT_SECONDS, this.state.getTimeLimitSeconds()));
+            // The solver builds every variant, shrinks each and keeps the smallest.
+            if (this.state.isAutoShrink()) {
+                options.addProperty("shrinkTimeLimit", this.state.getTimeLimitSeconds());
+                options.addProperty("cutTime", Math.min(MAX_CUT_SECONDS, this.state.getTimeLimitSeconds()));
+            }
         }
         body.add("options", options);
         this.send("solve", body);

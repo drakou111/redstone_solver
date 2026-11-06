@@ -120,6 +120,12 @@ namespace {
 
 using namespace compose_parts;
 
+ShrinkResult shrink_layout_of(const ComposeResult &start,
+                              const ShrinkOptions &options,
+                              const ProgressCallback &progress) {
+  return shrink(start.spec, start.layout, options, progress);
+}
+
 // What a column holds along z: a gate group's module or a pass-through
 // track for one signal.
 struct Slot {
@@ -358,6 +364,60 @@ compose_netlist(const Netlist &netlist, const BoolTable &table,
       return std::nullopt;
   }
   return std::nullopt;
+}
+
+std::optional<ComposeResult>
+compose_and_shrink(const Spec &spec, const NetlistComposeOptions &options,
+                   const ShrinkOptions &shrink,
+                   const ProgressCallback &progress) {
+  auto say = [&](const std::string &message) {
+    if (progress)
+      progress(message);
+  };
+  // Each variant's first build; identical ones are shrunk once.
+  std::vector<std::pair<std::string, ComposeResult>> starts;
+  for (bool joins : {true, false}) {
+    NetlistComposeOptions o = options;
+    o.flush_joins = joins;
+    std::string name = joins ? "ORs as joined wires" : "ORs as modules";
+    say("building with " + name);
+    std::optional<ComposeResult> built = compose_spec(spec, o, progress);
+    if (options.cancel && options.cancel->load())
+      return std::nullopt;
+    if (!built)
+      continue;
+    bool same = std::any_of(starts.begin(), starts.end(), [&](const auto &s) {
+      return s.second.layout.size() == built->layout.size() &&
+             s.second.spec.hints.size() == built->spec.hints.size() &&
+             s.second.spec.hints == built->spec.hints;
+    });
+    if (!same)
+      starts.emplace_back(std::move(name), std::move(*built));
+  }
+  if (starts.empty())
+    return std::nullopt;
+
+  std::optional<ComposeResult> best;
+  auto volume = [](Vec3 s) { return s.x * s.y * s.z; };
+  for (auto &[name, start] : starts) {
+    ShrinkOptions o = shrink;
+    o.time_limit_seconds =
+        shrink.time_limit_seconds / static_cast<double>(starts.size());
+    o.cancel = options.cancel;
+    say(std::format("shrinking the {}x{}x{} build ({})", start.layout.size().x,
+                    start.layout.size().y, start.layout.size().z, name));
+    ShrinkResult shrunk = shrink_layout_of(start, o, progress);
+    ComposeResult result{std::move(shrunk.spec), std::move(shrunk.layout)};
+    Vec3 size = result.layout.size();
+    say(std::format("{}: {}x{}x{}", name, size.x, size.y, size.z));
+    if (!best || volume(size) < volume(best->layout.size()) ||
+        (volume(size) == volume(best->layout.size()) &&
+         result.spec.hints.size() < best->spec.hints.size()))
+      best = std::move(result);
+    if (options.cancel && options.cancel->load())
+      break;
+  }
+  return best;
 }
 
 GateLibraryOptions gates_within_height(GateLibraryOptions gates,

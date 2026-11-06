@@ -80,7 +80,7 @@ public final class SolverNetworking {
 
     /**
      * Body: {spec, origin: [x, y, z], method: "solve" | "compose", options: {timeLimit, onePlacement,
-     * sketchTime, maxHeight, autoShrink}}. The options go to the solver unchanged.
+     * sketchTime, maxHeight, shrinkTimeLimit, cutTime}}. The options go to the solver unchanged.
      */
     private void solve(MinecraftServer server, ServerPlayer player, JsonObject body) {
         JsonObject spec = body.getAsJsonObject("spec");
@@ -223,28 +223,6 @@ public final class SolverNetworking {
                         || alsoClear.map(old -> LayoutPlacer.hasBlocks(player.level(), LayoutPlacer.placedPart(old, skip)))
                                 .orElse(false);
                 json.addProperty("boxOccupied", occupied);
-            }
-
-            JsonObject options = request.getAsJsonObject("options");
-            boolean autoShrink = options.has("autoShrink") && options.get("autoShrink").getAsBoolean();
-            if (route.equals("compose/start") && autoShrink && !cancelled && player != null) {
-                JsonObject note = new JsonObject();
-                note.addProperty("seconds", outcome.seconds());
-                note.addProperty("line", "Composed %dx%dx%d (%d blocks); now shrinking it".formatted(layout.size().x(),
-                        layout.size().y(), layout.size().z(), layout.countPlacedBlocks()));
-                send(player, "progress", note);
-                JsonObject shrinkRequest = new JsonObject();
-                shrinkRequest.add("spec", outcome.spec().orElseThrow());
-                shrinkRequest.add("world", layoutJson);
-                JsonObject shrinkOptions = options.deepCopy();
-                if (options.has("shrinkTimeLimit")) shrinkOptions.add("timeLimit", options.get("shrinkTimeLimit"));
-                shrinkRequest.add("options", shrinkOptions);
-                try {
-                    this.startJob(server, player, "shrink/start", shrinkRequest, origin, Optional.of(box), skip);
-                    return;
-                } catch (SolverException e) {
-                    json.addProperty("note", "Composed, but the shrink could not start: " + e.getMessage());
-                }
             }
         }
         sendTo(server, playerId, "result", json);
