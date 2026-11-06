@@ -8,6 +8,7 @@ import io.github.drakou111.redstonesolver.core.Box;
 import io.github.drakou111.redstonesolver.core.Cell;
 import io.github.drakou111.redstonesolver.net.SolverPayloads.ToClient;
 import io.github.drakou111.redstonesolver.net.SolverPayloads.ToServer;
+import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
@@ -45,7 +46,13 @@ public final class ServerLink {
         JsonObject body = new JsonObject();
         Minecraft client = Minecraft.getInstance();
         if (client.level == null) throw new IllegalStateException("Not in a world.");
-        body.add("spec", this.state.getDraft().toSpecJson(new WorldBlocks(client.level)));
+        WorldBlocks blocks = new WorldBlocks(client.level);
+        List<String> stale = this.state.getDraft().refreshPorts(blocks::portBlockAt);
+        if (!stale.isEmpty() && client.player != null) {
+            client.player.sendSystemMessage(Chat.hint("No port block at " + String.join(", ", stale)
+                    + " any more; using its last kind and facing."));
+        }
+        body.add("spec", this.state.getDraft().toSpecJson(blocks));
         body.add("origin", box.min().toJson());
         body.addProperty("method", this.state.getMethod().name().toLowerCase(Locale.ROOT));
         JsonObject options = new JsonObject();

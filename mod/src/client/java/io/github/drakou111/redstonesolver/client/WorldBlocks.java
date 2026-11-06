@@ -4,6 +4,7 @@ import com.google.gson.JsonObject;
 import io.github.drakou111.redstonesolver.core.Cell;
 import io.github.drakou111.redstonesolver.core.CircuitDraft;
 import io.github.drakou111.redstonesolver.core.Dir;
+import io.github.drakou111.redstonesolver.core.PortBlock;
 import java.util.Optional;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
@@ -29,6 +30,16 @@ public final class WorldBlocks implements CircuitDraft.BlockSource {
         BlockState state = this.level.getBlockState(pos);
         if (state.isAir()) return Optional.empty();
         return Optional.of(describe(state, pos));
+    }
+
+    /** What port the block in this cell can be, if it is a repeater, comparator, dust or barrel. */
+    public Optional<PortBlock> portBlockAt(Cell cell) {
+        BlockPos pos = new BlockPos(cell.x(), cell.y(), cell.z());
+        BlockState state = this.level.getBlockState(pos);
+        if (state.is(Blocks.BARREL)) return PortBlock.fromSolverBlock(type("barrel"));
+        if (!state.is(Blocks.REPEATER) && !state.is(Blocks.COMPARATOR) && !state.is(Blocks.REDSTONE_WIRE))
+            return Optional.empty();
+        return PortBlock.fromSolverBlock(this.describe(state, pos));
     }
 
     /** A short name for messages: the solver type if known, else the block id. */

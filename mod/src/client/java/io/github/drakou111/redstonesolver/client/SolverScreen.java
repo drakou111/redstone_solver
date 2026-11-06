@@ -6,9 +6,6 @@ import com.google.gson.JsonObject;
 import io.github.drakou111.redstonesolver.core.Box;
 import io.github.drakou111.redstonesolver.core.Cell;
 import io.github.drakou111.redstonesolver.core.CircuitDraft;
-import io.github.drakou111.redstonesolver.core.Dir;
-import io.github.drakou111.redstonesolver.core.InputKind;
-import io.github.drakou111.redstonesolver.core.OutputKind;
 import io.github.drakou111.redstonesolver.core.Port;
 import io.github.drakou111.redstonesolver.core.SignalRange;
 import io.github.drakou111.redstonesolver.core.TruthRow;
@@ -187,7 +184,8 @@ public final class SolverScreen extends Screen {
         List<Port> ports = new ArrayList<>(draft.getInputs());
         ports.addAll(draft.getOutputs());
         if (ports.isEmpty()) {
-            this.label("None yet: look at a cell and press P.", x, y + LINE + 2, HINT_COLOR);
+            this.label("None yet: place a repeater, comparator, dust or barrel, look at it, press P.", x, y + LINE + 2,
+                HINT_COLOR);
             return;
         }
         int rowY = y + LINE;
@@ -216,14 +214,8 @@ public final class SolverScreen extends Screen {
                 name.setTextColor(BAD_COLOR);
             }
         }));
-        int buttonX = x + NAME_WIDTH + GAP;
-        String kindTip = port.input() ? "Input kind; click to change" : "Output kind; click to change";
-        buttonX += this.button(buttonX, y, 64, port.kind(), kindTip, () -> this.cycleKind(cell)) + GAP;
-        if (port.hasFacing()) {
-            buttonX += this.button(buttonX, y, 40, port.facing().jsonName(), "Direction the signal travels; click to turn",
-                    () -> this.turn(cell)) + GAP;
-        }
-        this.label(cell.toString(), buttonX, y + 5, HINT_COLOR);
+        String kind = port.hasFacing() ? port.kind() + " " + port.facing().jsonName() : port.kind();
+        this.label(kind + "  at " + cell, x + NAME_WIDTH + GAP, y + 5, HINT_COLOR);
         this.button(x + width - SMALL_BUTTON, y, SMALL_BUTTON, "x", "Remove " + port.name(), () -> {
             draft.removePort(port.name());
             this.rebuildWidgets();
@@ -236,7 +228,7 @@ public final class SolverScreen extends Screen {
         List<Port> inputs = draft.getInputs();
         List<Port> outputs = draft.getOutputs();
         if (inputs.isEmpty() || outputs.isEmpty()) {
-            this.label("Add at least one input and one output first (P on a cell).", x, y + LINE + 2, HINT_COLOR);
+            this.label("Add at least one input and one output first (P on a port block).", x, y + LINE + 2, HINT_COLOR);
             this.visibleRows = 0;
             return;
         }
@@ -500,35 +492,6 @@ public final class SolverScreen extends Screen {
             text.append(name).append(' ').append(settle.get(i).getAsInt()).append(" ticks");
         }
         return text.toString();
-    }
-
-    private void cycleKind(Cell cell) {
-        CircuitDraft draft = this.state.getDraft();
-        draft.portAt(cell).ifPresent(port -> {
-            String next;
-            if (port.input()) {
-                InputKind[] kinds = InputKind.values();
-                next = kinds[(InputKind.parse(port.kind()).orElseThrow().ordinal() + 1) % kinds.length].jsonName();
-            } else {
-                OutputKind[] kinds = OutputKind.values();
-                next = kinds[(OutputKind.parse(port.kind()).orElseThrow().ordinal() + 1) % kinds.length].jsonName();
-            }
-            draft.putPort(new Port(port.name(), port.input(), next, port.position(), port.facing()));
-        });
-        this.rebuildWidgets();
-    }
-
-    private void turn(Cell cell) {
-        CircuitDraft draft = this.state.getDraft();
-        draft.portAt(cell).ifPresent(port -> {
-            Dir[] order = {Dir.NORTH, Dir.EAST, Dir.SOUTH, Dir.WEST};
-            int index = 0;
-            for (int i = 0; i < order.length; i++) {
-                if (order[i] == port.facing()) index = i;
-            }
-            draft.putPort(new Port(port.name(), port.input(), port.kind(), port.position(), order[(index + 1) % order.length]));
-        });
-        this.rebuildWidgets();
     }
 
     private void run(Runnable action) {

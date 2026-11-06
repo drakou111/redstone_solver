@@ -51,8 +51,9 @@ To use the jar in your own game, set `solver_exe` in `config/redstone_solver.pro
 first start). In a world with cheats (keys are rebindable under Controls):
 
 - J and K on two corner blocks set the box (its bottom layer is for supports).
-- P on a cell: make it an input or output (facing the way you look), keep the block you look at, or
-  force the cell empty.
+- Place a repeater, comparator, dust or barrel where a port goes, look at it and press P: make it an
+  input or output (its kind and facing come from the block). P also keeps a block or forces the cell
+  in front of it empty.
 - R opens the Solver panel: truth table, timing, time limit, Solve or Compose, what to do with your
   own blocks in the box (ignore or use as a sketch), Solve, then Place, Discard or Shrink.
 

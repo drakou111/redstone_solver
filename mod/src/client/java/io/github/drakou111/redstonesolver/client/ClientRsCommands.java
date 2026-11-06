@@ -11,17 +11,16 @@ import io.github.drakou111.redstonesolver.core.Box;
 import io.github.drakou111.redstonesolver.core.Cell;
 import io.github.drakou111.redstonesolver.core.CircuitDraft;
 import io.github.drakou111.redstonesolver.core.Dir;
-import io.github.drakou111.redstonesolver.core.InputKind;
-import io.github.drakou111.redstonesolver.core.OutputKind;
 import io.github.drakou111.redstonesolver.core.Port;
+import io.github.drakou111.redstonesolver.core.PortBlock;
 import io.github.drakou111.redstonesolver.core.TruthRow;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.Locale;
 import java.util.Optional;
 import net.fabricmc.fabric.api.client.command.v2.ClientCommands;
 import net.fabricmc.fabric.api.client.command.v2.FabricClientCommandSource;
 import net.minecraft.commands.SharedSuggestionProvider;
+import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
 import net.minecraft.network.chat.Component;
 
@@ -31,8 +30,8 @@ public final class ClientRsCommands {
     private static final String HELP = """
             Redstone Solver: describe a circuit, the solver builds it.
              J / K: set the box corners at the block you look at (bottom layer = supports).
-             /rs input IN1 comparator, /rs output OUT1 dust: a port where a block would be placed,
-               facing the way you look.
+             /rs input IN1, /rs output OUT1: the repeater, comparator, dust or barrel you look at
+               becomes a port (with its kind and facing).
              /rs row IN1=1..15 -> OUT1=0   (ranges: 0, 15, 1..15, *)
              /rs timing 4 | any,  /rs solve [seconds],  /rs cancel,  /rs place,  /rs discard,  /rs shrink
              /rs show, /rs remove <port>, /rs rows remove <n>, /rs rows clear, /rs outlines""";
@@ -46,10 +45,6 @@ public final class ClientRsCommands {
     }
 
     public void register(CommandDispatcher<FabricClientCommandSource> dispatcher) {
-        SuggestionProvider<FabricClientCommandSource> inputKinds = (context, builder) -> SharedSuggestionProvider.suggest(
-                kindNames(InputKind.values()), builder);
-        SuggestionProvider<FabricClientCommandSource> outputKinds = (context, builder) -> SharedSuggestionProvider.suggest(
-                kindNames(OutputKind.values()), builder);
         SuggestionProvider<FabricClientCommandSource> portNames = (context, builder) -> {
             List<String> names = new ArrayList<>();
             for (Port port : this.state.getDraft().getInputs()) names.add(port.name());
@@ -62,12 +57,10 @@ public final class ClientRsCommands {
                 .then(ClientCommands.literal("help").executes(this::help))
                 .then(ClientCommands.literal("input")
                         .then(ClientCommands.argument("name", StringArgumentType.word())
-                                .then(ClientCommands.argument("kind", StringArgumentType.word()).suggests(inputKinds)
-                                        .executes(context -> this.addPort(context, true)))))
+                                .executes(context -> this.addPort(context, true))))
                 .then(ClientCommands.literal("output")
                         .then(ClientCommands.argument("name", StringArgumentType.word())
-                                .then(ClientCommands.argument("kind", StringArgumentType.word()).suggests(outputKinds)
-                                        .executes(context -> this.addPort(context, false)))))
+                                .executes(context -> this.addPort(context, false))))
                 .then(ClientCommands.literal("remove")
                         .then(ClientCommands.argument("name", StringArgumentType.word()).suggests(portNames)
                                 .executes(this::removePort)))
@@ -107,21 +100,13 @@ public final class ClientRsCommands {
     private int addPort(CommandContext<FabricClientCommandSource> context, boolean input) {
         FabricClientCommandSource source = context.getSource();
         String name = StringArgumentType.getString(context, "name");
-        String kindName = StringArgumentType.getString(context, "kind");
-        Optional<Cell> target = SolverKeys.lookedAtPlacement(source.getClient());
-        if (target.isEmpty()) return fail(context, "Look at a block: the port goes where a block would be placed.");
-        Dir facing = toDir(source.getPlayer().getDirection());
+        Optional<BlockPos> looked = SolverKeys.lookedAtBlock(source.getClient());
+        if (looked.isEmpty()) return fail(context, "Look at the repeater, comparator, dust or barrel that marks the port.");
+        Cell cell = new Cell(looked.get().getX(), looked.get().getY(), looked.get().getZ());
+        Optional<PortBlock> block = new WorldBlocks(source.getLevel()).portBlockAt(cell);
+        if (block.isEmpty()) return fail(context, "That block cannot be a port; use a repeater, comparator, dust or barrel.");
         try {
-            Port port;
-            if (input) {
-                InputKind kind = InputKind.parse(kindName).orElseThrow(() -> new IllegalArgumentException(
-                        "Input kinds: " + String.join(", ", kindNames(InputKind.values()))));
-                port = Port.input(name, kind, target.get(), facing);
-            } else {
-                OutputKind kind = OutputKind.parse(kindName).orElseThrow(() -> new IllegalArgumentException(
-                        "Output kinds: " + String.join(", ", kindNames(OutputKind.values()))));
-                port = Port.output(name, kind, target.get(), facing);
-            }
+            Port port = block.get().toPort(name, input, cell);
             this.state.getDraft().putPort(port);
             return ok(context, (input ? "Input " : "Output ") + port.describe());
         } catch (IllegalArgumentException | IllegalStateException e) {
@@ -216,11 +201,5 @@ public final class ClientRsCommands {
     static Dir toDir(Direction direction) {
         return Dir.parse(direction.getSerializedName())
                 .orElseThrow(() -> new IllegalStateException("unknown direction " + direction));
-    }
-
-    private static List<String> kindNames(Enum<?>[] kinds) {
-        List<String> names = new ArrayList<>();
-        for (Enum<?> kind : kinds) names.add(kind.name().toLowerCase(Locale.ROOT));
-        return names;
     }
 }

@@ -82,14 +82,15 @@ public final class SolverKeys {
         LocalPlayer player = client.player;
         if (player == null || client.level == null) return;
         Optional<Cell> placement = lookedAtPlacement(client);
-        if (placement.isEmpty()) {
-            player.sendOverlayMessage(Chat.hint("Look at a block: the menu is for the cell in front of it."));
+        Optional<BlockPos> looked = lookedAtBlock(client);
+        if (placement.isEmpty() || looked.isEmpty()) {
+            player.sendOverlayMessage(Chat.hint("Look at a block, like the repeater or dust you placed for a port."));
             return;
         }
-        Optional<Cell> looked = lookedAtBlock(client).map(pos -> new Cell(pos.getX(), pos.getY(), pos.getZ()));
-        String name = looked.map(cell -> new WorldBlocks(client.level).nameAt(cell)).orElse("nothing");
-        client.setScreenAndShow(new CellMenuScreen(this.state, placement.get(), looked,
-                ClientRsCommands.toDir(player.getDirection()), name));
+        Cell cell = new Cell(looked.get().getX(), looked.get().getY(), looked.get().getZ());
+        WorldBlocks blocks = new WorldBlocks(client.level);
+        client.setScreenAndShow(new CellMenuScreen(this.state, cell, placement.get(), blocks.nameAt(cell),
+                blocks.portBlockAt(cell)));
     }
 
     static Optional<BlockPos> lookedAtBlock(Minecraft client) {

@@ -168,4 +168,40 @@ class CircuitDraftTest {
         assertThat(draft.getEmptyCells()).isEmpty();
         assertThat(draft.getRows()).hasSize(2);
     }
+
+    private static JsonObject solverBlock(String type, String facing) {
+        JsonObject block = new JsonObject();
+        block.addProperty("type", type);
+        if (facing != null) block.addProperty("facing", facing);
+        return block;
+    }
+
+    @Test
+    void placedBlocksDecideWhatAPortCanBe() {
+        PortBlock repeater = PortBlock.fromSolverBlock(solverBlock("repeater", "west")).orElseThrow();
+        Port input = repeater.toPort("IN1", true, new Cell(1, 1, 1));
+        assertThat(input.kind()).isEqualTo("repeater");
+        assertThat(input.facing()).isEqualTo(Dir.WEST);
+        assertThat(repeater.describe()).isEqualTo("repeater, signal going west");
+
+        PortBlock barrel = PortBlock.fromSolverBlock(solverBlock("barrel", null)).orElseThrow();
+        assertThat(barrel.toPort("IN1", true, new Cell(0, 0, 0)).kind()).isEqualTo("container");
+        assertThatThrownBy(() -> barrel.toPort("OUT1", false, new Cell(0, 0, 0))).hasMessageContaining("cannot be an output");
+        assertThat(PortBlock.fromSolverBlock(solverBlock("solid", null))).isEmpty();
+    }
+
+    @Test
+    void portsFollowTheBlocksInTheirCells() {
+        CircuitDraft draft = buffer();
+        Cell in = new Cell(10, 65, -5);
+        List<String> stale = draft.refreshPorts(cell -> cell.equals(in)
+                ? PortBlock.fromSolverBlock(solverBlock("repeater", "south"))
+                : Optional.empty());
+
+        assertThat(stale).containsExactly("OUT1");
+        Port port = draft.getInputs().getFirst();
+        assertThat(port.kind()).isEqualTo("repeater");
+        assertThat(port.facing()).isEqualTo(Dir.SOUTH);
+        assertThat(draft.getOutputs().getFirst().kind()).isEqualTo("dust");
+    }
 }

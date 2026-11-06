@@ -10,6 +10,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
+import java.util.function.Function;
 
 /** One player's circuit description in world coordinates, edited by keys, the panel and /rs. */
 public final class CircuitDraft {
@@ -109,6 +110,25 @@ public final class CircuitDraft {
         this.ports.clear();
         this.ports.putAll(renamed);
         for (int i = 0; i < this.rows.size(); i++) this.rows.set(i, this.rows.get(i).withRenamedPort(oldName, newName));
+    }
+
+    /**
+     * Updates each port's kind and facing from the block now in its cell (the player may have
+     * turned or swapped it). Returns the names of ports whose cell no longer holds a block that
+     * can be that port; those keep their last kind and facing.
+     */
+    public List<String> refreshPorts(Function<Cell, Optional<PortBlock>> blocks) {
+        List<String> stale = new ArrayList<>();
+        for (Port port : List.copyOf(this.ports.values())) {
+            Optional<PortBlock> block = blocks.apply(port.position());
+            boolean fits = block.isPresent() && (port.input() ? block.get().input() : block.get().output()).isPresent();
+            if (!fits) {
+                stale.add(port.name());
+                continue;
+            }
+            this.ports.put(port.name(), block.get().toPort(port.name(), port.input(), port.position()));
+        }
+        return stale;
     }
 
     public Optional<Port> getPort(String name) {
