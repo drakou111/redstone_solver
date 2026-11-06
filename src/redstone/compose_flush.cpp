@@ -45,6 +45,8 @@ struct Route {
   Vec3 to;
 };
 
+// Where a gate goes: a module at (x0, z), or (join) no module at all, its
+// two signals wired into one dust cell.
 struct Spot {
   int x0 = 0;
   int z = 0;
@@ -52,7 +54,12 @@ struct Spot {
   std::vector<Route> routes;
   std::vector<std::pair<int, Vec3>> new_ports; // input index, port cell
   long score = 0;
+  bool join = false;
+  std::vector<Vec3> outputs; // where the gate's signals leave
 };
+
+constexpr std::uint8_t kOr = 0b1110;
+constexpr std::uint8_t kXor = 0b0110;
 
 } // namespace
 
@@ -195,6 +202,8 @@ std::optional<ComposeResult> compose_flush(const Netlist &netlist,
         max_z = std::max(max_z, cell[2]);
       }
       p.score = static_cast<long>(max_x + 1) * (max_z + 1) * 4 + route_length;
+      for (Vec3 out : m.outs)
+        p.outputs.push_back({x0 + out.x, 1, z + out.z});
       candidates.push_back(std::move(p));
     }
     std::stable_sort(
@@ -203,12 +212,56 @@ std::optional<ComposeResult> compose_flush(const Netlist &netlist,
     if (static_cast<int>(candidates.size()) > options.flush_candidates)
       candidates.resize(options.flush_candidates);
 
+    // An OR of on/off signals is two dust lines meeting (dust carries the
+    // stronger signal); so is an XOR whose inputs are never on together.
+    // Tried first: it needs no module at all.
+    if (group.functions.size() == 1 && source[group.a] && source[group.b]) {
+      const std::uint8_t f = group.functions[0];
+      bool joinable = f == kOr;
+      if (f == kXor) {
+        joinable = true;
+        for (int t = 0; t < (1 << n) && joinable; ++t) {
+          std::vector<bool> v = netlist.evaluate(t);
+          joinable = !(v[group.a] && v[group.b]);
+        }
+      }
+      const Vec3 sa = *source[group.a];
+      const Vec3 sb = *source[group.b];
+      std::vector<Spot> joins;
+      for (int z : {sa.z, sb.z}) {
+        if (!joinable)
+          break;
+        const Vec3 meet{std::max(sa.x, sb.x) + 1, 1, z};
+        if (occupied(meet))
+          continue;
+        Spot j;
+        j.join = true;
+        j.x0 = meet.x;
+        j.z = meet.z;
+        j.footprint = {meet.x, meet.x, meet.z, meet.z};
+        for (Vec3 from : {sa, sb})
+          if (from != meet)
+            j.routes.push_back({from, meet});
+        j.outputs = {meet};
+        int max_x = meet.x;
+        int max_z = meet.z;
+        for (const auto &[cell, block] : placed) {
+          max_x = std::max(max_x, cell[0]);
+          max_z = std::max(max_z, cell[2]);
+        }
+        j.score = static_cast<long>(max_x + 1) * (max_z + 1) * 4;
+        joins.push_back(std::move(j));
+      }
+      candidates.insert(candidates.begin(), joins.begin(), joins.end());
+    }
+
     bool done = false;
     for (const Spot &p : candidates) {
       if (cancelled())
         return std::nullopt;
       Cells cells = placed;
-      add_layout(cells, m.layout, {p.x0, 0, p.z});
+      if (!p.join)
+        add_layout(cells, m.layout, {p.x0, 0, p.z});
       std::set<std::array<int, 3>> free_cells;
       for (const Route &r : p.routes)
         for (int x = std::min(r.from.x, r.to.x);
@@ -235,7 +288,7 @@ std::optional<ComposeResult> compose_flush(const Netlist &netlist,
       std::vector<Vec3> output_cells;
       for (std::size_t o = 0; o < group.nodes.size(); ++o) {
         watched.push_back(group.nodes[o]);
-        output_cells.push_back({p.x0 + m.outs[o].x, 1, p.z + m.outs[o].z});
+        output_cells.push_back(p.outputs[o]);
       }
       for (int node = n; node < nodes; ++node)
         if (source[node] && last_use[node] > gi) {
@@ -282,22 +335,25 @@ std::optional<ComposeResult> compose_flush(const Netlist &netlist,
       solver.stop_at_first = true;
       solver.cancel = options.cancel;
       SolveReport report = solve(spec, solver);
-      say(std::format("gate {} ({}) at x {} z {}{}: {}", gi + 1, names, p.x0,
-                      p.z, p.routes.empty() ? ", no wire" : "",
+      say(std::format("gate {} ({}){} at x {} z {}{}: {}", gi + 1, names,
+                      p.join ? " as joined wires" : "", p.x0, p.z,
+                      p.routes.empty() ? ", no wire" : "",
                       report.solution ? std::string_view("wired")
                                       : to_string(report.status)));
       if (!report.solution)
         continue;
       placed.clear();
       add_layout(placed, report.solution->layout, {0, 0, 0});
-      footprints.push_back(p.footprint);
+      if (!p.join) {
+        footprints.push_back(p.footprint);
+        next_free_z = std::max(next_free_z, p.footprint.z1 + 2);
+      }
       for (const auto &[index, cell] : p.new_ports) {
         port[index] = cell;
         source[index] = cell;
       }
       for (std::size_t o = 0; o < group.nodes.size(); ++o)
-        source[group.nodes[o]] = Vec3{p.x0 + m.outs[o].x, 1, p.z + m.outs[o].z};
-      next_free_z = std::max(next_free_z, p.footprint.z1 + 2);
+        source[group.nodes[o]] = p.outputs[o];
       done = true;
       break;
     }
