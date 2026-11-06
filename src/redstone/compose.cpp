@@ -385,6 +385,15 @@ std::optional<ComposeResult> compose_spec(const Spec &spec,
   }
   if (progress)
     progress(std::format("gate network:\n{}", netlist->describe()));
+  if (options.flush) {
+    if (std::optional<ComposeResult> flush =
+            compose_flush(*netlist, table, options, progress))
+      return flush;
+    if (options.cancel && options.cancel->load())
+      return std::nullopt;
+    if (progress)
+      progress("flush placement failed; laying out in columns");
+  }
   return compose_netlist(*netlist, table, options, progress);
 }
 

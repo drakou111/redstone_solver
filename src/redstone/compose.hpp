@@ -39,6 +39,10 @@ struct NetlistComposeOptions {
   GateLibraryOptions gates;
   SolverOptions solver; // threads and verification placements
   std::atomic<bool> *cancel = nullptr;
+  // Flush placement first (compact, see compose_flush); columns if it fails.
+  bool flush = true;
+  int flush_candidates = 6;    // positions tried per gate, best first
+  double flush_seconds = 30.0; // per position
 };
 
 // The composed circuit for `netlist`; its spec has the table's rows (don't
@@ -47,6 +51,14 @@ std::optional<ComposeResult>
 compose_netlist(const Netlist &netlist, const BoolTable &table,
                 const NetlistComposeOptions &options,
                 const ProgressCallback &progress = {});
+
+// Places the gate modules one at a time against the circuit so far, each
+// lined up with one of its signals, and wires the rest in small corridors.
+// Nothing if a gate finds no place.
+std::optional<ComposeResult>
+compose_flush(const Netlist &netlist, const BoolTable &table,
+              const NetlistComposeOptions &options,
+              const ProgressCallback &progress = {});
 
 // The gate library options with every module shape taller than `max_height`
 // removed (0 keeps all). Throws std::invalid_argument when none is left.

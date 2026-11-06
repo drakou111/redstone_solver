@@ -69,6 +69,7 @@ add_library(redstone_core STATIC
         src/redstone/solve_job.cpp
         src/redstone/shrink.cpp
         src/redstone/compose.cpp
+        src/redstone/compose_flush.cpp
         src/redstone/netlist.cpp
         src/redstone/gate_library.cpp
         src/redstone/sat_engine.cpp

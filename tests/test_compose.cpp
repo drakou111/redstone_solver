@@ -81,3 +81,27 @@ TEST_CASE("a height limit keeps only gate shapes that fit") {
   CHECK(gates_within_height(gates, 0).sizes.size() == gates.sizes.size());
   CHECK_THROWS_AS(gates_within_height(gates, 1), std::invalid_argument);
 }
+
+TEST_CASE("flush placement builds a compact flat full adder") {
+  Spec spec = spec_of(3, 2, [](int t, int o) {
+    int count = (t & 1) + ((t >> 1) & 1) + ((t >> 2) & 1);
+    return o == 0 ? count % 2 : count >= 2 ? 1 : 0;
+  });
+  NetlistComposeOptions options;
+  options.max_height = 2;
+  std::vector<std::string> log;
+  std::optional<ComposeResult> result = compose_spec(
+      spec, options, [&](std::string_view m) { log.emplace_back(m); });
+  std::string text;
+  for (const auto &line : log)
+    text += line + "\n";
+  INFO(text);
+  REQUIRE(result);
+  CHECK(text.find("laying out in columns") == std::string::npos);
+  Vec3 size = result->layout.size();
+  CHECK(size.y <= 2);
+  // The column layout needs 27x3x7; flush placement gave 11x2x8.
+  CHECK(size.x * size.z <= 100);
+  CHECK_FALSE(verify_layout(result->layout, result->spec,
+                            result->spec.verification_vectors()));
+}
