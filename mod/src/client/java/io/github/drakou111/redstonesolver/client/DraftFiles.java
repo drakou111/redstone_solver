@@ -46,6 +46,7 @@ public final class DraftFiles {
         json.add("draft", state.getDraft().toJson());
         JsonObject settings = new JsonObject();
         settings.addProperty("timeLimit", state.getTimeLimitSeconds());
+        settings.addProperty("composeStep", state.getComposeStepSeconds());
         settings.addProperty("method", state.getMethod().name());
         settings.addProperty("onePlacement", state.isOnePlacement());
         settings.addProperty("sketchSeconds", state.getSketchSeconds());
@@ -77,6 +78,7 @@ public final class DraftFiles {
         state.replaceDraft(draft);
         Optional.ofNullable(json.getAsJsonObject("settings")).ifPresent(settings -> {
             if (settings.has("timeLimit")) state.setTimeLimitSeconds(settings.get("timeLimit").getAsDouble());
+            if (settings.has("composeStep")) state.setComposeStepSeconds(settings.get("composeStep").getAsDouble());
             if (settings.has("method")) state.setMethod(ClientState.Method.valueOf(settings.get("method").getAsString()));
             if (settings.has("onePlacement")) state.setOnePlacement(settings.get("onePlacement").getAsBoolean());
             if (settings.has("sketchSeconds")) state.setSketchSeconds(settings.get("sketchSeconds").getAsDouble());

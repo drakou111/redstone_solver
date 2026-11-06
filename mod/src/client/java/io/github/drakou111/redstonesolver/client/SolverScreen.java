@@ -6,6 +6,7 @@ import com.google.gson.JsonObject;
 import io.github.drakou111.redstonesolver.core.Box;
 import io.github.drakou111.redstonesolver.core.Cell;
 import io.github.drakou111.redstonesolver.core.CircuitDraft;
+import io.github.drakou111.redstonesolver.core.Durations;
 import io.github.drakou111.redstonesolver.core.Formula;
 import io.github.drakou111.redstonesolver.core.Port;
 import io.github.drakou111.redstonesolver.core.SignalRange;
@@ -17,6 +18,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.function.Consumer;
+import java.util.function.DoubleConsumer;
 import net.minecraft.client.gui.GuiGraphicsExtractor;
 import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.client.gui.components.Button;
@@ -532,19 +534,13 @@ public final class SolverScreen extends Screen {
                 "Outputs must be right this many game ticks after an input changes (20 per second), or any");
         this.flowHint("ticks");
         this.flowLabel("Time limit");
-        EditBox limit = this.flowField(36, formatNumber(this.state.getTimeLimitSeconds()),
-                "How long the solver may work, in seconds (Build from gates: per step)");
-        if (limit != null) {
-            limit.setResponder(text -> {
-                try {
-                    this.state.setTimeLimitSeconds(Double.parseDouble(text.trim()));
-                    limit.setTextColor(TEXT_COLOR);
-                } catch (IllegalArgumentException e) {
-                    limit.setTextColor(BAD_COLOR);
-                }
-            });
+        this.durationField(this.state.getTimeLimitSeconds(), this.state::setTimeLimitSeconds,
+                "How long a search or shrink may take in all: 90s, 10m, 1h");
+        if (this.state.getMethod() == ClientState.Method.COMPOSE) {
+            this.flowLabel("Step limit");
+            this.durationField(this.state.getComposeStepSeconds(), this.state::setComposeStepSeconds,
+                    "Build from gates: how long each gate and each wiring step may take (90s, 2m, ...)");
         }
-        this.flowHint("s");
 
         this.flowNewLine();
         boolean compose = this.state.getMethod() == ClientState.Method.COMPOSE;
@@ -672,6 +668,20 @@ public final class SolverScreen extends Screen {
 
     private void card(int x, int top, int width, int bottom) {
         this.cards.add(new Card(x - CARD_PAD, top - CARD_PAD, x + width + CARD_PAD, bottom + CARD_PAD));
+    }
+
+    // A time field (90s, 10m, 1h); red until the text is a valid time.
+    private void durationField(double seconds, DoubleConsumer setter, String tooltip) {
+        EditBox field = this.flowField(36, Durations.format(seconds), tooltip);
+        if (field == null) return;
+        field.setResponder(text -> {
+            try {
+                setter.accept(Durations.parseSeconds(text));
+                field.setTextColor(TEXT_COLOR);
+            } catch (IllegalArgumentException e) {
+                field.setTextColor(BAD_COLOR);
+            }
+        });
     }
 
     // A ticks field where a word (or nothing) means no limit; red until the text is valid.

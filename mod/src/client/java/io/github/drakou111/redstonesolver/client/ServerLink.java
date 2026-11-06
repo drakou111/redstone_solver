@@ -60,10 +60,12 @@ public final class ServerLink {
         body.addProperty("floorAssumed", this.state.getDraft().assumesFloor());
         body.addProperty("method", this.state.getMethod().name().toLowerCase(Locale.ROOT));
         JsonObject options = new JsonObject();
-        options.addProperty("timeLimit", this.state.getTimeLimitSeconds());
+        boolean compose = this.state.getMethod() == ClientState.Method.COMPOSE;
+        options.addProperty("timeLimit", compose ? this.state.getComposeStepSeconds() : this.state.getTimeLimitSeconds());
         options.addProperty("onePlacement", this.state.isOnePlacement());
         options.addProperty("sketchTime", this.state.getSketchSeconds());
-        if (this.state.getMethod() == ClientState.Method.COMPOSE) {
+        if (compose) {
+            options.addProperty("shrinkTimeLimit", this.state.getTimeLimitSeconds());
             options.addProperty("maxHeight", this.state.getDraft().specSize().y());
             options.addProperty("autoShrink", this.state.isAutoShrink());
             options.addProperty("cutTime", Math.min(MAX_CUT_SECONDS, this.state.getTimeLimitSeconds()));

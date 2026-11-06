@@ -236,7 +236,9 @@ public final class SolverNetworking {
                 JsonObject shrinkRequest = new JsonObject();
                 shrinkRequest.add("spec", outcome.spec().orElseThrow());
                 shrinkRequest.add("world", layoutJson);
-                shrinkRequest.add("options", options);
+                JsonObject shrinkOptions = options.deepCopy();
+                if (options.has("shrinkTimeLimit")) shrinkOptions.add("timeLimit", options.get("shrinkTimeLimit"));
+                shrinkRequest.add("options", shrinkOptions);
                 try {
                     this.startJob(server, player, "shrink/start", shrinkRequest, origin, Optional.of(box), skip);
                     return;
