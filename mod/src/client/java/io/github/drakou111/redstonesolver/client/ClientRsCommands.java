@@ -34,7 +34,7 @@ public final class ClientRsCommands {
              /rs input IN1 comparator, /rs output OUT1 dust: a port where a block would be placed,
                facing the way you look.
              /rs row IN1=1..15 -> OUT1=0   (ranges: 0, 15, 1..15, *)
-             /rs timing 4 | any,  /rs solve [seconds],  /rs cancel,  /rs place,  /rs discard
+             /rs timing 4 | any,  /rs solve [seconds],  /rs cancel,  /rs place,  /rs discard,  /rs shrink
              /rs show, /rs remove <port>, /rs rows remove <n>, /rs rows clear, /rs outlines""";
 
     private final ClientState state;
@@ -90,6 +90,8 @@ public final class ClientRsCommands {
                         .then(ClientCommands.argument("seconds", DoubleArgumentType.doubleArg(1, MAX_TIME_LIMIT_SECONDS))
                                 .executes(context -> this.solve(context,
                                         Optional.of(DoubleArgumentType.getDouble(context, "seconds"))))))
+                .then(ClientCommands.literal("shrink").executes(context -> this.run(context, this.server::shrink,
+                        "Shrinking the last circuit.")))
                 .then(ClientCommands.literal("cancel").executes(context -> this.run(context, this.server::cancel,
                         "Cancelling; the best circuit so far (if any) still comes back.")))
                 .then(ClientCommands.literal("place").executes(context -> this.run(context, this.server::place, "")))

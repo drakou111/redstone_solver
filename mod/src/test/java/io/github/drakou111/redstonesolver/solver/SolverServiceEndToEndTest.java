@@ -85,4 +85,52 @@ class SolverServiceEndToEndTest {
             assertThat(outcome.analysisError()).isEmpty();
         }
     }
+
+    private static SolveOutcome run(SolverService service, String route, JsonObject request) throws Exception {
+        CompletableFuture<SolveOutcome> done = new CompletableFuture<>();
+        service.startJob(route, request, new SolverService.Listener() {
+            @Override
+            public void progress(double seconds, String lastLogLine) {
+            }
+
+            @Override
+            public void finished(SolveOutcome outcome) {
+                done.complete(outcome);
+            }
+        });
+        return done.get((long) TIME_LIMIT_SECONDS * 4, TimeUnit.SECONDS);
+    }
+
+    @Test
+    void shrinksASolvedCircuitIntoASmallerBox() throws Exception {
+        CircuitDraft draft = new CircuitDraft();
+        draft.setCorner1(new Cell(0, 0, 0));
+        draft.setCorner2(new Cell(4, 2, 1));
+        draft.putPort(Port.input("IN1", InputKind.COMPARATOR, new Cell(0, 1, 0), Dir.EAST));
+        draft.putPort(Port.output("OUT1", OutputKind.DUST, new Cell(4, 1, 0), Dir.NORTH));
+        draft.addRow(TruthRow.parse("IN1=1..15 -> OUT1=0"));
+        draft.addRow(TruthRow.parse("IN1=0 -> OUT1=1..15"));
+        JsonObject options = new JsonObject();
+        options.addProperty("timeLimit", TIME_LIMIT_SECONDS);
+        options.addProperty("cutTime", TIME_LIMIT_SECONDS);
+
+        try (SolverService service = new SolverService(executable)) {
+            JsonObject solveRequest = new JsonObject();
+            solveRequest.add("spec", draft.toSpecJson());
+            solveRequest.add("options", options);
+            SolveOutcome solved = run(service, "solve/start", solveRequest);
+            assertThat(solved.layoutJson()).isPresent();
+
+            JsonObject shrinkRequest = new JsonObject();
+            shrinkRequest.add("spec", solved.spec().orElseThrow());
+            shrinkRequest.add("world", solved.layoutJson().get());
+            shrinkRequest.add("options", options);
+            SolveOutcome shrunk = run(service, "shrink/start", shrinkRequest);
+
+            assertThat(shrunk.error()).isEmpty();
+            Cell size = shrunk.layout().orElseThrow().size();
+            assertThat(size.x() * size.y() * size.z()).isLessThan(5 * 3 * 2);
+            assertThat(Cell.fromJson(shrunk.spec().orElseThrow().get("size"))).isEqualTo(size);
+        }
+    }
 }

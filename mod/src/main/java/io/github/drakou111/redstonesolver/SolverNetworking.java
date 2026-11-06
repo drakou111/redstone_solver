@@ -5,6 +5,7 @@ import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParseException;
 import com.google.gson.JsonParser;
+import io.github.drakou111.redstonesolver.PlayerSessions.LastResult;
 import io.github.drakou111.redstonesolver.PlayerSessions.PendingResult;
 import io.github.drakou111.redstonesolver.PlayerSessions.Session;
 import io.github.drakou111.redstonesolver.core.Box;
@@ -56,6 +57,7 @@ public final class SolverNetworking {
             case "solve" -> this.solve(server, player, body);
             case "cancel" -> this.solver.cancel();
             case "place" -> this.place(player);
+            case "shrink" -> this.shrink(server, player, body);
             case "discard" -> {
                 this.sessions.get(player.getUUID()).setPending(Optional.empty());
                 send(player, "discarded", new JsonObject());
@@ -90,6 +92,23 @@ public final class SolverNetworking {
         JsonObject request = new JsonObject();
         request.add("spec", spec);
         request.add("options", options);
+        this.startJob(server, player, route, request, origin);
+    }
+
+    /** Body: {options: {timeLimit, cutTime, onePlacement, sketchTime}}; shrinks the last result. */
+    private void shrink(MinecraftServer server, ServerPlayer player, JsonObject body) {
+        LastResult last = this.sessions.get(player.getUUID()).getLast()
+                .orElseThrow(() -> new IllegalStateException("Solve something first; Shrink works on the last result."));
+        JsonObject options = body.getAsJsonObject("options");
+        if (options == null) throw new IllegalArgumentException("a shrink needs options");
+        JsonObject request = new JsonObject();
+        request.add("spec", last.spec());
+        request.add("world", last.layoutJson());
+        request.add("options", options);
+        this.startJob(server, player, "shrink/start", request, last.origin());
+    }
+
+    private void startJob(MinecraftServer server, ServerPlayer player, String route, JsonObject request, Cell origin) {
         UUID playerId = player.getUUID();
         this.sessions.get(playerId).setPending(Optional.empty());
         this.solver.startJob(route, request, new SolverService.Listener() {
@@ -103,14 +122,14 @@ public final class SolverNetworking {
 
             @Override
             public void finished(SolveOutcome outcome) {
-                server.execute(() -> SolverNetworking.this.finish(server, playerId, origin, outcome));
+                server.execute(() -> SolverNetworking.this.finish(server, playerId, route, origin, outcome));
             }
         });
         send(player, "started", new JsonObject());
     }
 
     // The result box starts at the origin; Compose and Shrink may return a different size.
-    private void finish(MinecraftServer server, UUID playerId, Cell origin, SolveOutcome outcome) {
+    private void finish(MinecraftServer server, UUID playerId, String route, Cell origin, SolveOutcome outcome) {
         JsonObject json = new JsonObject();
         JsonArray log = new JsonArray();
         for (String line : outcome.log()) log.add(line);
@@ -132,7 +151,11 @@ public final class SolverNetworking {
             json.add("settleTicks", settle);
             outcome.analysisError().ifPresent(error -> json.addProperty("analysisError", error));
             outcome.spec().ifPresent(spec -> json.add("spec", spec));
-            this.sessions.get(playerId).setPending(Optional.of(new PendingResult(layout, box)));
+            // Compose and Shrink change the box or the ports; the client adopts them once placed.
+            json.addProperty("reshaped", !route.equals("solve/start"));
+            Session session = this.sessions.get(playerId);
+            session.setPending(Optional.of(new PendingResult(layout, box)));
+            session.setLast(Optional.of(new LastResult(outcome.layoutJson().orElseThrow(), outcome.spec().orElseThrow(), origin)));
             ServerPlayer player = server.getPlayerList().getPlayer(playerId);
             if (player != null) json.addProperty("boxOccupied", LayoutPlacer.hasBlocks(player.level(), box));
         }

@@ -146,4 +146,26 @@ class CircuitDraftTest {
         assertThat(row.withRange("OUT1", false, new SignalRange(1, 15))).hasToString("IN1=0 -> OUT1=1..15");
         assertThatThrownBy(() -> row.withRange("OUT1", false, SignalRange.ANY)).hasMessageContaining("output");
     }
+
+    @Test
+    void adoptingAResultMovesTheBoxAndPorts() {
+        CircuitDraft draft = buffer();
+        draft.markEmpty(new Cell(12, 65, -5));
+        JsonObject spec = draft.toSpecJson();
+        spec.add("size", new Cell(6, 3, 2).toJson());
+        JsonObject output = spec.getAsJsonArray("outputs").get(0).getAsJsonObject();
+        output.add("position", new Cell(5, 1, 1).toJson());
+        output.addProperty("kind", "repeater");
+        output.addProperty("facing", "east");
+
+        draft.adoptSpec(spec, new Cell(10, 64, -5));
+
+        assertThat(draft.requireBox().size()).isEqualTo(new Cell(6, 3, 2));
+        Port out = draft.getOutputs().getFirst();
+        assertThat(out.name()).isEqualTo("OUT1");
+        assertThat(out.position()).isEqualTo(new Cell(15, 65, -4));
+        assertThat(out.kind()).isEqualTo("repeater");
+        assertThat(draft.getEmptyCells()).isEmpty();
+        assertThat(draft.getRows()).hasSize(2);
+    }
 }

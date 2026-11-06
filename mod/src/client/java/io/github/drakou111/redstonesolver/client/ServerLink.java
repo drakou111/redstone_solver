@@ -5,6 +5,7 @@ import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 import io.github.drakou111.redstonesolver.Chat;
 import io.github.drakou111.redstonesolver.core.Box;
+import io.github.drakou111.redstonesolver.core.Cell;
 import io.github.drakou111.redstonesolver.net.SolverPayloads.ToClient;
 import io.github.drakou111.redstonesolver.net.SolverPayloads.ToServer;
 import java.util.Locale;
@@ -18,6 +19,8 @@ import net.minecraft.network.chat.MutableComponent;
 
 /** Sends the client's requests to the server and applies its answers to the client state. */
 public final class ServerLink {
+    private static final double MAX_CUT_SECONDS = 120;
+
     private final ClientState state;
 
     public ServerLink(ClientState state) {
@@ -55,6 +58,21 @@ public final class ServerLink {
         this.state.setProgress("Starting the solver...");
     }
 
+    /** Shrinks the last result: removes columns, rows and layers while it still works. */
+    public void shrink() {
+        if (this.state.isSolving()) throw new IllegalStateException("A solve is already running.");
+        JsonObject options = new JsonObject();
+        options.addProperty("timeLimit", this.state.getTimeLimitSeconds());
+        options.addProperty("cutTime", Math.min(MAX_CUT_SECONDS, this.state.getTimeLimitSeconds()));
+        options.addProperty("onePlacement", this.state.isOnePlacement());
+        options.addProperty("sketchTime", this.state.getSketchSeconds());
+        JsonObject body = new JsonObject();
+        body.add("options", options);
+        this.send("shrink", body);
+        this.state.setSolving(true);
+        this.state.setProgress("Starting the shrink...");
+    }
+
     public void cancel() {
         this.send("cancel", new JsonObject());
     }
@@ -86,6 +104,7 @@ public final class ServerLink {
             case "placed" -> {
                 this.state.setResultWaiting(false);
                 player.sendSystemMessage(Chat.good("Placed. Drive the inputs with levers to test it."));
+                this.adoptPlacedResult(player);
             }
             case "discarded" -> this.state.setResultWaiting(false);
             case "error" -> {
@@ -93,6 +112,17 @@ public final class ServerLink {
                 player.sendSystemMessage(Chat.error(json.get("message").getAsString()));
             }
             default -> player.sendSystemMessage(Chat.error("Unknown message from the server: " + event));
+        }
+    }
+
+    private void adoptPlacedResult(LocalPlayer player) {
+        Optional<JsonObject> result = this.state.getLastResult();
+        if (result.isEmpty() || !result.get().has("reshaped") || !result.get().get("reshaped").getAsBoolean()) return;
+        try {
+            this.state.getDraft().adoptSpec(result.get().getAsJsonObject("spec"), Cell.fromJson(result.get().get("origin")));
+            player.sendSystemMessage(Chat.hint("The box and ports now match the placed circuit."));
+        } catch (IllegalArgumentException e) {
+            player.sendSystemMessage(Chat.error("Could not update the box and ports: " + e.getMessage()));
         }
     }
 

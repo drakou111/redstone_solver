@@ -219,6 +219,40 @@ public final class CircuitDraft {
         this.latestTicks = ticks.orElse(null);
     }
 
+    /**
+     * Makes the box and ports match a placed result whose spec differs from the draft (Compose
+     * places the ports itself, Shrink makes the box smaller). Ports keep their names and are matched
+     * by order. Kept and empty marks are dropped since the cells moved.
+     */
+    public void adoptSpec(JsonObject spec, Cell origin) {
+        List<Port> inputs = this.getInputs();
+        List<Port> outputs = this.getOutputs();
+        JsonArray specInputs = spec.getAsJsonArray("inputs");
+        JsonArray specOutputs = spec.getAsJsonArray("outputs");
+        if (specInputs.size() != inputs.size() || specOutputs.size() != outputs.size())
+            throw new IllegalArgumentException("the result has a different number of ports than the draft");
+
+        Cell size = Cell.fromJson(spec.get("size"));
+        Map<String, Port> adopted = new LinkedHashMap<>();
+        for (int i = 0; i < inputs.size(); i++) adopted.put(inputs.get(i).name(), adoptPort(inputs.get(i), specInputs, i, origin));
+        for (int i = 0; i < outputs.size(); i++)
+            adopted.put(outputs.get(i).name(), adoptPort(outputs.get(i), specOutputs, i, origin));
+        this.corner1 = origin;
+        this.corner2 = origin.plus(size).minus(new Cell(1, 1, 1));
+        this.ports.clear();
+        this.ports.putAll(adopted);
+        this.keptCells.clear();
+        this.emptyCells.clear();
+    }
+
+    private static Port adoptPort(Port port, JsonArray specPorts, int index, Cell origin) {
+        JsonObject entry = specPorts.get(index).getAsJsonObject();
+        String facingName = entry.get("facing").getAsString();
+        Dir facing = Dir.parse(facingName).orElseThrow(() -> new IllegalArgumentException("unknown facing " + facingName));
+        return new Port(port.name(), port.input(), entry.get("kind").getAsString(),
+                origin.plus(Cell.fromJson(entry.get("position"))), facing);
+    }
+
     /** The spec for a draft without kept cells or sketch; see {@link #toSpecJson(BlockSource)}. */
     public JsonObject toSpecJson() {
         return this.toSpecJson(BlockSource.NONE);

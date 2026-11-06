@@ -48,10 +48,15 @@ cd mod
 ```
 
 To use the jar in your own game, set `solver_exe` in `config/redstone_solver.properties` (created on
-first start). In a world with cheats: `/rs wand`, left- and right-click two corners of the box (the
-bottom layer is for supports), look where a port goes and run `/rs input IN1 comparator` or
-`/rs output OUT1 dust`, add rows like `/rs row IN1=1..15 -> OUT1=0`, then `/rs solve` and click
-Place. `/rs help` lists the rest.
+first start). In a world with cheats (keys are rebindable under Controls):
+
+- J and K on two corner blocks set the box (its bottom layer is for supports).
+- P on a cell: make it an input or output (facing the way you look), keep the block you look at, or
+  force the cell empty.
+- R opens the Solver panel: truth table, timing, time limit, Solve or Compose, what to do with your
+  own blocks in the box (ignore or use as a sketch), Solve, then Place, Discard or Shrink.
+
+`/rs help` lists the same as typed commands.
 
 Command line and tests:
 
