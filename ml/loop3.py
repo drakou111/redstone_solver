@@ -31,7 +31,7 @@ INIT_FROM = ROOT / "output" / "ml" / "box9x5x9_run6" / "checkpoint.pt"
 DATAGEN = ROOT / "build" / "msvc" / "Release" / "redstone_datagen.exe"
 OUT_DIR = ROOT / "output" / "ml" / "box9x5x9_random1"
 
-ROUNDS = 30
+ROUNDS = 52
 # Search assist: the model's closest sketches seed a hill-climbing search
 # for these goals, run while the next round trains.
 SEARCH_GOALS = ("full_adder", "OUT1=xor3", "chain_xor_ab_xor3")
@@ -458,9 +458,19 @@ def main() -> None:
         ).all(axis=1)
         eval_hits = int(matched[n_goal : n_goal + RANDOM_EVAL].sum())
         random_hits = int(matched[n_goal : n_goal + n_random].sum())
+        # Exact matches hide progress; the share of wrong entries shows it.
+        fixed_set = slice(n_goal, n_goal + RANDOM_EVAL)
+        eval_cares = np.stack(req_cares[fixed_set])
+        eval_wrong = (on[fixed_set] != np.stack(req_bits[fixed_set])) & eval_cares
+        eval_working = working[fixed_set]
+        wrong_share = eval_wrong[eval_working].sum() / max(
+            int(eval_cares[eval_working].sum()), 1
+        )
         say(
             f"   random tables: {eval_hits}/{RANDOM_EVAL} of the fixed set, "
-            f"{random_hits}/{n_random} of all random requests matched"
+            f"{random_hits}/{n_random} of all random requests matched; fixed set: "
+            f"{wrong_share:.1%} of entries wrong in the {int(eval_working.sum())} "
+            "working sketches"
         )
         near = sum(
             1
