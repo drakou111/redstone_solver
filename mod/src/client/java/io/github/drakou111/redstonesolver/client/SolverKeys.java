@@ -20,12 +20,15 @@ import net.minecraft.world.phys.HitResult;
 /** The mod's keys (rebindable under Controls): box corners, cell menu and the Solver panel. */
 public final class SolverKeys {
     private final ClientState state;
+    private final ServerLink server;
     private final KeyMapping corner1;
     private final KeyMapping corner2;
     private final KeyMapping cellMenu;
+    private final KeyMapping panel;
 
-    public SolverKeys(ClientState state) {
+    public SolverKeys(ClientState state, ServerLink server) {
         this.state = state;
+        this.server = server;
         KeyMapping.Category category = KeyMapping.Category.register(
                 Identifier.fromNamespaceAndPath(RedstoneSolverMod.MOD_ID, "main"));
         this.corner1 = KeyMappingHelper.registerKeyMapping(
@@ -34,6 +37,8 @@ public final class SolverKeys {
                 new KeyMapping("key.redstone_solver.corner2", InputConstants.KEY_K, category));
         this.cellMenu = KeyMappingHelper.registerKeyMapping(
                 new KeyMapping("key.redstone_solver.cell", InputConstants.KEY_P, category));
+        this.panel = KeyMappingHelper.registerKeyMapping(
+                new KeyMapping("key.redstone_solver.panel", InputConstants.KEY_R, category));
     }
 
     public void register() {
@@ -44,6 +49,9 @@ public final class SolverKeys {
         while (this.corner1.consumeClick()) this.setCorner(client, true);
         while (this.corner2.consumeClick()) this.setCorner(client, false);
         while (this.cellMenu.consumeClick()) this.openCellMenu(client);
+        while (this.panel.consumeClick()) {
+            if (client.player != null) client.setScreenAndShow(new SolverScreen(this.state, this.server));
+        }
     }
 
     private void setCorner(Minecraft client, boolean first) {

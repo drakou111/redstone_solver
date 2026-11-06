@@ -7,6 +7,13 @@ import java.util.Optional;
 /** Everything the client knows: the draft being edited, solve settings and the last solve's state. */
 public final class ClientState {
     public static final double DEFAULT_TIME_LIMIT_SECONDS = 60;
+    public static final double DEFAULT_SKETCH_SECONDS = 3;
+
+    /** How the circuit is built: one search of the whole box, or from gates. */
+    public enum Method {
+        SOLVE,
+        COMPOSE
+    }
 
     private final CircuitDraft draft = new CircuitDraft();
     private double timeLimitSeconds = DEFAULT_TIME_LIMIT_SECONDS;
@@ -15,6 +22,41 @@ public final class ClientState {
     private String progress = "";
     private JsonObject lastResult;
     private boolean resultWaiting;
+    private Method method = Method.SOLVE;
+    private boolean onePlacement;
+    private double sketchSeconds = DEFAULT_SKETCH_SECONDS;
+    private int version;
+
+    /** Grows whenever the solve state changes, so open screens know to refresh their buttons. */
+    public int getVersion() {
+        return this.version;
+    }
+
+    public Method getMethod() {
+        return this.method;
+    }
+
+    public void setMethod(Method method) {
+        this.method = method;
+    }
+
+    /** Verify only the circuit as built here, facing this way (allows faster circuits). */
+    public boolean isOnePlacement() {
+        return this.onePlacement;
+    }
+
+    public void setOnePlacement(boolean onePlacement) {
+        this.onePlacement = onePlacement;
+    }
+
+    public double getSketchSeconds() {
+        return this.sketchSeconds;
+    }
+
+    public void setSketchSeconds(double seconds) {
+        if (!(seconds > 0)) throw new IllegalArgumentException("the sketch step time must be positive");
+        this.sketchSeconds = seconds;
+    }
 
     public CircuitDraft getDraft() {
         return this.draft;
@@ -43,6 +85,7 @@ public final class ClientState {
 
     public void setSolving(boolean solving) {
         this.solving = solving;
+        this.version++;
         if (!solving) this.progress = "";
     }
 
@@ -61,6 +104,7 @@ public final class ClientState {
 
     public void setLastResult(Optional<JsonObject> result) {
         this.lastResult = result.orElse(null);
+        this.version++;
     }
 
     /** True while a solved circuit waits on the server for Place or Discard. */
@@ -70,5 +114,6 @@ public final class ClientState {
 
     public void setResultWaiting(boolean waiting) {
         this.resultWaiting = waiting;
+        this.version++;
     }
 }

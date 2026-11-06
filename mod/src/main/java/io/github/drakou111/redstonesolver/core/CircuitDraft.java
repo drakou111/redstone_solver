@@ -18,6 +18,7 @@ public final class CircuitDraft {
 
     private static final int DEFAULT_SETTLE_TICKS = 4;
     private static final int DEFAULT_HORIZON_TICKS = 20;
+    public static final String PORT_NAME_PATTERN = "[A-Za-z0-9_]+";
 
     /** Reads the solver block (JSON without position) at a world cell; empty for air. */
     @FunctionalInterface
@@ -88,6 +89,30 @@ public final class CircuitDraft {
 
     public boolean removePort(String name) {
         return this.ports.remove(name) != null;
+    }
+
+    /** Renames a port and every truth table entry that names it. */
+    public void renamePort(String oldName, String newName) {
+        Port port = this.ports.get(oldName);
+        if (port == null) throw new IllegalArgumentException("there is no port named " + oldName);
+        if (oldName.equals(newName)) return;
+        if (!newName.matches(PORT_NAME_PATTERN))
+            throw new IllegalArgumentException("port names use letters, digits and _ only");
+        if (this.ports.containsKey(newName)) throw new IllegalArgumentException(newName + " is already used");
+
+        Map<String, Port> renamed = new LinkedHashMap<>();
+        for (Map.Entry<String, Port> entry : this.ports.entrySet()) {
+            if (entry.getKey().equals(oldName))
+                renamed.put(newName, new Port(newName, port.input(), port.kind(), port.position(), port.facing()));
+            else renamed.put(entry.getKey(), entry.getValue());
+        }
+        this.ports.clear();
+        this.ports.putAll(renamed);
+        for (int i = 0; i < this.rows.size(); i++) this.rows.set(i, this.rows.get(i).withRenamedPort(oldName, newName));
+    }
+
+    public Optional<Port> getPort(String name) {
+        return Optional.ofNullable(this.ports.get(name));
     }
 
     public Optional<Port> portAt(Cell cell) {

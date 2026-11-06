@@ -12,28 +12,37 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.Set;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
- * Owns the solver process (started on first use, restarted if it dies) and runs one solve at a
- * time, polling its progress on a virtual thread.
+ * Owns the solver process (started on first use, restarted if it dies) and runs one job at a
+ * time (solve, compose or shrink), polling its progress on a virtual thread.
  */
 public final class SolverService implements AutoCloseable {
+    public static final Set<String> JOB_ROUTES = Set.of("solve/start", "compose/start", "shrink/start");
+
     private static final Logger LOGGER = System.getLogger(SolverService.class.getName());
     private static final Duration POLL_INTERVAL = Duration.ofMillis(500);
 
-    /** Receives progress and the end of a solve, on the polling thread. */
+    /** Receives progress and the end of a job, on the polling thread. */
     public interface Listener {
         void progress(double seconds, String lastLogLine);
 
         void finished(SolveOutcome outcome);
     }
 
-    /** How a solve ended: a verified layout, no circuit, or an error. */
-    public record SolveOutcome(Optional<Layout> layout, String status, boolean optimal, double seconds,
-            Optional<String> error, List<String> log) {
+    /**
+     * How a job ended. With a layout, {@code spec} is the spec it solves (a shrink returns a smaller
+     * one), {@code settleTicks} the latest tick each output changed after an input switch, and
+     * {@code analysis} says why that is missing when it is.
+     */
+    public record SolveOutcome(Optional<Layout> layout, Optional<JsonObject> layoutJson, Optional<JsonObject> spec,
+            String status, boolean optimal, double seconds, Optional<String> error, List<String> log,
+            List<Integer> settleTicks, Optional<String> analysisError) {
         public SolveOutcome {
             log = List.copyOf(log);
+            settleTicks = List.copyOf(settleTicks);
         }
     }
 
@@ -45,36 +54,31 @@ public final class SolverService implements AutoCloseable {
         this.executable = Objects.requireNonNull(executable, "executable");
     }
 
-    public Path getExecutable() {
-        return this.executable;
-    }
-
     public boolean isRunning() {
         return this.running.get();
     }
 
-    /** Starts a solve of {@code spec} (solver JSON); fails at once if one is already running. */
-    public void startSolve(JsonObject spec, double timeLimitSeconds, Listener listener) {
-        Objects.requireNonNull(spec, "spec");
+    /**
+     * Starts a job: {@code route} is one of {@link #JOB_ROUTES} and {@code body} its request
+     * ({spec, options, ...}). Fails at once if a job is already running.
+     */
+    public void startJob(String route, JsonObject body, Listener listener) {
+        Objects.requireNonNull(body, "body");
         Objects.requireNonNull(listener, "listener");
-        if (timeLimitSeconds <= 0) throw new IllegalArgumentException("the time limit must be positive");
+        if (!JOB_ROUTES.contains(route)) throw new IllegalArgumentException("not a job route: " + route);
+        if (!body.has("spec")) throw new IllegalArgumentException("a job needs a spec");
         if (!this.running.compareAndSet(false, true))
-            throw new SolverException("A solve is already running; /rs cancel stops it.");
+            throw new SolverException("The solver is busy with another job; cancel it first.");
 
-        Thread.ofVirtual().name("redstone-solve").start(() -> {
+        Thread.ofVirtual().name("redstone-" + route).start(() -> {
             try {
                 SolverClient solver = this.client();
-                JsonObject options = new JsonObject();
-                options.addProperty("timeLimit", timeLimitSeconds);
-                JsonObject body = new JsonObject();
-                body.add("spec", spec);
-                body.add("options", options);
-                solver.call("solve/start", body);
-                listener.finished(this.pollUntilDone(solver, listener));
+                solver.call(route, body);
+                listener.finished(this.pollUntilDone(solver, body, listener));
             } catch (SolverException e) {
                 listener.finished(failure(e.getMessage()));
             } catch (RuntimeException e) {
-                LOGGER.log(Level.ERROR, "Solve failed", e);
+                LOGGER.log(Level.ERROR, "Solver job failed", e);
                 listener.finished(failure("Unexpected error: " + e));
             } finally {
                 this.running.set(false);
@@ -83,7 +87,7 @@ public final class SolverService implements AutoCloseable {
     }
 
     public void cancel() {
-        if (!this.running.get()) throw new SolverException("No solve is running.");
+        if (!this.running.get()) throw new SolverException("Nothing is running.");
         this.client().call("solve/cancel", new JsonObject());
     }
 
@@ -101,7 +105,7 @@ public final class SolverService implements AutoCloseable {
         return this.client;
     }
 
-    private SolveOutcome pollUntilDone(SolverClient solver, Listener listener) {
+    private SolveOutcome pollUntilDone(SolverClient solver, JsonObject request, Listener listener) {
         while (true) {
             try {
                 Thread.sleep(POLL_INTERVAL);
@@ -116,27 +120,50 @@ public final class SolverService implements AutoCloseable {
                 listener.progress(seconds, log.isEmpty() ? "" : log.getLast());
                 continue;
             }
-            return outcomeOf(status, log);
+            return analyzed(solver, request, status, log);
         }
     }
 
-    static SolveOutcome outcomeOf(JsonObject status, List<String> log) {
-        if (status.has("error")) {
-            String error = status.get("error").getAsString();
-            return new SolveOutcome(Optional.empty(), "error", false, 0, Optional.of(error), log);
-        }
-        if (!status.has("result"))
-            return new SolveOutcome(Optional.empty(), "error", false, 0, Optional.of("The solver sent no result"), log);
+    private static SolveOutcome analyzed(SolverClient solver, JsonObject request, JsonObject status, List<String> log) {
+        if (status.has("error")) return failure(status.get("error").getAsString(), log);
+        if (!status.has("result")) return failure("The solver sent no result", log);
         JsonObject result = status.getAsJsonObject("result");
-        Optional<Layout> layout = result.has("layout")
-                ? Optional.of(Layout.fromJson(result.getAsJsonObject("layout")))
-                : Optional.empty();
-        return new SolveOutcome(layout, result.get("status").getAsString(), result.get("optimal").getAsBoolean(),
-                result.get("seconds").getAsDouble(), Optional.empty(), log);
+        String state = result.get("status").getAsString();
+        boolean optimal = result.get("optimal").getAsBoolean();
+        double seconds = result.get("seconds").getAsDouble();
+        if (!result.has("layout")) {
+            return new SolveOutcome(Optional.empty(), Optional.empty(), Optional.empty(), state, optimal, seconds,
+                    Optional.empty(), log, List.of(), Optional.empty());
+        }
+
+        JsonObject layoutJson = result.getAsJsonObject("layout");
+        JsonObject spec = status.has("spec") ? status.getAsJsonObject("spec") : request.getAsJsonObject("spec");
+        List<Integer> settle = new ArrayList<>();
+        Optional<String> analysisError = Optional.empty();
+        try {
+            JsonObject body = new JsonObject();
+            body.add("spec", spec);
+            body.add("world", layoutJson);
+            JsonObject options = request.getAsJsonObject("options");
+            boolean onePlacement = options != null && options.has("onePlacement") && options.get("onePlacement").getAsBoolean();
+            body.addProperty("onePlacement", onePlacement);
+            for (JsonElement tick : solver.call("result/analyze", body).getAsJsonArray("settleTicks"))
+                settle.add(tick.getAsInt());
+        } catch (SolverException e) {
+            LOGGER.log(Level.WARNING, "Timing analysis failed: " + e.getMessage());
+            analysisError = Optional.of(e.getMessage());
+        }
+        return new SolveOutcome(Optional.of(Layout.fromJson(layoutJson)), Optional.of(layoutJson), Optional.of(spec),
+                state, optimal, seconds, Optional.empty(), log, settle, analysisError);
     }
 
     private static SolveOutcome failure(String message) {
-        return new SolveOutcome(Optional.empty(), "error", false, 0, Optional.of(message), List.of());
+        return failure(message, List.of());
+    }
+
+    private static SolveOutcome failure(String message, List<String> log) {
+        return new SolveOutcome(Optional.empty(), Optional.empty(), Optional.empty(), "error", false, 0,
+                Optional.of(message), log, List.of(), Optional.empty());
     }
 
     private static List<String> strings(JsonArray array) {

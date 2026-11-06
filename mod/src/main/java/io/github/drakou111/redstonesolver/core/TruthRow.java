@@ -36,6 +36,20 @@ public record TruthRow(Map<String, SignalRange> inputs, Map<String, SignalRange>
         return ranges;
     }
 
+    public TruthRow withRenamedPort(String oldName, String newName) {
+        return new TruthRow(renamed(this.inputs, oldName, newName), renamed(this.outputs, oldName, newName));
+    }
+
+    /** This row with one port's range replaced; {@code ANY} removes the entry. */
+    public TruthRow withRange(String name, boolean input, SignalRange range) {
+        Map<String, SignalRange> inputs = new LinkedHashMap<>(this.inputs);
+        Map<String, SignalRange> outputs = new LinkedHashMap<>(this.outputs);
+        Map<String, SignalRange> side = input ? inputs : outputs;
+        if (range.equals(SignalRange.ANY)) side.remove(name);
+        else side.put(name, range);
+        return new TruthRow(inputs, outputs);
+    }
+
     @Override
     public String toString() {
         return formatTerms(this.inputs) + " " + ARROW + " " + formatTerms(this.outputs);
@@ -52,6 +66,13 @@ public record TruthRow(Map<String, SignalRange> inputs, Map<String, SignalRange>
                 throw new IllegalArgumentException(name + " is listed twice");
         }
         return terms;
+    }
+
+    private static Map<String, SignalRange> renamed(Map<String, SignalRange> terms, String oldName, String newName) {
+        Map<String, SignalRange> result = new LinkedHashMap<>();
+        for (Map.Entry<String, SignalRange> term : terms.entrySet())
+            result.put(term.getKey().equals(oldName) ? newName : term.getKey(), term.getValue());
+        return result;
     }
 
     private static String formatTerms(Map<String, SignalRange> terms) {

@@ -128,4 +128,22 @@ class CircuitDraftTest {
         assertThat(draft.nextFreeName("IN")).isEqualTo("IN1");
         assertThat(draft.nextFreeName("OUT")).isEqualTo("OUT2");
     }
+
+    @Test
+    void renamingAPortUpdatesTheTruthTable() {
+        CircuitDraft draft = buffer();
+        draft.renamePort("IN1", "A");
+        assertThat(draft.getInputs().getFirst().name()).isEqualTo("A");
+        assertThat(draft.getRows().getFirst()).hasToString("A=1..15 -> OUT1=1..15");
+        assertThatThrownBy(() -> draft.renamePort("A", "OUT1")).hasMessageContaining("already used");
+        assertThatThrownBy(() -> draft.renamePort("A", "a b")).hasMessageContaining("letters");
+    }
+
+    @Test
+    void editingOneRangeOfARow() {
+        TruthRow row = TruthRow.parse("IN1=0 -> OUT1=0");
+        assertThat(row.withRange("IN1", true, SignalRange.ANY)).hasToString(" -> OUT1=0");
+        assertThat(row.withRange("OUT1", false, new SignalRange(1, 15))).hasToString("IN1=0 -> OUT1=1..15");
+        assertThatThrownBy(() -> row.withRange("OUT1", false, SignalRange.ANY)).hasMessageContaining("output");
+    }
 }

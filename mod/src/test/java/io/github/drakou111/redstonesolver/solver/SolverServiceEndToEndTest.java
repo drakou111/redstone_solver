@@ -58,7 +58,12 @@ class SolverServiceEndToEndTest {
     void solvesANotGateIntoPlaceableBlocks() throws Exception {
         CompletableFuture<SolveOutcome> done = new CompletableFuture<>();
         try (SolverService service = new SolverService(executable)) {
-            service.startSolve(notGate().toSpecJson(), TIME_LIMIT_SECONDS, new SolverService.Listener() {
+            JsonObject options = new JsonObject();
+            options.addProperty("timeLimit", TIME_LIMIT_SECONDS);
+            JsonObject request = new JsonObject();
+            request.add("spec", notGate().toSpecJson());
+            request.add("options", options);
+            service.startJob("solve/start", request, new SolverService.Listener() {
                 @Override
                 public void progress(double seconds, String lastLogLine) {
                 }
@@ -75,6 +80,9 @@ class SolverServiceEndToEndTest {
             Layout layout = outcome.layout().get();
             assertThat(layout.size()).isEqualTo(new Cell(4, 2, 1));
             for (Layout.Block block : layout.blocks()) assertThat(JavaBlockStates.stateFor(block)).isPresent();
+            assertThat(outcome.settleTicks()).hasSize(1);
+            assertThat(outcome.settleTicks().getFirst()).isPositive();
+            assertThat(outcome.analysisError()).isEmpty();
         }
     }
 }

@@ -64,22 +64,35 @@ public final class SolverNetworking {
         }
     }
 
-    /** Body: {spec, origin: [x, y, z], timeLimit}. */
+    /**
+     * Body: {spec, origin: [x, y, z], method: "solve" | "compose", options: {timeLimit, onePlacement,
+     * sketchTime}}. The options go to the solver unchanged.
+     */
     private void solve(MinecraftServer server, ServerPlayer player, JsonObject body) {
         JsonObject spec = body.getAsJsonObject("spec");
-        if (spec == null) throw new IllegalArgumentException("no spec");
+        JsonObject options = body.getAsJsonObject("options");
+        if (spec == null || options == null) throw new IllegalArgumentException("a solve needs a spec and options");
         Cell origin = Cell.fromJson(body.get("origin"));
         Cell size = Cell.fromJson(spec.get("size"));
-        Box box = new Box(origin, origin.plus(size).minus(new Cell(1, 1, 1)));
-        if (box.volume() > MAX_BOX_VOLUME)
-            throw new IllegalArgumentException("The box has %d cells; keep it at %d or fewer.".formatted(box.volume(), MAX_BOX_VOLUME));
-        double timeLimit = body.get("timeLimit").getAsDouble();
+        if (size.x() * size.y() * size.z() > MAX_BOX_VOLUME)
+            throw new IllegalArgumentException("The box has %d cells; keep it at %d or fewer."
+                    .formatted(size.x() * size.y() * size.z(), MAX_BOX_VOLUME));
+        double timeLimit = options.get("timeLimit").getAsDouble();
         if (timeLimit <= 0 || timeLimit > MAX_TIME_LIMIT_SECONDS)
             throw new IllegalArgumentException("The time limit must be between 1 s and 24 h.");
+        String method = body.has("method") ? body.get("method").getAsString() : "solve";
+        String route = switch (method) {
+            case "solve" -> "solve/start";
+            case "compose" -> "compose/start";
+            default -> throw new IllegalArgumentException("unknown method " + method);
+        };
 
+        JsonObject request = new JsonObject();
+        request.add("spec", spec);
+        request.add("options", options);
         UUID playerId = player.getUUID();
         this.sessions.get(playerId).setPending(Optional.empty());
-        this.solver.startSolve(spec, timeLimit, new SolverService.Listener() {
+        this.solver.startJob(route, request, new SolverService.Listener() {
             @Override
             public void progress(double seconds, String lastLogLine) {
                 JsonObject json = new JsonObject();
@@ -90,13 +103,14 @@ public final class SolverNetworking {
 
             @Override
             public void finished(SolveOutcome outcome) {
-                server.execute(() -> SolverNetworking.this.finish(server, playerId, box, outcome));
+                server.execute(() -> SolverNetworking.this.finish(server, playerId, origin, outcome));
             }
         });
         send(player, "started", new JsonObject());
     }
 
-    private void finish(MinecraftServer server, UUID playerId, Box box, SolveOutcome outcome) {
+    // The result box starts at the origin; Compose and Shrink may return a different size.
+    private void finish(MinecraftServer server, UUID playerId, Cell origin, SolveOutcome outcome) {
         JsonObject json = new JsonObject();
         JsonArray log = new JsonArray();
         for (String line : outcome.log()) log.add(line);
@@ -108,9 +122,16 @@ public final class SolverNetworking {
 
         if (outcome.layout().isPresent()) {
             Layout layout = outcome.layout().get();
+            Box box = new Box(origin, origin.plus(layout.size()).minus(new Cell(1, 1, 1)));
             json.addProperty("blockCount", layout.countPlacedBlocks());
             json.add("size", layout.size().toJson());
+            json.add("origin", origin.toJson());
             json.add("blocksByType", blocksByType(layout));
+            JsonArray settle = new JsonArray();
+            for (int ticks : outcome.settleTicks()) settle.add(ticks);
+            json.add("settleTicks", settle);
+            outcome.analysisError().ifPresent(error -> json.addProperty("analysisError", error));
+            outcome.spec().ifPresent(spec -> json.add("spec", spec));
             this.sessions.get(playerId).setPending(Optional.of(new PendingResult(layout, box)));
             ServerPlayer player = server.getPlayerList().getPlayer(playerId);
             if (player != null) json.addProperty("boxOccupied", LayoutPlacer.hasBlocks(player.level(), box));
