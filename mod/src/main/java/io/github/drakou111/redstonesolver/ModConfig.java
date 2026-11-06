@@ -9,19 +9,15 @@ import java.nio.file.Path;
 import java.util.Properties;
 
 /** Settings from config/redstone_solver.properties; the file is created with defaults when missing. */
-public record ModConfig(Path solverExecutable, double defaultTimeLimitSeconds) {
+public record ModConfig(Path solverExecutable) {
     public static final String FILE_NAME = "redstone_solver.properties";
     /** Set by the development runs (see build.gradle) so they use the solver from this repository. */
     public static final String EXECUTABLE_PROPERTY = "redstone.solver.exe";
 
     private static final String KEY_EXECUTABLE = "solver_exe";
-    private static final String KEY_TIME_LIMIT = "time_limit_seconds";
-    private static final double DEFAULT_TIME_LIMIT_SECONDS = 60;
     private static final String TEMPLATE = """
             # Path to redstone_solver.exe (build it with: cmake --build --preset release)
             solver_exe=
-            # Default time limit of /rs solve, in seconds
-            time_limit_seconds=60
             """;
 
     public static ModConfig load(Path configDir, Path gameDir) {
@@ -47,16 +43,6 @@ public record ModConfig(Path solverExecutable, double defaultTimeLimitSeconds) {
         else if (!configured.isEmpty()) executable = Path.of(configured);
         else executable = gameDir.resolve("redstone_solver").resolve("redstone_solver.exe");
 
-        double timeLimit = DEFAULT_TIME_LIMIT_SECONDS;
-        String timeText = properties.getProperty(KEY_TIME_LIMIT, "").trim();
-        if (!timeText.isEmpty()) {
-            try {
-                timeLimit = Double.parseDouble(timeText);
-            } catch (NumberFormatException e) {
-                throw new IllegalArgumentException(KEY_TIME_LIMIT + " in " + file + " is not a number: " + timeText, e);
-            }
-            if (timeLimit <= 0) throw new IllegalArgumentException(KEY_TIME_LIMIT + " in " + file + " must be positive");
-        }
-        return new ModConfig(executable.toAbsolutePath().normalize(), timeLimit);
+        return new ModConfig(executable.toAbsolutePath().normalize());
     }
 }

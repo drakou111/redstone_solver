@@ -1,3 +1,7 @@
 {
-  "item.redstone_solver.wand": "Solver Wand"
+  "key.category.redstone_solver.main": "Redstone Solver",
+  "key.redstone_solver.corner1": "Set box corner 1",
+  "key.redstone_solver.corner2": "Set box corner 2",
+  "key.redstone_solver.cell": "Mark the looked-at cell",
+  "key.redstone_solver.panel": "Open the Solver panel"
 }
