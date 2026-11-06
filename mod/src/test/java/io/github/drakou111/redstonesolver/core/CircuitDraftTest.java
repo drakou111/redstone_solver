@@ -158,7 +158,7 @@ class CircuitDraftTest {
         output.addProperty("kind", "repeater");
         output.addProperty("facing", "east");
 
-        draft.adoptSpec(spec, new Cell(10, 64, -5));
+        draft.adoptSpec(spec, new Cell(10, 64, -5), false);
 
         assertThat(draft.requireBox().size()).isEqualTo(new Cell(6, 3, 2));
         Port out = draft.getOutputs().getFirst();
@@ -277,5 +277,45 @@ class CircuitDraftTest {
         assertThat(timing.get("latest").getAsInt()).isEqualTo(4);
         assertThat(timing.get("holdPrevious").getAsBoolean()).isTrue();
         assertThat(CircuitDraft.fromJson(draft.toJson()).getEarliestTicks()).contains(4);
+    }
+
+    /** A flat box one block high: IN1 dust at the west end, OUT1 dust at the east end. */
+    private static CircuitDraft flat() {
+        CircuitDraft draft = new CircuitDraft();
+        draft.setCorner1(new Cell(0, 70, 0));
+        draft.setCorner2(new Cell(3, 70, 1));
+        draft.putPort(Port.input("IN1", InputKind.DUST, new Cell(0, 70, 0), Dir.NORTH));
+        draft.putPort(Port.output("OUT1", OutputKind.DUST, new Cell(3, 70, 0), Dir.NORTH));
+        draft.addRow(TruthRow.parse("IN1=1..15 -> OUT1=1..15"));
+        draft.addRow(TruthRow.parse("IN1=0 -> OUT1=0"));
+        return draft;
+    }
+
+    @Test
+    void aOneHighBoxStandsOnAnAssumedFloor() {
+        CircuitDraft draft = flat();
+        assertThat(draft.assumesFloor()).isTrue();
+        assertThat(draft.specOrigin()).isEqualTo(new Cell(0, 69, 0));
+
+        JsonObject spec = draft.toSpecJson();
+        assertThat(spec.get("size").toString()).isEqualTo("[4,2,2]");
+        assertThat(spec.getAsJsonArray("inputs").get(0).getAsJsonObject().get("position").toString()).isEqualTo("[0,1,0]");
+        assertThat(spec.getAsJsonArray("fixed")).hasSize(8);
+        assertThat(spec.getAsJsonArray("fixed").toString()).contains("{\"type\":\"solid\",\"position\":[3,0,1]}");
+        assertThat(draft.buildLayoutJson(cell -> Optional.empty()).getAsJsonArray("blocks")).hasSize(10);
+
+        draft.setCorner2(new Cell(3, 71, 1));
+        assertThat(draft.assumesFloor()).isFalse();
+        assertThat(draft.toSpecJson().getAsJsonArray("fixed")).isEmpty();
+    }
+
+    @Test
+    void adoptingAFloorResultKeepsTheBoxOneHigh() {
+        CircuitDraft draft = flat();
+        JsonObject spec = draft.toSpecJson();
+        spec.add("size", new Cell(3, 2, 2).toJson());
+        draft.adoptSpec(spec, draft.specOrigin(), true);
+        assertThat(draft.requireBox()).isEqualTo(new Box(new Cell(0, 70, 0), new Cell(2, 70, 1)));
+        assertThat(draft.getInputs().getFirst().position()).isEqualTo(new Cell(0, 70, 0));
     }
 }

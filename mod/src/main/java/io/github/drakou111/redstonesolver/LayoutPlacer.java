@@ -26,6 +26,12 @@ public final class LayoutPlacer {
     private LayoutPlacer() {
     }
 
+    /** The box without its bottom layer when that layer is an assumed floor. */
+    public static Box placedPart(Box box, boolean skipBottom) {
+        if (!skipBottom || box.size().y() < 2) return box;
+        return new Box(box.min().plus(new Cell(0, 1, 0)), box.max());
+    }
+
     /** True when any cell of the box holds something other than air. */
     public static boolean hasBlocks(ServerLevel level, Box box) {
         for (BlockPos pos : positions(box)) {
@@ -35,7 +41,7 @@ public final class LayoutPlacer {
     }
 
     /** Clears the box, then places supports before the blocks that need them, like the setblock export. */
-    public static void place(ServerLevel level, Box box, Layout layout) {
+    public static void place(ServerLevel level, Box box, Layout layout, boolean skipBottom) {
         if (!layout.size().equals(box.size()))
             throw new IllegalArgumentException("the circuit is %s but the box is %s".formatted(layout.size(), box.size()));
         for (BlockPos pos : positions(box)) {
@@ -45,11 +51,12 @@ public final class LayoutPlacer {
         HolderLookup<Block> blocks = level.registryAccess().lookupOrThrow(Registries.BLOCK);
         List<Placed> placed = new ArrayList<>();
         for (Layout.Block block : layout.blocks()) {
+            if (skipBottom && block.position().y() == 0) continue;
             JavaBlockStates.stateFor(block).ifPresent(text -> placed.add(new Placed(block, worldPos(box, block.position()),
                     parse(blocks, text))));
         }
 
-        clear(level, box);
+        clear(level, placedPart(box, skipBottom));
         for (boolean supportedPass : new boolean[] {false, true}) {
             for (Placed entry : placed) {
                 if (JavaBlockStates.needsSupport(entry.block()) == supportedPass)

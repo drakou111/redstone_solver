@@ -391,11 +391,47 @@ public final class CircuitDraft {
     }
 
     /**
+     * A box one block high stands on a floor: the solver gets a layer of solid blocks under it that
+     * it must keep, and that layer is never placed (the world's own blocks are there).
+     */
+    public boolean assumesFloor() {
+        return this.getBox().map(box -> box.size().y() == 1).orElse(false);
+    }
+
+    /** The world cell the solver's (0, 0, 0) is at: the box's lowest corner, or the floor under it. */
+    public Cell specOrigin() {
+        Box box = this.requireBox();
+        return this.assumesFloor() ? box.min().minus(new Cell(0, 1, 0)) : box.min();
+    }
+
+    /** The size the solver sees: the box, plus the floor layer when one is assumed. */
+    public Cell specSize() {
+        Cell size = this.requireBox().size();
+        return this.assumesFloor() ? size.plus(new Cell(0, 1, 0)) : size;
+    }
+
+    private static List<Cell> floorCells(Box box) {
+        List<Cell> cells = new ArrayList<>();
+        int y = box.min().y() - 1;
+        for (int x = box.min().x(); x <= box.max().x(); x++) {
+            for (int z = box.min().z(); z <= box.max().z(); z++) cells.add(new Cell(x, y, z));
+        }
+        return cells;
+    }
+
+    private static JsonObject solidBlock() {
+        JsonObject block = new JsonObject();
+        block.addProperty("type", "solid");
+        return block;
+    }
+
+    /**
      * Makes the box and ports match a placed result whose spec differs from the draft (Compose
      * places the ports itself, Shrink makes the box smaller). Ports keep their names and are matched
-     * by order. Kept and empty marks are dropped since the cells moved.
+     * by order. Kept and empty marks are dropped since the cells moved. With {@code floorAssumed}
+     * the result's bottom layer is the assumed floor, not part of the box.
      */
-    public void adoptSpec(JsonObject spec, Cell origin) {
+    public void adoptSpec(JsonObject spec, Cell origin, boolean floorAssumed) {
         List<Port> inputs = this.getInputs();
         List<Port> outputs = this.getOutputs();
         JsonArray specInputs = spec.getAsJsonArray("inputs");
@@ -408,7 +444,8 @@ public final class CircuitDraft {
         for (int i = 0; i < inputs.size(); i++) adopted.put(inputs.get(i).name(), adoptPort(inputs.get(i), specInputs, i, origin));
         for (int i = 0; i < outputs.size(); i++)
             adopted.put(outputs.get(i).name(), adoptPort(outputs.get(i), specOutputs, i, origin));
-        this.corner1 = origin;
+        Cell floor = floorAssumed ? new Cell(0, 1, 0) : new Cell(0, 0, 0);
+        this.corner1 = origin.plus(floor);
         this.corner2 = origin.plus(size).minus(new Cell(1, 1, 1));
         this.ports.clear();
         this.ports.putAll(adopted);
@@ -442,12 +479,15 @@ public final class CircuitDraft {
                             ? Optional.of(portBlockJson(port.get(), port.get().input()
                                     ? inputs.indexOf(port.get()) : outputs.indexOf(port.get())))
                             : blocks.blockAt(cell);
-                    block.ifPresent(found -> entries.add(positioned(found, cell, box)));
+                    block.ifPresent(found -> entries.add(positioned(found, cell, this.specOrigin())));
                 }
             }
         }
+        if (this.assumesFloor()) {
+            for (Cell cell : floorCells(box)) entries.add(positioned(solidBlock(), cell, this.specOrigin()));
+        }
         JsonObject layout = new JsonObject();
-        layout.add("size", box.size().toJson());
+        layout.add("size", this.specSize().toJson());
         layout.add("blocks", entries);
         return layout;
     }
@@ -571,9 +611,10 @@ public final class CircuitDraft {
         }
 
         JsonObject spec = new JsonObject();
-        spec.add("size", box.size().toJson());
-        spec.add("inputs", portsJson(inputs, box));
-        spec.add("outputs", portsJson(outputs, box));
+        Cell origin = this.specOrigin();
+        spec.add("size", this.specSize().toJson());
+        spec.add("inputs", portsJson(inputs, origin));
+        spec.add("outputs", portsJson(outputs, origin));
         JsonArray rows = new JsonArray();
         for (TruthRow row : tableRows) {
             JsonObject entry = new JsonObject();
@@ -611,17 +652,20 @@ public final class CircuitDraft {
         for (Cell cell : this.keptCells) {
             JsonObject block = blocks.blockAt(cell).orElseThrow(() -> new IllegalStateException(
                     "The kept cell at " + cell + " is empty; place a block there or clear the mark"));
-            fixed.add(positioned(block, cell, box));
+            fixed.add(positioned(block, cell, origin));
+        }
+        if (this.assumesFloor()) {
+            for (Cell cell : floorCells(box)) fixed.add(positioned(solidBlock(), cell, origin));
         }
         spec.add("fixed", fixed);
         JsonArray forbidden = new JsonArray();
-        for (Cell cell : this.emptyCells) forbidden.add(cell.minus(box.min()).toJson());
+        for (Cell cell : this.emptyCells) forbidden.add(cell.minus(origin).toJson());
         spec.add("forbidden", forbidden);
-        spec.add("hints", this.otherBlocks == OtherBlocks.SKETCH ? this.sketchJson(box, blocks) : new JsonArray());
+        spec.add("hints", this.otherBlocks == OtherBlocks.SKETCH ? this.sketchJson(box, origin, blocks) : new JsonArray());
         return spec;
     }
 
-    private JsonArray sketchJson(Box box, BlockSource blocks) {
+    private JsonArray sketchJson(Box box, Cell origin, BlockSource blocks) {
         JsonArray hints = new JsonArray();
         for (int x = box.min().x(); x <= box.max().x(); x++) {
             for (int y = box.min().y(); y <= box.max().y(); y++) {
@@ -629,7 +673,7 @@ public final class CircuitDraft {
                     Cell cell = new Cell(x, y, z);
                     if (this.keptCells.contains(cell) || this.emptyCells.contains(cell) || this.portAt(cell).isPresent())
                         continue;
-                    blocks.blockAt(cell).ifPresent(block -> hints.add(positioned(block, cell, box)));
+                    blocks.blockAt(cell).ifPresent(block -> hints.add(positioned(block, cell, origin)));
                 }
             }
         }
@@ -661,9 +705,9 @@ public final class CircuitDraft {
         return array;
     }
 
-    private static JsonObject positioned(JsonObject block, Cell cell, Box box) {
+    private static JsonObject positioned(JsonObject block, Cell cell, Cell origin) {
         JsonObject entry = block.deepCopy();
-        entry.add("position", cell.minus(box.min()).toJson());
+        entry.add("position", cell.minus(origin).toJson());
         return entry;
     }
 
@@ -673,12 +717,12 @@ public final class CircuitDraft {
         return names;
     }
 
-    private static JsonArray portsJson(List<Port> ports, Box box) {
+    private static JsonArray portsJson(List<Port> ports, Cell origin) {
         JsonArray array = new JsonArray();
         for (Port port : ports) {
             JsonObject entry = new JsonObject();
             entry.addProperty("kind", port.kind());
-            entry.add("position", port.position().minus(box.min()).toJson());
+            entry.add("position", port.position().minus(origin).toJson());
             entry.addProperty("facing", port.facing().jsonName());
             entry.add("region", new JsonArray());
             array.add(entry);

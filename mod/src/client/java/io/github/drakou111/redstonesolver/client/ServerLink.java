@@ -56,14 +56,15 @@ public final class ServerLink {
                     + " any more; using its last kind and facing."));
         }
         body.add("spec", this.state.getDraft().toSpecJson(blocks));
-        body.add("origin", box.min().toJson());
+        body.add("origin", this.state.getDraft().specOrigin().toJson());
+        body.addProperty("floorAssumed", this.state.getDraft().assumesFloor());
         body.addProperty("method", this.state.getMethod().name().toLowerCase(Locale.ROOT));
         JsonObject options = new JsonObject();
         options.addProperty("timeLimit", this.state.getTimeLimitSeconds());
         options.addProperty("onePlacement", this.state.isOnePlacement());
         options.addProperty("sketchTime", this.state.getSketchSeconds());
         if (this.state.getMethod() == ClientState.Method.COMPOSE) {
-            options.addProperty("maxHeight", box.size().y());
+            options.addProperty("maxHeight", this.state.getDraft().specSize().y());
             options.addProperty("autoShrink", this.state.isAutoShrink());
             options.addProperty("cutTime", Math.min(MAX_CUT_SECONDS, this.state.getTimeLimitSeconds()));
         }
@@ -100,7 +101,8 @@ public final class ServerLink {
         JsonObject body = new JsonObject();
         body.add("spec", draft.toSpecJson(blocks));
         body.add("world", draft.buildLayoutJson(blocks));
-        body.add("origin", draft.requireBox().min().toJson());
+        body.add("origin", draft.specOrigin().toJson());
+        body.addProperty("floorAssumed", draft.assumesFloor());
         body.add("options", this.shrinkOptions());
         this.send("shrink", body);
         this.autosave.saveNow();
@@ -170,7 +172,9 @@ public final class ServerLink {
         Optional<JsonObject> result = this.state.getLastResult();
         if (result.isEmpty() || !result.get().has("reshaped") || !result.get().get("reshaped").getAsBoolean()) return;
         try {
-            this.state.getDraft().adoptSpec(result.get().getAsJsonObject("spec"), Cell.fromJson(result.get().get("origin")));
+            boolean floor = result.get().has("floorAssumed") && result.get().get("floorAssumed").getAsBoolean();
+            this.state.getDraft().adoptSpec(result.get().getAsJsonObject("spec"), Cell.fromJson(result.get().get("origin")),
+                    floor);
             player.sendSystemMessage(Chat.hint("The box and ports now match the placed circuit."));
         } catch (IllegalArgumentException e) {
             player.sendSystemMessage(Chat.error("Could not update the box and ports: " + e.getMessage()));

@@ -16,8 +16,12 @@ import io.github.drakou111.redstonesolver.net.SolverPayloads.ToServer;
 import io.github.drakou111.redstonesolver.solver.SolverException;
 import io.github.drakou111.redstonesolver.solver.SolverService;
 import io.github.drakou111.redstonesolver.solver.SolverService.SolveOutcome;
+import java.util.ArrayList;
+import java.util.HashSet;
+import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import java.util.TreeMap;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -95,7 +99,7 @@ public final class SolverNetworking {
         JsonObject request = new JsonObject();
         request.add("spec", spec);
         request.add("options", options);
-        this.startJob(server, player, route, request, origin, Optional.empty());
+        this.startJob(server, player, route, request, origin, Optional.empty(), floorAssumed(body));
     }
 
     /**
@@ -110,7 +114,9 @@ public final class SolverNetworking {
         JsonObject spec;
         JsonObject world;
         Cell origin;
+        boolean floor;
         if (body.has("world")) {
+            floor = floorAssumed(body);
             spec = body.getAsJsonObject("spec");
             world = body.getAsJsonObject("world");
             origin = Cell.fromJson(body.get("origin"));
@@ -129,17 +135,18 @@ public final class SolverNetworking {
             spec = last.spec();
             world = last.layoutJson();
             origin = last.origin();
+            floor = last.floorAssumed();
         }
         JsonObject request = new JsonObject();
         request.add("spec", spec);
         request.add("world", world);
         request.add("options", options);
         Box oldBox = boxAt(origin, Cell.fromJson(spec.get("size")));
-        this.startJob(server, player, "shrink/start", request, origin, Optional.of(oldBox));
+        this.startJob(server, player, "shrink/start", request, origin, Optional.of(oldBox), floor);
     }
 
     private void startJob(MinecraftServer server, ServerPlayer player, String route, JsonObject request, Cell origin,
-            Optional<Box> alsoClear) {
+            Optional<Box> alsoClear, boolean floorAssumed) {
         UUID playerId = player.getUUID();
         this.sessions.get(playerId).setPending(Optional.empty());
         this.solver.startJob(route, request, new SolverService.Listener() {
@@ -154,7 +161,7 @@ public final class SolverNetworking {
             @Override
             public void finished(SolveOutcome outcome) {
                 server.execute(() -> SolverNetworking.this.finish(server, playerId, route, request, origin, alsoClear,
-                        outcome));
+                        floorAssumed, outcome));
             }
         });
         this.cancelRequested.set(false);
@@ -163,7 +170,7 @@ public final class SolverNetworking {
 
     // The result box starts at the origin; Compose and Shrink may return a different size.
     private void finish(MinecraftServer server, UUID playerId, String route, JsonObject request, Cell origin,
-            Optional<Box> alsoClear, SolveOutcome outcome) {
+            Optional<Box> alsoClear, boolean floorAssumed, SolveOutcome outcome) {
         boolean cancelled = this.cancelRequested.get();
         JsonObject json = new JsonObject();
         JsonArray log = new JsonArray();
@@ -178,12 +185,28 @@ public final class SolverNetworking {
 
         ServerPlayer player = server.getPlayerList().getPlayer(playerId);
         if (outcome.layout().isPresent()) {
-            Layout layout = outcome.layout().get();
+            JsonObject layoutJson = outcome.layoutJson().orElseThrow();
+            boolean skipBottom = floorAssumed && outcome.layout().get().size().y() >= 2;
+            // Build from gates draws its own bottom layer; it may stand on the floor only if it
+            // still works with that layer full.
+            if (skipBottom && route.equals("compose/start")) {
+                JsonObject onFloor = withFullBottomLayer(layoutJson);
+                if (this.worksAs(outcome.spec().orElseThrow(), onFloor, request)) {
+                    layoutJson = onFloor;
+                } else {
+                    skipBottom = false;
+                    json.addProperty("note", "This circuit needs its own bottom layer, so Place also builds the layer under your box.");
+                }
+            }
+            Layout layout = Layout.fromJson(layoutJson);
             Box box = boxAt(origin, layout.size());
-            json.addProperty("blockCount", layout.countPlacedBlocks());
-            json.add("size", layout.size().toJson());
+            Layout shown = skipBottom ? withoutBottomLayer(layout) : layout;
+            json.addProperty("blockCount", shown.countPlacedBlocks());
+            Cell shownSize = skipBottom ? layout.size().minus(new Cell(0, 1, 0)) : layout.size();
+            json.add("size", shownSize.toJson());
             json.add("origin", origin.toJson());
-            json.add("blocksByType", blocksByType(layout));
+            json.addProperty("floorAssumed", skipBottom);
+            json.add("blocksByType", blocksByType(shown));
             JsonArray settle = new JsonArray();
             for (int ticks : outcome.settleTicks()) settle.add(ticks);
             json.add("settleTicks", settle);
@@ -192,11 +215,13 @@ public final class SolverNetworking {
             // Compose and Shrink change the box or the ports; the client adopts them once placed.
             json.addProperty("reshaped", !route.equals("solve/start"));
             Session session = this.sessions.get(playerId);
-            session.setPending(Optional.of(new PendingResult(layout, box, alsoClear)));
-            session.setLast(Optional.of(new LastResult(outcome.layoutJson().orElseThrow(), outcome.spec().orElseThrow(), origin)));
+            boolean skip = skipBottom;
+            session.setPending(Optional.of(new PendingResult(layout, box, alsoClear, skip)));
+            session.setLast(Optional.of(new LastResult(layoutJson, outcome.spec().orElseThrow(), origin, skip)));
             if (player != null) {
-                boolean occupied = LayoutPlacer.hasBlocks(player.level(), box)
-                        || alsoClear.map(old -> LayoutPlacer.hasBlocks(player.level(), old)).orElse(false);
+                boolean occupied = LayoutPlacer.hasBlocks(player.level(), LayoutPlacer.placedPart(box, skip))
+                        || alsoClear.map(old -> LayoutPlacer.hasBlocks(player.level(), LayoutPlacer.placedPart(old, skip)))
+                                .orElse(false);
                 json.addProperty("boxOccupied", occupied);
             }
 
@@ -210,10 +235,10 @@ public final class SolverNetworking {
                 send(player, "progress", note);
                 JsonObject shrinkRequest = new JsonObject();
                 shrinkRequest.add("spec", outcome.spec().orElseThrow());
-                shrinkRequest.add("world", outcome.layoutJson().orElseThrow());
+                shrinkRequest.add("world", layoutJson);
                 shrinkRequest.add("options", options);
                 try {
-                    this.startJob(server, player, "shrink/start", shrinkRequest, origin, Optional.of(box));
+                    this.startJob(server, player, "shrink/start", shrinkRequest, origin, Optional.of(box), skip);
                     return;
                 } catch (SolverException e) {
                     json.addProperty("note", "Composed, but the shrink could not start: " + e.getMessage());
@@ -235,10 +260,53 @@ public final class SolverNetworking {
         Session session = this.sessions.get(player.getUUID());
         PendingResult pending = session.getPending()
                 .orElseThrow(() -> new IllegalStateException("No solved circuit to place. Solve first."));
-        pending.alsoClear().ifPresent(old -> LayoutPlacer.clear(player.level(), old));
-        LayoutPlacer.place(player.level(), pending.box(), pending.layout());
+        pending.alsoClear().ifPresent(old -> LayoutPlacer.clear(player.level(), LayoutPlacer.placedPart(old, pending.skipBottom())));
+        LayoutPlacer.place(player.level(), pending.box(), pending.layout(), pending.skipBottom());
         session.setPending(Optional.empty());
         send(player, "placed", new JsonObject());
+    }
+
+    private boolean worksAs(JsonObject spec, JsonObject world, JsonObject request) {
+        JsonObject options = request.getAsJsonObject("options");
+        JsonObject check = new JsonObject();
+        check.add("spec", spec);
+        check.add("world", world);
+        check.addProperty("onePlacement", options.has("onePlacement") && options.get("onePlacement").getAsBoolean());
+        return this.solver.call("verify", check).get("ok").getAsBoolean();
+    }
+
+    private static boolean floorAssumed(JsonObject body) {
+        return body.has("floorAssumed") && body.get("floorAssumed").getAsBoolean();
+    }
+
+    // The layout with every empty cell of its bottom layer made solid, like the assumed floor.
+    private static JsonObject withFullBottomLayer(JsonObject layoutJson) {
+        Cell size = Cell.fromJson(layoutJson.get("size"));
+        Set<Cell> taken = new HashSet<>();
+        JsonArray blocks = layoutJson.getAsJsonArray("blocks").deepCopy();
+        for (JsonElement block : blocks) taken.add(Cell.fromJson(block.getAsJsonObject().get("position")));
+        for (int x = 0; x < size.x(); x++) {
+            for (int z = 0; z < size.z(); z++) {
+                Cell cell = new Cell(x, 0, z);
+                if (taken.contains(cell)) continue;
+                JsonObject solid = new JsonObject();
+                solid.addProperty("type", "solid");
+                solid.add("position", cell.toJson());
+                blocks.add(solid);
+            }
+        }
+        JsonObject result = new JsonObject();
+        result.add("size", size.toJson());
+        result.add("blocks", blocks);
+        return result;
+    }
+
+    private static Layout withoutBottomLayer(Layout layout) {
+        List<Layout.Block> blocks = new ArrayList<>();
+        for (Layout.Block block : layout.blocks()) {
+            if (block.position().y() > 0) blocks.add(block);
+        }
+        return new Layout(layout.size(), blocks);
     }
 
     private static void requireSmallEnough(Cell size) {

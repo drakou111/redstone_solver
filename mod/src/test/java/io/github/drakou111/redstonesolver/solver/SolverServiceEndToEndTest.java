@@ -227,4 +227,30 @@ class SolverServiceEndToEndTest {
             assertThat(outcome.layout().get().size().y()).isLessThanOrEqualTo(2);
         }
     }
+
+    @Test
+    void aOneHighBoxIsSolvedOnTopOfAFullFloor() throws Exception {
+        CircuitDraft draft = new CircuitDraft();
+        draft.setCorner1(new Cell(0, 70, 0));
+        draft.setCorner2(new Cell(4, 70, 0));
+        draft.putPort(Port.input("IN1", InputKind.COMPARATOR, new Cell(0, 70, 0), Dir.EAST));
+        draft.putPort(Port.output("OUT1", OutputKind.DUST, new Cell(4, 70, 0), Dir.NORTH));
+        draft.addRow(TruthRow.parse("IN1=1..15 -> OUT1=1..15"));
+        draft.addRow(TruthRow.parse("IN1=0 -> OUT1=0"));
+        JsonObject options = new JsonObject();
+        options.addProperty("timeLimit", TIME_LIMIT_SECONDS);
+        JsonObject request = new JsonObject();
+        request.add("spec", draft.toSpecJson());
+        request.add("options", options);
+
+        try (SolverService service = new SolverService(executable)) {
+            SolveOutcome outcome = run(service, "solve/start", request);
+            assertThat(outcome.error()).isEmpty();
+            Layout layout = outcome.layout().orElseThrow();
+            assertThat(layout.size()).isEqualTo(new Cell(5, 2, 1));
+            long floor = layout.blocks().stream()
+                    .filter(block -> block.position().y() == 0 && block.type().equals("solid")).count();
+            assertThat(floor).isEqualTo(5);
+        }
+    }
 }
