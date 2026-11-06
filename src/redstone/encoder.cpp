@@ -792,15 +792,17 @@ struct CircuitEncoder::Impl {
         // strong emitters. A plain block beside a side is no dependency.
         for (Dir side : {rotate_clockwise(d), rotate_counter_clockwise(d)}) {
           Vec3 q = pos + offset(side);
-          const Cell &n = this->cell_at(q);
+          const Cell &side_cell = this->cell_at(q);
           Dir toward_p = opposite(side);
           Lit diode_into = this->b.all(
-              {this->b.any_exclusive({n.kind[kRepeater], n.kind[kComparator],
-                                      n.kind[kInputComparator],
-                                      n.kind[kInputRepeater]}),
-               n.facing[index_of(toward_p)]});
+              {this->b.any_exclusive({side_cell.kind[kRepeater],
+                                      side_cell.kind[kComparator],
+                                      side_cell.kind[kInputComparator],
+                                      side_cell.kind[kInputRepeater]}),
+               side_cell.facing[index_of(toward_p)]});
           edge(p, q, 1, {k[kRepeater], facing, diode_into});
-          Lit read = this->b.any({n.dust, this->may_emit(n, toward_p, true)});
+          Lit read = this->b.any(
+              {side_cell.dust, this->may_emit(side_cell, toward_p, true)});
           edge(p, q, 1, {k[kComparator], facing, read});
         }
       }
