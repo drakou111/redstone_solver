@@ -89,6 +89,10 @@ Json Api::handle(std::string_view route, const Json &body) {
     return this->simulator_tick(body);
   if (route == "sim/settle")
     return this->simulator_settle();
+  if (route == "sim/use")
+    return this->simulator_use(body);
+  if (route == "result/analyze")
+    return this->analyze_result(body);
   if (route == "sim/state")
     return this->simulator_state();
   if (route == "verify")
@@ -295,7 +299,10 @@ Json Api::reset_simulator(const Json &body) {
   this->sim_.emplace(world);
   this->sim_inputs_ = count_ports(world, true);
   this->sim_outputs_ = count_ports(world, false);
-  this->sim_->run_until_quiet(kSettleTicks);
+  // A live world (settle: false) evolves tick by tick, as after an edit in
+  // the game; otherwise it starts at rest.
+  if (body.value("settle", true))
+    this->sim_->run_until_quiet(kSettleTicks);
   if (body.contains("inputs")) {
     const Json &inputs = body.at("inputs");
     for (int i = 0;
@@ -325,6 +332,30 @@ Json Api::simulator_tick(const Json &body) {
 Json Api::simulator_settle() {
   this->simulator().run_until_quiet(kSettleTicks);
   return this->simulator_state();
+}
+
+// A player's right-click on a lever or button.
+Json Api::simulator_use(const Json &body) {
+  const Json &at = body.at("position");
+  if (!at.is_array() || at.size() != 3)
+    throw std::invalid_argument("position must be [x, y, z]");
+  this->simulator().use({at[0].get<int>(), at[1].get<int>(), at[2].get<int>()});
+  return this->simulator_state();
+}
+
+// What the results card shows about a circuit: whether it passes, and per
+// output the latest tick at which it still changed after any input change.
+Json Api::analyze_result(const Json &body) const {
+  Spec spec = spec_from_json(body.at("spec"));
+  World world = world_from_json(body.at("world"));
+  LayoutCheck check = check_layout(world, spec, verification_from(body));
+  std::vector<int> settle(spec.outputs.size(), 0);
+  for (const SwitchCheck &change : check.switches)
+    for (std::size_t t = 1; t < change.timeline.size(); ++t)
+      for (std::size_t o = 0; o < settle.size(); ++o)
+        if (change.timeline[t][o] != change.timeline[t - 1][o])
+          settle[o] = std::max(settle[o], static_cast<int>(t));
+  return {{"passes", check.passes()}, {"settleTicks", settle}};
 }
 
 Json Api::simulator_state() const {

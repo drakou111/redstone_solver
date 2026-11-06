@@ -37,6 +37,8 @@ private:
   Json simulator_tick(const Json &body);
   Json simulator_settle();
   Json simulator_state() const;
+  Json simulator_use(const Json &body);
+  Json analyze_result(const Json &body) const;
   Json verify(const Json &body) const;
   Json export_commands(const Json &body) const;
   Json textures(const Json &body);
