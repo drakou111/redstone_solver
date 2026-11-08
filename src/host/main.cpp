@@ -1,6 +1,7 @@
 #include <cstdio>
 #include <filesystem>
 #include <format>
+#include <optional>
 #include <random>
 #include <string>
 #include <string_view>
@@ -19,12 +20,15 @@ constexpr int kWindowHeight = 1000;
 constexpr int kTokenBytes = 16;
 constexpr const char *kHost = "127.0.0.1";
 constexpr const char *kUsage =
-    "Usage: redstone_solver [--serve] [--port <n>] [--token <t>] [--help]\n"
+    "Usage: redstone_solver [--serve] [--port <n>] [--token <t>] "
+    "[--library <dir>] [--help]\n"
     "\n"
     "Opens the Redstone Solver window.\n"
     "  --serve     no window: serve the UI and print its URL (for testing)\n"
     "  --port <n>  port to serve on (default: any free port)\n"
-    "  --token <t> session token instead of a random one (for testing)\n";
+    "  --token <t> session token instead of a random one (for testing)\n"
+    "  --library <dir> keep verified circuits there; requests seen before\n"
+    "              are answered from it at once\n";
 
 std::string random_token() {
   std::random_device device;
@@ -80,6 +84,7 @@ int main(int argc, char **argv) {
   bool serve_only = false;
   int port = 0;
   std::string token = random_token();
+  std::optional<std::filesystem::path> library;
   for (int i = 1; i < argc; ++i) {
     std::string_view arg = argv[i];
     if (arg == "--help" || arg == "-h") {
@@ -92,6 +97,8 @@ int main(int argc, char **argv) {
       port = std::stoi(argv[++i]);
     } else if (arg == "--token" && i + 1 < argc) {
       token = argv[++i];
+    } else if (arg == "--library" && i + 1 < argc) {
+      library = std::filesystem::path(argv[++i]);
     } else {
       std::fprintf(stderr, "unknown argument: %s\n\n%s", argv[i], kUsage);
       return 2;
@@ -100,7 +107,7 @@ int main(int argc, char **argv) {
 
   std::filesystem::path program_dir =
       std::filesystem::absolute(argv[0]).parent_path();
-  rs::host::Api api(program_dir / "examples");
+  rs::host::Api api(program_dir / "examples", library);
 
   httplib::Server server;
   configure(server, api, token);

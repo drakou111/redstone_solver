@@ -53,8 +53,83 @@ int count_ports(const World &world, bool inputs) {
 
 } // namespace
 
-Api::Api(std::filesystem::path examples_dir)
-    : examples_dir_(std::move(examples_dir)) {}
+Api::Api(std::filesystem::path examples_dir,
+         std::optional<std::filesystem::path> library_dir)
+    : examples_dir_(std::move(examples_dir)) {
+  if (library_dir)
+    this->library_ = std::make_unique<CircuitLibrary>(*library_dir);
+}
+
+namespace {
+
+// What makes two Search-the-box requests the same: the spec without its
+// sketch (a sketch only changes where the search starts) and how it is
+// checked.
+std::string solve_key(const Spec &spec, const SolverOptions &options) {
+  Json json = to_json(spec);
+  json.erase("hints");
+  return std::format("solve|{}|placements {}", json.dump(),
+                     options.verification.placements.size());
+}
+
+// Compose places its own ports: the same on/off table, height limit,
+// blocks and checking give the same request.
+std::string compose_key(const Spec &spec,
+                        const NetlistComposeOptions &options) {
+  BoolTable table = boolean_table(spec);
+  std::string key = std::format("compose|inputs {}|", table.inputs);
+  for (const auto &column : table.values) {
+    for (const std::optional<bool> &value : column)
+      key += !value ? '-' : *value ? '1' : '0';
+    key += '|';
+  }
+  key += std::format("height {}|placements {}|blocks", options.max_height,
+                     options.solver.verification.placements.size());
+  for (BlockType type : spec.palette)
+    key += std::format(" {}", palette_name(type));
+  return key;
+}
+
+// A job that ends at once with a circuit from the library.
+JobWork from_library(const CircuitLibrary::Entry &entry, bool with_spec) {
+  return [entry, with_spec](const ProgressCallback &progress,
+                            std::atomic<bool> *) {
+    if (progress)
+      progress(std::format("from the circuit library: solved before, {} "
+                           "blocks",
+                           entry.blocks));
+    SolveReport report;
+    report.status = SolveStatus::Feasible;
+    report.solution = EncodedSolution{
+        world_from_json(entry.layout), entry.blocks, {}, {}, {}};
+    std::optional<Spec> spec;
+    if (with_spec)
+      spec = spec_from_json(entry.spec);
+    return JobResult{std::move(report), std::move(spec)};
+  };
+}
+
+// The job's work, then its circuit (if any) offered to the library.
+JobWork offering(CircuitLibrary *library, std::string key, Json request_spec,
+                 JobWork work) {
+  return [library, key = std::move(key), request_spec = std::move(request_spec),
+          work = std::move(work)](const ProgressCallback &progress,
+                                  std::atomic<bool> *cancel) {
+    JobResult result = work(progress, cancel);
+    if (library && result.report.solution) {
+      const World &layout = result.report.solution->layout;
+      Vec3 size = layout.size();
+      CircuitLibrary::Entry entry{
+          result.spec ? to_json(*result.spec) : request_spec, to_json(layout),
+          result.report.solution->block_count, size.x * size.y * size.z};
+      if (library->offer(key, entry) && progress)
+        progress("kept in the circuit library");
+    }
+    return result;
+  };
+}
+
+} // namespace
 
 Json Api::handle(std::string_view route, const Json &body) {
   std::lock_guard lock(this->mutex_);
@@ -178,7 +253,24 @@ Json Api::start_solve(const Json &body) {
     throw std::invalid_argument("the sketch step time must be positive");
   if (options.time_limit_seconds <= 0)
     throw std::invalid_argument("the time limit must be positive");
-  this->job_ = std::make_unique<SolveJob>(std::move(spec), options);
+  const bool use_library = this->library_ && settings.value("library", true);
+  const std::string key = solve_key(spec, options);
+  if (use_library)
+    if (std::optional<CircuitLibrary::Entry> entry =
+            this->library_->find(key)) {
+      this->job_ =
+          std::make_unique<SolveJob>(spec, from_library(*entry, false));
+      return Json{{"fromLibrary", true}};
+    }
+  JobWork work = [spec, options](const ProgressCallback &progress,
+                                 std::atomic<bool> *cancel) {
+    SolverOptions o = options;
+    o.cancel = cancel;
+    return JobResult{solve(spec, o, progress), std::nullopt};
+  };
+  this->job_ = std::make_unique<SolveJob>(
+      spec,
+      offering(this->library_.get(), key, to_json(spec), std::move(work)));
   return Json::object();
 }
 
@@ -256,45 +348,56 @@ Json Api::start_compose(const Json &body) {
   // Answered right away: a table that needs exact strengths cannot be
   // composed from on/off gates.
   boolean_table(spec);
+  const bool use_library = this->library_ && settings.value("library", true);
+  const std::string key = compose_key(spec, options);
+  if (use_library)
+    if (std::optional<CircuitLibrary::Entry> entry =
+            this->library_->find(key)) {
+      this->job_ = std::make_unique<SolveJob>(spec, from_library(*entry, true));
+      return Json{{"fromLibrary", true}};
+    }
+  JobWork work = [spec, options, shrink_seconds, cut_seconds,
+                  total_seconds](const ProgressCallback &progress,
+                                 std::atomic<bool> *cancel) {
+    auto start = std::chrono::steady_clock::now();
+    NetlistComposeOptions o = options;
+    o.cancel = cancel;
+    if (total_seconds > 0)
+      o.deadline =
+          start +
+          std::chrono::duration_cast<std::chrono::steady_clock::duration>(
+              std::chrono::duration<double>(total_seconds));
+    std::optional<ComposeResult> composed;
+    if (shrink_seconds > 0) {
+      ShrinkOptions s;
+      s.time_limit_seconds = shrink_seconds;
+      s.cut_seconds = cut_seconds;
+      s.solver.verification = options.solver.verification;
+      composed = compose_and_shrink(spec, o, s, progress);
+    } else {
+      composed = compose_spec(spec, o, progress);
+    }
+    SolveReport report;
+    report.seconds =
+        std::chrono::duration<double>(std::chrono::steady_clock::now() - start)
+            .count();
+    if (!composed) {
+      report.status =
+          cancel->load() ? SolveStatus::Cancelled : SolveStatus::OutOfTime;
+      return JobResult{std::move(report), std::nullopt};
+    }
+    report.status = SolveStatus::Feasible;
+    report.solution =
+        EncodedSolution{composed->layout,
+                        static_cast<int>(composed->spec.hints.size()),
+                        {},
+                        {},
+                        {}};
+    return JobResult{std::move(report), std::move(composed->spec)};
+  };
   this->job_ = std::make_unique<SolveJob>(
-      spec, [spec, options, shrink_seconds, cut_seconds, total_seconds](
-                const ProgressCallback &progress, std::atomic<bool> *cancel) {
-        auto start = std::chrono::steady_clock::now();
-        NetlistComposeOptions o = options;
-        o.cancel = cancel;
-        if (total_seconds > 0)
-          o.deadline =
-              start +
-              std::chrono::duration_cast<std::chrono::steady_clock::duration>(
-                  std::chrono::duration<double>(total_seconds));
-        std::optional<ComposeResult> composed;
-        if (shrink_seconds > 0) {
-          ShrinkOptions s;
-          s.time_limit_seconds = shrink_seconds;
-          s.cut_seconds = cut_seconds;
-          s.solver.verification = options.solver.verification;
-          composed = compose_and_shrink(spec, o, s, progress);
-        } else {
-          composed = compose_spec(spec, o, progress);
-        }
-        SolveReport report;
-        report.seconds = std::chrono::duration<double>(
-                             std::chrono::steady_clock::now() - start)
-                             .count();
-        if (!composed) {
-          report.status =
-              cancel->load() ? SolveStatus::Cancelled : SolveStatus::OutOfTime;
-          return JobResult{std::move(report), std::nullopt};
-        }
-        report.status = SolveStatus::Feasible;
-        report.solution =
-            EncodedSolution{composed->layout,
-                            static_cast<int>(composed->spec.hints.size()),
-                            {},
-                            {},
-                            {}};
-        return JobResult{std::move(report), std::move(composed->spec)};
-      });
+      spec,
+      offering(this->library_.get(), key, to_json(spec), std::move(work)));
   return Json::object();
 }
 

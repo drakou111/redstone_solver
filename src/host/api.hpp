@@ -9,6 +9,7 @@
 #include <string_view>
 
 #include "host/json_io.hpp"
+#include "host/library.hpp"
 #include "redstone/gate_library.hpp"
 #include "redstone/simulator.hpp"
 #include "redstone/solve_job.hpp"
@@ -19,7 +20,10 @@ namespace rs::host {
 // a JSON reply. Throws std::invalid_argument for bad requests. Thread safe.
 class Api {
 public:
-  explicit Api(std::filesystem::path examples_dir);
+  // With `library_dir`, verified circuits are kept there and requests seen
+  // before are answered from it at once.
+  explicit Api(std::filesystem::path examples_dir,
+               std::optional<std::filesystem::path> library_dir = {});
 
   Json handle(std::string_view route, const Json &body);
 
@@ -49,6 +53,7 @@ private:
   const Simulator &simulator() const;
 
   std::filesystem::path examples_dir_;
+  std::unique_ptr<CircuitLibrary> library_;
   mutable std::mutex mutex_;
   std::unique_ptr<SolveJob> job_;
   std::optional<Simulator> sim_;

@@ -47,11 +47,18 @@ public final class SolverService implements AutoCloseable {
     }
 
     private final Path executable;
+    private final Optional<Path> library;
     private final AtomicBoolean running = new AtomicBoolean();
     private SolverClient client;
 
     public SolverService(Path executable) {
+        this(executable, Optional.empty());
+    }
+
+    /** With {@code library}, the solver keeps verified circuits there and answers repeats from it. */
+    public SolverService(Path executable, Optional<Path> library) {
         this.executable = Objects.requireNonNull(executable, "executable");
+        this.library = Objects.requireNonNull(library, "library");
     }
 
     public boolean isRunning() {
@@ -109,7 +116,7 @@ public final class SolverService implements AutoCloseable {
     private synchronized SolverClient client() {
         if (this.client == null || !this.client.isAlive()) {
             if (this.client != null) LOGGER.log(Level.WARNING, "The solver process ended; starting it again");
-            this.client = SolverClient.start(this.executable);
+            this.client = SolverClient.start(this.executable, this.library);
         }
         return this.client;
     }

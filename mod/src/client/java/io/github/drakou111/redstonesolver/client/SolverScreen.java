@@ -650,6 +650,11 @@ public final class SolverScreen extends Screen {
                         () -> this.run(() -> this.server.placeAt(this.lookTarget.get(), this.lookFacing)));
             }
             this.flowButton(Component.literal("Discard"), 50, "Forget this circuit", () -> this.run(this.server::discard));
+            if (result.get().has("fromLibrary") && result.get().get("fromLibrary").getAsBoolean() && !this.state.isSolving()) {
+                this.flowButton(Component.literal("Search again"), 76,
+                        "This circuit was found before and came from the circuit library; search anew, ignoring it",
+                        () -> this.run(this.server::searchAgain));
+            }
         }
         if (hasCircuit && !this.state.isSolving()) {
             this.flowButton(Component.literal("Shrink"), 46,
@@ -808,6 +813,8 @@ public final class SolverScreen extends Screen {
                 lines.add("Stopped early (you cancelled): this is the best found so far.");
             else if (!optimal) lines.add("(the solver did not prove it is the smallest)");
             if (result.has("note")) lines.add(result.get("note").getAsString());
+            if (result.has("fromLibrary") && result.get("fromLibrary").getAsBoolean())
+                lines.add("From the circuit library (found before). Search again looks for a better one.");
             lines.add("Timing: " + this.timingText(result));
             this.deadlineNote(result).ifPresent(lines::add);
             StringBuilder counts = new StringBuilder("Blocks: ");

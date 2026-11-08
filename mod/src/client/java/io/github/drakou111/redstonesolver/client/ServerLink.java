@@ -30,6 +30,7 @@ public final class ServerLink {
 
     private final ClientState state;
     private final DraftAutosave autosave;
+    private JsonObject lastSolve;
 
     public ServerLink(ClientState state, DraftAutosave autosave) {
         this.state = state;
@@ -79,6 +80,7 @@ public final class ServerLink {
             options.addProperty("cutTime", Math.min(MAX_CUT_SECONDS, this.state.getTimeLimitSeconds()));
         }
         body.add("options", options);
+        this.lastSolve = body.deepCopy();
         this.send("solve", body);
         this.autosave.saveNow();
         this.state.setSolving(true);
@@ -118,6 +120,17 @@ public final class ServerLink {
         this.autosave.saveNow();
         this.state.setSolving(true);
         this.state.setProgress("Checking your build...");
+    }
+
+    /** The last solve again, without the circuit library's answer (to look for a better circuit). */
+    public void searchAgain() {
+        if (this.state.isSolving()) throw new IllegalStateException("A solve is already running.");
+        if (this.lastSolve == null) throw new IllegalStateException("Nothing to search again.");
+        JsonObject body = this.lastSolve.deepCopy();
+        body.getAsJsonObject("options").addProperty("library", false);
+        this.send("solve", body);
+        this.state.setSolving(true);
+        this.state.setProgress("Searching again...");
     }
 
     public void cancel() {

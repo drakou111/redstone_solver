@@ -183,6 +183,7 @@ public final class SolverNetworking {
         json.addProperty("cancelled", cancelled);
         json.addProperty("shrunk", route.equals("shrink/start"));
         json.addProperty("builtFromGates", route.equals("compose/start"));
+        json.addProperty("fromLibrary", outcome.log().stream().anyMatch(line -> line.startsWith("from the circuit library")));
         outcome.error().ifPresent(error -> json.addProperty("error", error));
 
         ServerPlayer player = server.getPlayerList().getPlayer(playerId);

@@ -19,6 +19,9 @@ import java.nio.file.Path;
 import java.security.SecureRandom;
 import java.time.Duration;
 import java.util.HexFormat;
+import java.util.Optional;
+import java.util.List;
+import java.util.ArrayList;
 import java.util.Objects;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutionException;
@@ -49,6 +52,11 @@ public final class SolverClient implements AutoCloseable {
 
     /** Starts the solver and waits until it serves requests. */
     public static SolverClient start(Path executable) {
+        return start(executable, Optional.empty());
+    }
+
+    /** Starts the solver; with {@code library}, it keeps verified circuits there between sessions. */
+    public static SolverClient start(Path executable, Optional<Path> library) {
         Objects.requireNonNull(executable, "executable");
         if (!Files.isRegularFile(executable))
             throw new SolverException("The solver is not at " + executable
@@ -59,7 +67,9 @@ public final class SolverClient implements AutoCloseable {
         String token = HexFormat.of().formatHex(secret);
         Process process;
         try {
-            process = new ProcessBuilder(executable.toString(), "--serve", "--token", token)
+            List<String> command = new ArrayList<>(List.of(executable.toString(), "--serve", "--token", token));
+            library.ifPresent(dir -> command.addAll(List.of("--library", dir.toAbsolutePath().toString())));
+            process = new ProcessBuilder(command)
                     .directory(executable.toAbsolutePath().getParent().toFile())
                     .start();
         } catch (IOException e) {

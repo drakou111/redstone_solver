@@ -181,6 +181,7 @@ add_executable(redstone_solver WIN32
         src/host/main.cpp
         src/host/api.cpp
         src/host/json_io.cpp
+        src/host/library.cpp
         src/host/minecraft_assets.cpp
         ${EMBEDDED_CPP})
 target_link_libraries(redstone_solver PRIVATE redstone_core miniz httplib::httplib
@@ -219,8 +220,12 @@ if (REDSTONE_BUILD_TESTS)
             tests/test_compose.cpp
             tests/test_netlist.cpp
             tests/test_gate_library.cpp
-            tests/test_circuit_gen.cpp)
-    target_link_libraries(redstone_tests PRIVATE redstone_core Catch2::Catch2WithMain)
+            tests/test_circuit_gen.cpp
+            tests/test_library.cpp
+            src/host/library.cpp)
+    target_link_libraries(redstone_tests PRIVATE redstone_core Catch2::Catch2WithMain
+            nlohmann_json::nlohmann_json)
+    target_include_directories(redstone_tests PRIVATE ${CMAKE_SOURCE_DIR}/src)
     target_compile_options(redstone_tests PRIVATE ${REDSTONE_WARNINGS})
     redstone_copy_runtime_dlls(redstone_tests)
 
