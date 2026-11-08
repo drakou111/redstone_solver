@@ -557,6 +557,10 @@ GateLibraryOptions gates_within_height(GateLibraryOptions gates,
 namespace {
 
 // The gate networks of one table: found once, reused by every pass.
+// Exact synthesis gets its full time up to this many inputs.
+constexpr int kNarrowTableInputs = 4;
+constexpr double kWideSynthesisSeconds = 10.0;
+
 struct Networks {
   bool searched = false;
   std::optional<Netlist> best;
@@ -575,13 +579,24 @@ std::optional<ComposeResult> compose_once(const Spec &spec,
   synthesis.time_limit_seconds = options.synthesis_seconds;
   if (!networks.searched) {
     networks.searched = true;
-    networks.best = synthesize(table, synthesis);
-    if (!networks.best && !(options.cancel && options.cancel->load())) {
-      // Exact synthesis gives up on bigger tables (a 4-to-1 multiplexer has
-      // six inputs); a split network is larger but found at once.
-      networks.best = split_network(table);
-      if (networks.best && progress)
-        progress(std::format("no smallest network found in time; using a "
+    // A split network is found at once; exact synthesis only has to beat
+    // it, and on wide tables (a 4-to-1 multiplexer has six inputs) it
+    // rarely finishes, so it gets less time there.
+    std::optional<Netlist> split = split_network(table);
+    if (split) {
+      synthesis.max_gates = std::min(synthesis.max_gates,
+                                     static_cast<int>(split->gates.size()) - 1);
+      if (table.inputs > kNarrowTableInputs)
+        synthesis.time_limit_seconds =
+            std::min(synthesis.time_limit_seconds, kWideSynthesisSeconds);
+    }
+    if (!split || synthesis.max_gates > 0)
+      networks.best = synthesize(table, synthesis);
+    if (!networks.best && split &&
+        !(options.cancel && options.cancel->load())) {
+      networks.best = std::move(split);
+      if (progress)
+        progress(std::format("no smaller network found in time; using a "
                              "split network of {} gates",
                              networks.best->gates.size()));
     }
