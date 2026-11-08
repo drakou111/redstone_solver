@@ -37,7 +37,7 @@ private:
   Json start_solve(const Json &body);
   Json start_shrink(const Json &body);
   Json start_compose(const Json &body);
-  Json solve_status() const;
+  Json solve_status(const Json &body) const;
   Json reset_simulator(const Json &body);
   Json simulator_input(const Json &body);
   Json simulator_tick(const Json &body);

@@ -3,11 +3,11 @@
 namespace rs {
 
 SolveJob::SolveJob(Spec spec, SolverOptions options)
-    : SolveJob(spec, [spec, options](const ProgressCallback &progress,
-                                     std::atomic<bool> *cancel) {
+    : SolveJob(spec, [spec, options](const JobContext &job) {
         SolverOptions o = options;
-        o.cancel = cancel;
-        return JobResult{solve(spec, o, progress), std::nullopt};
+        o.cancel = job.cancel;
+        o.preview = job.preview;
+        return JobResult{solve(spec, o, job.progress), std::nullopt};
       }) {}
 
 SolveJob::SolveJob(Spec spec, JobWork work)
@@ -43,6 +43,16 @@ std::optional<Spec> SolveJob::result_spec() const {
   return this->result_spec_;
 }
 
+int SolveJob::preview_version() const {
+  std::lock_guard lock(this->mutex_);
+  return this->preview_version_;
+}
+
+std::optional<World> SolveJob::preview() const {
+  std::lock_guard lock(this->mutex_);
+  return this->preview_;
+}
+
 std::optional<std::string> SolveJob::error() const {
   std::lock_guard lock(this->mutex_);
   return this->error_;
@@ -50,12 +60,18 @@ std::optional<std::string> SolveJob::error() const {
 
 void SolveJob::run() {
   try {
-    JobResult result = this->work_(
-        [this](std::string_view message) {
-          std::lock_guard lock(this->mutex_);
-          this->log_.emplace_back(message);
-        },
-        &this->cancel_);
+    JobContext job;
+    job.progress = [this](std::string_view message) {
+      std::lock_guard lock(this->mutex_);
+      this->log_.emplace_back(message);
+    };
+    job.preview = [this](const World &layout) {
+      std::lock_guard lock(this->mutex_);
+      this->preview_ = layout;
+      ++this->preview_version_;
+    };
+    job.cancel = &this->cancel_;
+    JobResult result = this->work_(job);
     std::lock_guard lock(this->mutex_);
     this->report_ = std::move(result.report);
     this->result_spec_ = std::move(result.spec);

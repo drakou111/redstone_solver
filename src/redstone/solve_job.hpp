@@ -21,9 +21,15 @@ struct JobResult {
   std::optional<Spec> spec;
 };
 
-// The work of a job: reports progress and stops soon after `cancel` is set.
-using JobWork = std::function<JobResult(const ProgressCallback &progress,
-                                        std::atomic<bool> *cancel)>;
+// What a job's work gets: where to report progress and previews, and a
+// flag set when it should stop soon.
+struct JobContext {
+  ProgressCallback progress;
+  PreviewCallback preview;
+  std::atomic<bool> *cancel = nullptr;
+};
+
+using JobWork = std::function<JobResult(const JobContext &job)>;
 
 // Runs the solver (or other work) on a background thread and collects its
 // progress log.
@@ -46,6 +52,9 @@ public:
   std::optional<std::string> error() const;
   // Set when the work ended with a different spec.
   std::optional<Spec> result_spec() const;
+  // The latest preview and how many have been shown (0: none yet).
+  int preview_version() const;
+  std::optional<World> preview() const;
 
 private:
   void run();
@@ -60,6 +69,8 @@ private:
   std::optional<SolveReport> report_;
   std::optional<Spec> result_spec_;
   std::optional<std::string> error_;
+  std::optional<World> preview_;
+  int preview_version_ = 0;
   std::thread thread_; // last, so everything above exists when it starts
 };
 

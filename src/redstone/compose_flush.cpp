@@ -204,6 +204,25 @@ std::optional<std::string> walk_rows(const World &layout,
   return std::nullopt;
 }
 
+// The cells placed so far as a world from their first row on.
+World world_of(const Cells &placed, int height) {
+  int min_z = std::numeric_limits<int>::max();
+  Vec3 size{1, height, 1};
+  for (const auto &[cell, block] : placed) {
+    min_z = std::min(min_z, cell[2]);
+    size.x = std::max(size.x, cell[0] + 1);
+    size.y = std::max(size.y, cell[1] + 1);
+  }
+  if (placed.empty())
+    return World(size);
+  for (const auto &[cell, block] : placed)
+    size.z = std::max(size.z, cell[2] - min_z + 1);
+  World world(size);
+  for (const auto &[cell, block] : placed)
+    world.set({cell[0], cell[1], cell[2] - min_z}, block);
+  return world;
+}
+
 constexpr std::uint8_t kOr = 0b1110;
 constexpr std::uint8_t kXor = 0b0110;
 
@@ -788,6 +807,8 @@ std::optional<ComposeResult> compose_flush(const Netlist &netlist,
     }
     beam = std::move(next);
     ++gi;
+    if (options.preview)
+      options.preview(world_of(beam.front().placed, height));
   }
 
   // The finished circuit: the smallest of the beam.

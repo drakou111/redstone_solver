@@ -19,6 +19,8 @@ struct ShrinkOptions {
   // limit, stop-at-first and cancel are set by shrink().
   SolverOptions solver;
   std::atomic<bool> *cancel = nullptr;
+  // Each smaller (or, tidying, leaner) circuit as it is found.
+  PreviewCallback preview;
 };
 
 struct ShrinkResult {

@@ -118,9 +118,12 @@ TEST_CASE("flush placement builds a compact flat full adder") {
   });
   NetlistComposeOptions options;
   options.max_height = 2;
+  int previews = 0;
+  options.preview = [&](const World &) { ++previews; };
   std::vector<std::string> log;
   std::optional<ComposeResult> result = compose_spec(
       spec, options, [&](std::string_view m) { log.emplace_back(m); });
+  CHECK(previews > 0); // the build is shown gate by gate
   std::string text;
   for (const auto &line : log)
     text += line + "\n";

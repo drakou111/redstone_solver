@@ -104,8 +104,8 @@ std::string compose_key(const Spec &spec,
 
 // A job that ends at once with a circuit from the library.
 JobWork from_library(const CircuitLibrary::Entry &entry, bool with_spec) {
-  return [entry, with_spec](const ProgressCallback &progress,
-                            std::atomic<bool> *) {
+  return [entry, with_spec](const JobContext &job) {
+    const ProgressCallback &progress = job.progress;
     if (progress)
       progress(std::format("from the circuit library: solved before, {} "
                            "blocks",
@@ -125,9 +125,10 @@ JobWork from_library(const CircuitLibrary::Entry &entry, bool with_spec) {
 JobWork offering(CircuitLibrary *library, std::string key, Json request_spec,
                  std::string shape, JobWork work) {
   return [library, key = std::move(key), request_spec = std::move(request_spec),
-          shape = std::move(shape), work = std::move(work)](
-             const ProgressCallback &progress, std::atomic<bool> *cancel) {
-    JobResult result = work(progress, cancel);
+          shape = std::move(shape),
+          work = std::move(work)](const JobContext &job) {
+    const ProgressCallback &progress = job.progress;
+    JobResult result = work(job);
     if (library && result.report.solution) {
       const World &layout = result.report.solution->layout;
       Vec3 size = layout.size();
@@ -162,7 +163,7 @@ Json Api::handle(std::string_view route, const Json &body) {
   if (route == "solve/start")
     return this->start_solve(body);
   if (route == "solve/status")
-    return this->solve_status();
+    return this->solve_status(body);
   if (route == "solve/cancel") {
     if (this->job_)
       this->job_->cancel();
@@ -293,13 +294,13 @@ Json Api::start_solve(const Json &body) {
         retrieved = !search.hints.empty();
       }
     }
-  JobWork work = [search, options, retrieved](const ProgressCallback &progress,
-                                              std::atomic<bool> *cancel) {
-    if (retrieved && progress)
-      progress("starting from a similar circuit in the library (a sketch)");
+  JobWork work = [search, options, retrieved](const JobContext &job) {
+    if (retrieved && job.progress)
+      job.progress("starting from a similar circuit in the library (a sketch)");
     SolverOptions o = options;
-    o.cancel = cancel;
-    return JobResult{solve(search, o, progress), std::nullopt};
+    o.cancel = job.cancel;
+    o.preview = job.preview;
+    return JobResult{solve(search, o, job.progress), std::nullopt};
   };
   this->job_ = std::make_unique<SolveJob>(
       spec, offering(this->library_.get(), key, to_json(spec),
@@ -322,28 +323,28 @@ Json Api::start_shrink(const Json &body) {
   options.solver.verification = verification_from(settings);
   if (options.time_limit_seconds <= 0 || options.cut_seconds <= 0)
     throw std::invalid_argument("time limits must be positive");
-  this->job_ = std::make_unique<SolveJob>(
-      spec, [spec, layout, options](const ProgressCallback &progress,
-                                    std::atomic<bool> *cancel) {
-        auto start = std::chrono::steady_clock::now();
-        ShrinkOptions o = options;
-        o.cancel = cancel;
-        ShrinkResult shrunk = shrink(spec, layout, o, progress);
-        int blocks = 0;
-        for (int i = 0; i < shrunk.layout.volume(); ++i) {
-          BlockType type = shrunk.layout.at(shrunk.layout.position_of(i)).type;
-          if (type != BlockType::Air && type != BlockType::Input &&
-              type != BlockType::Output)
-            ++blocks;
-        }
-        SolveReport report;
-        report.status = SolveStatus::Feasible;
-        report.solution = EncodedSolution{shrunk.layout, blocks, {}, {}, {}};
-        report.seconds = std::chrono::duration<double>(
-                             std::chrono::steady_clock::now() - start)
-                             .count();
-        return JobResult{std::move(report), std::move(shrunk.spec)};
-      });
+  this->job_ = std::make_unique<SolveJob>(spec, [spec, layout, options](
+                                                    const JobContext &job) {
+    auto start = std::chrono::steady_clock::now();
+    ShrinkOptions o = options;
+    o.cancel = job.cancel;
+    o.preview = job.preview;
+    ShrinkResult shrunk = shrink(spec, layout, o, job.progress);
+    int blocks = 0;
+    for (int i = 0; i < shrunk.layout.volume(); ++i) {
+      BlockType type = shrunk.layout.at(shrunk.layout.position_of(i)).type;
+      if (type != BlockType::Air && type != BlockType::Input &&
+          type != BlockType::Output)
+        ++blocks;
+    }
+    SolveReport report;
+    report.status = SolveStatus::Feasible;
+    report.solution = EncodedSolution{shrunk.layout, blocks, {}, {}, {}};
+    report.seconds =
+        std::chrono::duration<double>(std::chrono::steady_clock::now() - start)
+            .count();
+    return JobResult{std::move(report), std::move(shrunk.spec)};
+  });
   return Json::object();
 }
 
@@ -392,11 +393,13 @@ Json Api::start_compose(const Json &body) {
       return Json{{"fromLibrary", true}};
     }
   JobWork work = [spec, options, shrink_seconds, cut_seconds,
-                  total_seconds](const ProgressCallback &progress,
-                                 std::atomic<bool> *cancel) {
+                  total_seconds](const JobContext &job) {
+    const ProgressCallback &progress = job.progress;
+    std::atomic<bool> *cancel = job.cancel;
     auto start = std::chrono::steady_clock::now();
     NetlistComposeOptions o = options;
     o.cancel = cancel;
+    o.preview = job.preview;
     if (total_seconds > 0)
       o.deadline =
           start +
@@ -408,6 +411,7 @@ Json Api::start_compose(const Json &body) {
       s.time_limit_seconds = shrink_seconds;
       s.cut_seconds = cut_seconds;
       s.solver.verification = options.solver.verification;
+      s.preview = job.preview;
       composed = compose_and_shrink(spec, o, s, progress);
     } else {
       composed = compose_spec(spec, o, progress);
@@ -442,12 +446,18 @@ Json Api::start_compose(const Json &body) {
   return Json::object();
 }
 
-Json Api::solve_status() const {
+Json Api::solve_status(const Json &body) const {
   if (!this->job_)
     return {{"running", false}, {"log", Json::array()}};
   Json status{{"running", !this->job_->is_done()},
               {"seconds", this->job_->seconds()},
               {"log", this->job_->log()}};
+  // The circuit so far, when newer than the one the caller has.
+  int version = this->job_->preview_version();
+  status["previewVersion"] = version;
+  if (version > body.value("previewSince", 0))
+    if (std::optional<World> preview = this->job_->preview())
+      status["preview"] = to_json(*preview);
   if (auto error = this->job_->error())
     status["error"] = *error;
   if (auto report = this->job_->report())

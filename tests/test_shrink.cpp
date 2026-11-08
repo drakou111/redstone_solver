@@ -78,8 +78,11 @@ TEST_CASE("shrink takes slices out of a verified layout until none can go") {
   ShrinkOptions options;
   options.time_limit_seconds = kTimeLimitSeconds;
   options.cut_seconds = 20.0;
+  int previews = 0;
+  options.preview = [&](const World &) { ++previews; };
   ShrinkResult result = shrink(spec, report.solution->layout, options);
   CHECK(result.steps > 0);
+  CHECK(previews >= result.steps); // each step is shown
   CHECK(result.spec.size.x < spec.size.x);
   CHECK(result.layout.size() == result.spec.size);
   CHECK_FALSE(verify_layout(result.layout, result.spec,

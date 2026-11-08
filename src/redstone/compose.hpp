@@ -75,6 +75,8 @@ struct NetlistComposeOptions {
   int flush_variants = 8;
   int flush_seed = 0;    // 0: the plain ranking
   bool flush_sat = true; // false: router only, a gate nothing routes fails
+  // The build so far, gate by gate (flush placement).
+  PreviewCallback preview;
   // The request's timing (compose_spec sets it): builds that meet it are
   // kept over smaller ones that do not.
   TimingSpec timing;

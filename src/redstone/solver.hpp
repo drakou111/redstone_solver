@@ -19,6 +19,10 @@ enum class SolverEngine {
   CpSat, // OR-Tools CP-SAT
 };
 
+// Shown while work goes on: the circuit so far (a partial build, the
+// current shrink step, the best circuit found yet).
+using PreviewCallback = std::function<void(const World &)>;
+
 struct SolverOptions {
   SolverEngine engine = SolverEngine::Sat;
   double time_limit_seconds = 60.0;
@@ -41,6 +45,8 @@ struct SolverOptions {
   VerificationOptions verification;
   // Set to true from another thread to stop early.
   std::atomic<bool> *cancel = nullptr;
+  // Each verified circuit better than the ones before.
+  PreviewCallback preview;
 };
 
 enum class SolveStatus {

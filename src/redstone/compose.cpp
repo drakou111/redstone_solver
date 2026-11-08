@@ -10,6 +10,7 @@
 #include <format>
 #include <functional>
 #include <future>
+#include <limits>
 #include <map>
 #include <mutex>
 #include <stdexcept>
@@ -217,6 +218,7 @@ flush_variants(const Netlist &netlist, const BoolTable &table,
     NetlistComposeOptions o = first;
     o.flush_seed = seed;
     o.flush_sat = false; // variants are quick or nothing
+    o.preview = {};      // the first build was shown
     variants.push_back(std::async(std::launch::async, [&netlist, &table, o] {
       return compose_flush(netlist, table, o, {});
     }));
@@ -553,6 +555,8 @@ compose_and_shrink(const Spec &spec, const NetlistComposeOptions &options,
   for (bool joins : join_choices) {
     NetlistComposeOptions o = options;
     o.flush_joins = joins;
+    if (joins != join_choices.front())
+      o.preview = {}; // one build is shown, not two taking turns
     builds.push_back(std::async(std::launch::async, [&spec, o, &say] {
       return compose_spec(spec, o, say);
     }));
@@ -576,6 +580,20 @@ compose_and_shrink(const Spec &spec, const NetlistComposeOptions &options,
   if (starts.empty())
     return std::nullopt;
 
+  // Both shrinks run at once: a step is shown when it is no bigger than
+  // the last one shown.
+  std::mutex preview_mutex;
+  int shown_cells = std::numeric_limits<int>::max();
+  PreviewCallback preview;
+  if (shrink.preview)
+    preview = [&](const World &layout) {
+      Vec3 size = layout.size();
+      std::lock_guard lock(preview_mutex);
+      if (size.x * size.y * size.z > shown_cells)
+        return;
+      shown_cells = size.x * size.y * size.z;
+      shrink.preview(layout);
+    };
   std::vector<std::future<ComposeResult>> shrinks;
   const int workers =
       std::max(1, shrink_workers(shrink) / static_cast<int>(starts.size()));
@@ -585,6 +603,7 @@ compose_and_shrink(const Spec &spec, const NetlistComposeOptions &options,
     ShrinkOptions o = shrink;
     o.parallel = workers;
     o.cancel = options.cancel;
+    o.preview = preview;
     if (options.deadline)
       o.time_limit_seconds = std::max(
           1.0, std::chrono::duration<double>(*options.deadline -

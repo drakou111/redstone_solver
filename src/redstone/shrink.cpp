@@ -389,6 +389,8 @@ ShrinkResult tidy(const Spec &spec, const World &layout,
       break;
     }
     say(std::format("tidy: {} blocks instead of {}", better_blocks, blocks));
+    if (options.preview)
+      options.preview(*better);
     blocks = better_blocks;
     result.spec = spec_with_layout(spec, *better);
     result.layout = std::move(*better);
@@ -511,6 +513,8 @@ ShrinkResult shrink(const Spec &spec, const World &layout,
       path.push_back(
           make_node(std::move(next_spec), std::move(found->second), options));
       const ShrinkNode &child = path.back();
+      if (options.preview)
+        options.preview(child.layout);
       if (cells(child.spec.size) < cells(best.spec.size))
         best = {child.spec, child.layout, static_cast<int>(path.size()) - 1};
       continue;

@@ -656,6 +656,8 @@ SearchResult run_sat_search(SatSearch &search,
           refined.simplified_blocks));
       // The sketch has done its job; smaller circuits may look different.
       sketch.clear();
+      if (options.preview && blocks < shared.best_blocks)
+        options.preview(candidate.layout);
       publish(shared, searches, search, std::move(candidate));
       if (options.stop_at_first) {
         finish_all(shared, searches);
