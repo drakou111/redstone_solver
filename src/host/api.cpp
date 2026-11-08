@@ -231,10 +231,10 @@ Json Api::check_spec(const Json &body) const {
 
 namespace {
 
-// "Only as drawn": verify the layout at the identity placement alone.
+// "Only as drawn" (the default): verify at the identity placement alone.
 VerificationOptions verification_from(const Json &settings) {
   VerificationOptions options;
-  if (settings.value("onePlacement", false))
+  if (settings.value("onePlacement", true))
     options.placements = {Placement{}};
   return options;
 }
