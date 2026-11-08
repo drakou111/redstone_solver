@@ -1,9 +1,12 @@
 #include "redstone/shrink.hpp"
 
+#include "redstone/verifier.hpp"
+
 #include <algorithm>
 #include <array>
 #include <chrono>
 #include <format>
+#include <functional>
 #include <future>
 #include <mutex>
 #include <stdexcept>
@@ -64,6 +67,7 @@ struct Attempt {
   Spec base; // the plain cut, the starting point once it works
   std::string name;
   double seconds = 0; // at most; also bounded by the shrink's deadline
+  bool whole = false; // the plain cut, repaired anywhere
 };
 
 int coordinate(Vec3 p, int axis) {
@@ -132,7 +136,25 @@ struct ShrinkNode {
   World layout;
   std::vector<Attempt> attempts;
   std::vector<bool> finished; // solved or failed in full
+  bool tried_as_is = false;
 };
+
+// The cut layout exactly as it is, when it already works: a slice of
+// straight wire along the axis or of air needs no solve at all.
+std::optional<World> works_as_is(const Spec &cut, const SolverOptions &solver) {
+  World layout = cut.base_world();
+  for (const auto &[p, block] : cut.hints) {
+    BlockType here = layout.at(p).type;
+    if (here != BlockType::Input && here != BlockType::Output)
+      layout.set(p, block);
+  }
+  if (!layout.validate().empty())
+    return std::nullopt;
+  if (verify_layout(layout, cut, cut.verification_vectors(),
+                    solver.verification))
+    return std::nullopt;
+  return layout;
+}
 
 // Cuts with the fewest blocks in the removed slice first, each repaired near
 // the seam first and in the whole circuit last.
@@ -164,7 +186,8 @@ ShrinkNode make_node(Spec spec, World layout, const ShrinkOptions &options) {
                            ? options.cut_seconds
                            : std::min(options.cut_seconds, phase.seconds);
       if (phase.half_width == 0) {
-        attempts.push_back({cut.spec, cut.spec, std::move(name), seconds});
+        attempts.push_back(
+            {cut.spec, cut.spec, std::move(name), seconds, true});
         continue;
       }
       if (auto local =
@@ -281,6 +304,42 @@ ShrinkResult shrink(const Spec &spec, const World &layout,
     std::atomic<std::size_t> next = 0;
     std::mutex mutex;
     std::optional<std::pair<std::size_t, World>> found;
+    auto run_workers = [&](const std::function<void()> &work) {
+      std::vector<std::future<void>> workers;
+      for (int w = 0; w < shrink_workers(options); ++w)
+        workers.push_back(std::async(std::launch::async, work));
+      for (auto &w : workers)
+        while (w.wait_for(kCancelPollInterval) != std::future_status::ready)
+          if (out_of_time())
+            stop = true;
+    };
+
+    // First every plain cut exactly as it is: a simulation each, no solve.
+    if (!node.tried_as_is) {
+      node.tried_as_is = true;
+      std::vector<std::size_t> whole;
+      for (std::size_t i : pending)
+        if (node.attempts[i].whole)
+          whole.push_back(i);
+      run_workers([&] {
+        for (std::size_t k = next++; k < whole.size() && !stop; k = next++) {
+          std::size_t i = whole[k];
+          std::optional<World> layout =
+              works_as_is(node.attempts[i].base, options.solver);
+          if (!layout)
+            continue;
+          std::lock_guard lock(mutex);
+          if (!found) {
+            found.emplace(i, std::move(*layout));
+            node.finished[i] = true;
+            say("removed " + node.attempts[i].name + ", as it was");
+            stop = true;
+          }
+        }
+      });
+      next = 0;
+    }
+
     auto worker = [&] {
       for (std::size_t k = next++; k < pending.size() && !stop; k = next++) {
         std::size_t i = pending[k];
@@ -308,13 +367,8 @@ ShrinkResult shrink(const Spec &spec, const World &layout,
         }
       }
     };
-    std::vector<std::future<void>> workers;
-    for (int w = 0; w < shrink_workers(options); ++w)
-      workers.push_back(std::async(std::launch::async, worker));
-    for (auto &w : workers)
-      while (w.wait_for(kCancelPollInterval) != std::future_status::ready)
-        if (out_of_time())
-          stop = true;
+    if (!found && !out_of_time())
+      run_workers(worker);
 
     if (found) {
       Spec base = node.attempts[found->first].base;
