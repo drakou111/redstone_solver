@@ -5,6 +5,13 @@ rest are open.
 
 ## Building circuits (like flush Compose, but better)
 
+0. **Done: path-finding wire router.** Build from gates draws wires with A*
+   (dust on blocks, repeaters when weak, one cell of clearance, crossings two
+   layers up) in milliseconds, checks each stage by simulation and leaves a
+   wire to SAT only when nothing routes. Joined-wire ORs route too (each
+   signal through a repeater first). Dead ends go back to the runner-up
+   partial circuits before falling back to SAT. Crossings need 4 layers.
+
 1. **Beam search for flush placement.** Flush places gates greedily: the first
    position that wires up is kept. Keeping the best few partial circuits per
    gate (a beam) and finishing each one finds smaller circuits, since an early
