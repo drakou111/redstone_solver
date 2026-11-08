@@ -398,14 +398,18 @@ Json Api::start_compose(const Json &body) {
   boolean_table(spec);
   const bool use_library = this->library_ && settings.value("library", true);
   const std::string key = compose_key(spec, options);
-  if (use_library)
-    if (std::optional<CircuitLibrary::Entry> entry =
-            this->library_->find(key)) {
-      this->job_ = std::make_unique<SolveJob>(spec, from_library(*entry, true));
-      return Json{{"fromLibrary", true}};
-    }
-  JobWork work = [spec, options, shrink_seconds, cut_seconds,
-                  total_seconds](const JobContext &job) {
+  std::optional<CircuitLibrary::Entry> known;
+  if (this->library_)
+    known = this->library_->find(key);
+  if (use_library && known) {
+    this->job_ = std::make_unique<SolveJob>(spec, from_library(*known, true));
+    return Json{{"fromLibrary", true}};
+  }
+  // Searching again: only a circuit smaller than the library's is news.
+  if (known)
+    options.beat = world_from_json(known->layout).size();
+  JobWork work = [spec, options, shrink_seconds, cut_seconds, total_seconds,
+                  known](const JobContext &job) {
     const ProgressCallback &progress = job.progress;
     std::atomic<bool> *cancel = job.cancel;
     auto start = std::chrono::steady_clock::now();
@@ -442,6 +446,20 @@ Json Api::start_compose(const Json &body) {
       report.status =
           cancel->load() ? SolveStatus::Cancelled : SolveStatus::OutOfTime;
       return JobResult{std::move(report), std::nullopt};
+    }
+    // Nothing smaller than the circuit found before: that one stays.
+    if (known) {
+      Vec3 size = composed->layout.size();
+      Vec3 before = world_from_json(known->layout).size();
+      if (size.x * size.y * size.z >= before.x * before.y * before.z) {
+        if (progress)
+          progress(std::format("nothing smaller than the {}x{}x{} circuit "
+                               "found before; returning that one",
+                               before.x, before.y, before.z));
+        JobResult kept = from_library(*known, true)(job);
+        kept.report.seconds = report.seconds;
+        return kept;
+      }
     }
     report.status = SolveStatus::Feasible;
     report.solution =
