@@ -67,6 +67,9 @@ struct NetlistComposeOptions {
   double flush_seconds = 30.0; // per position
   // Partial circuits kept per gate; each is finished and the smallest wins.
   int flush_beam = 3;
+  // Draw wires with the path-finding router (milliseconds) and solve a wire
+  // with SAT only where it finds none or its wires fail the check.
+  bool flush_router = true;
   // Rows beside a wire's straight path it may use, and how many extra cells
   // a gate may sit away from its signal; later deadline passes raise both.
   int flush_margin = 1;

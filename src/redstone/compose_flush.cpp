@@ -1,7 +1,9 @@
 // Flush composition: gate modules are placed one at a time, in signal order,
 // right against the circuit built so far and shifted so one input sits on
-// the cell its signal leaves from. Only the other input needs a wire, solved
-// in a narrow corridor with everything else pinned, so each solve is small.
+// the cell its signal leaves from (or a little off it). The wires are drawn
+// by the path-finding router (wire_router) in milliseconds; only where it
+// finds none is a wire solved with SAT, in a narrow corridor with
+// everything else pinned.
 
 #include <algorithm>
 #include <atomic>
@@ -14,7 +16,9 @@
 
 #include "redstone/compose.hpp"
 #include "redstone/compose_parts.hpp"
+#include "redstone/simulator.hpp"
 #include "redstone/verifier.hpp"
+#include "redstone/wire_router.hpp"
 
 namespace rs {
 
@@ -26,6 +30,22 @@ using namespace compose_parts;
 // Generous: lining a module up may move it north; empty rows are cropped.
 constexpr int kMarginZ = 16;
 constexpr std::chrono::milliseconds kPollInterval{50};
+constexpr int kSettleTicks = 400;
+// Room the router may use beyond everything placed so far.
+constexpr int kRouteSlack = 3;
+// Layers above a module's wires that a crossing needs.
+constexpr int kCrossLayers = 2;
+// Rows a new input port may sit away from the gate input it feeds.
+constexpr int kPortShift = 6;
+// With the router: spots this far off a signal's line, and how many of
+// them are tried per gate (best first).
+constexpr int kRoutedGap = 3;
+constexpr int kRoutedShift = 2;
+constexpr int kRoutedCandidates = 24;
+// Dead ends the router's search may go back from before SAT wires.
+constexpr int kMaxBacktracks = 24;
+// Rows a gate of new inputs may start below the free rows.
+constexpr int kFreshRowShift = 6;
 
 // A placed module's cells, both ends included.
 struct Footprint {
@@ -47,6 +67,7 @@ bool inside(const Footprint &f, Vec3 p) {
 struct Route {
   Vec3 from;
   Vec3 to;
+  int node = 0; // the signal it carries
 };
 
 // Where a gate goes: a module at (x0, z), or (join) no module at all, its
@@ -86,6 +107,101 @@ long area_of(const FlushState &state) {
   return static_cast<long>(max_x + 1) * (max_z - min_z + 1);
 }
 
+// The dust of a partial circuit by the signal it carries and the weakest it
+// is when on, found by simulating it under every input vector so far. Wires
+// may branch off any of it.
+using SignalCells = std::map<int, std::vector<std::pair<Vec3, int>>>;
+
+SignalCells signal_cells(const FlushState &state, const Netlist &netlist,
+                         int height) {
+  const int n = netlist.inputs;
+  std::vector<int> ports;
+  for (int i = 0; i < n; ++i)
+    if (state.port[i])
+      ports.push_back(i);
+  if (ports.empty() || state.placed.empty())
+    return {};
+  Vec3 size{1, height, 1};
+  for (const auto &[cell, block] : state.placed) {
+    size.x = std::max(size.x, cell[0] + 1);
+    size.y = std::max(size.y, cell[1] + 1);
+    size.z = std::max(size.z, cell[2] + 1);
+  }
+  World world(size);
+  for (const auto &[cell, block] : state.placed)
+    world.set({cell[0], cell[1], cell[2]}, block);
+  for (std::size_t c = 0; c < ports.size(); ++c)
+    world.set(
+        *state.port[ports[c]],
+        Block::input(static_cast<int>(c), InputKind::Repeater, Dir::East));
+
+  std::vector<Vec3> dust;
+  for (const auto &[cell, block] : state.placed)
+    if (block.type == BlockType::Dust)
+      dust.push_back({cell[0], cell[1], cell[2]});
+  const int masks = 1 << ports.size();
+  std::vector<std::vector<bool>> on(dust.size(), std::vector<bool>(masks));
+  std::vector<int> weakest(dust.size(), kMaxSignal);
+  Simulator sim(world);
+  for (int mask = 0; mask < masks; ++mask) {
+    for (std::size_t c = 0; c < ports.size(); ++c)
+      sim.set_input(static_cast<int>(c),
+                    ((mask >> c) & 1) != 0 ? kMaxSignal : 0);
+    if (!sim.run_until_quiet(kSettleTicks))
+      return {};
+    for (std::size_t d = 0; d < dust.size(); ++d) {
+      int power = sim.state_at(dust[d]).power;
+      on[d][mask] = power > 0;
+      if (power > 0)
+        weakest[d] = std::min(weakest[d], power);
+    }
+  }
+  std::map<std::vector<bool>, std::vector<int>> nodes_by_pattern;
+  for (int node = 0; node < static_cast<int>(state.source.size()); ++node) {
+    if (!state.source[node])
+      continue;
+    std::vector<bool> pattern(masks);
+    for (int mask = 0; mask < masks; ++mask) {
+      int vector = 0;
+      for (std::size_t c = 0; c < ports.size(); ++c)
+        if ((mask >> c) & 1)
+          vector |= 1 << ports[c];
+      pattern[mask] = netlist.evaluate(vector)[node];
+    }
+    nodes_by_pattern[pattern].push_back(node);
+  }
+  SignalCells result;
+  for (std::size_t d = 0; d < dust.size(); ++d) {
+    auto it = nodes_by_pattern.find(on[d]);
+    if (it == nodes_by_pattern.end())
+      continue;
+    for (int node : it->second)
+      result[node].push_back({dust[d], weakest[d]});
+  }
+  return result;
+}
+
+// A quick check of a routed stage: every input row once, one input flipped
+// at a time (Gray code order), each settling to its outputs. The finished
+// circuit gets the full check (every switch between rows) at the end.
+std::optional<std::string> walk_rows(const World &layout,
+                                     const std::vector<StageRow> &rows) {
+  Simulator sim(layout);
+  for (std::size_t i = 0; i < rows.size(); ++i) {
+    const std::size_t mask = i ^ (i >> 1);
+    const StageRow &row = rows[mask];
+    for (std::size_t c = 0; c < row.inputs.size(); ++c)
+      sim.set_input(static_cast<int>(c), row.inputs[c] ? kMaxSignal : 0);
+    if (!sim.run_until_quiet(kSettleTicks))
+      return std::format("row {} does not settle", mask);
+    for (std::size_t o = 0; o < row.outputs.size(); ++o)
+      if (row.outputs[o] &&
+          (sim.output(static_cast<int>(o)) > 0) != *row.outputs[o])
+        return std::format("row {}: output {} is wrong", mask, o + 1);
+  }
+  return std::nullopt;
+}
+
 constexpr std::uint8_t kOr = 0b1110;
 constexpr std::uint8_t kXor = 0b0110;
 
@@ -110,10 +226,21 @@ std::optional<ComposeResult> compose_flush(const Netlist &netlist,
     say("flush: no module for one of the gate groups");
     return std::nullopt;
   }
-  int extra_layers = options.extra_layers;
+  auto allowed = [&](BlockType type) {
+    return !options.palette ||
+           std::find(options.palette->begin(), options.palette->end(), type) !=
+               options.palette->end();
+  };
+  const bool use_router = options.flush_router && allowed(BlockType::Dust) &&
+                          allowed(BlockType::Solid);
+  // The router crosses a wire two layers above it, and climbs only where
+  // it must: it may use the whole height allowed.
+  int extra_layers = use_router ? std::max(options.extra_layers, kCrossLayers)
+                                : options.extra_layers;
   if (options.max_height > 0)
-    extra_layers =
-        std::clamp(options.max_height - module_height, 0, extra_layers);
+    extra_layers = std::max(0, options.max_height - module_height);
+  if (!use_router && options.max_height > 0)
+    extra_layers = std::min(extra_layers, options.extra_layers);
   const int height = module_height + extra_layers;
 
   // A signal is kept correct until its last reader is placed.
@@ -137,7 +264,106 @@ std::optional<ComposeResult> compose_flush(const Netlist &netlist,
   // Rows beside a wire's straight path it may also use (to go around).
   const int margin = std::max(1, options.flush_margin);
 
-  for (int gi = 0; gi < static_cast<int>(groups.size()); ++gi) {
+  // A stage's wires drawn by the router, then checked like a solved stage:
+  // the cells of the whole partial circuit, or nothing.
+  auto route_stage = [&](const Cells &base,
+                         const std::vector<Footprint> &footprints,
+                         const Spot &p, const SignalCells &signals, Vec3 size,
+                         const std::vector<Vec3> &input_cells,
+                         const std::vector<Vec3> &output_cells,
+                         const std::vector<StageRow> &rows,
+                         std::string &why) -> std::optional<Cells> {
+    Cells cells = base;
+    auto blocked = [&](Vec3 c) {
+      if (!p.join && inside(p.footprint, c))
+        return true;
+      return std::any_of(footprints.begin(), footprints.end(),
+                         [&](const Footprint &f) { return inside(f, c); });
+    };
+    // New input ports: a repeater facing east on a block.
+    for (const auto &[index, cell] : p.new_ports) {
+      cells[key(cell)] = Block::repeater(Dir::East);
+      cells[key(cell - Vec3{0, 1, 0})] = Block::solid();
+    }
+    // A joined-wire OR: each signal leaves through a repeater (strength 1
+    // at the start allows nothing else), so neither flows back into the
+    // other's wire; the first wire ends in dust at the meeting cell, the
+    // second joins it.
+    bool first_join = true;
+    for (const Route &r : p.routes) {
+      std::vector<WireStart> starts;
+      std::set<std::array<int, 3>> own;
+      bool new_port = false;
+      for (const auto &[index, cell] : p.new_ports)
+        new_port |= cell == r.from;
+      if (r.from.x == 0 && !p.join)
+        starts.push_back({r.from, kMaxSignal, Dir::East});
+      if (!new_port)
+        if (auto it = signals.find(r.node); it != signals.end())
+          for (const auto &[cell, strength] : it->second) {
+            starts.push_back({cell, p.join ? 1 : strength, std::nullopt});
+            own.insert(key(cell));
+          }
+      if (starts.empty()) {
+        why = "no dust carries the signal to start from";
+        return std::nullopt;
+      }
+      WireRouterOptions o;
+      o.low = {1, 1, 0};
+      o.high = {0, height - 1, 0};
+      for (const auto &[cell, block] : cells) {
+        o.high.x = std::max(o.high.x, cell[0] + kRouteSlack);
+        o.high.z = std::max(o.high.z, cell[2] + kRouteSlack);
+      }
+      o.repeaters = allowed(BlockType::Repeater);
+      WireRouter router(cells, blocked, o);
+      WireGoal goal{r.to, Dir::East};
+      if (p.join) {
+        goal.kind = first_join ? WireGoal::Kind::Dust : WireGoal::Kind::Join;
+        first_join = false;
+      }
+      auto wire = router.route(starts, own, goal);
+      if (!wire) {
+        why = std::format("no path from x {} z {} to x {} z {}", r.from.x,
+                          r.from.z, r.to.x, r.to.z);
+        return std::nullopt;
+      }
+      for (const auto &[c, block] : *wire)
+        cells[key(c)] = block;
+    }
+
+    for (const auto &[cell, block] : cells) {
+      size.x = std::max(size.x, cell[0] + 1);
+      size.y = std::max(size.y, cell[1] + 1);
+      size.z = std::max(size.z, cell[2] + 1);
+    }
+    Spec spec = make_spec(size, input_cells, output_cells, rows,
+                          options.horizon, options.palette);
+    World layout = spec.base_world();
+    for (const auto &[cell, block] : cells) {
+      Vec3 c{cell[0], cell[1], cell[2]};
+      BlockType here = layout.at(c).type;
+      if (here != BlockType::Input && here != BlockType::Output)
+        layout.set(c, block);
+    }
+    if (std::vector<std::string> problems = layout.validate();
+        !problems.empty()) {
+      why = "the wires break a placement rule: " + problems.front();
+      return std::nullopt;
+    }
+    if (std::optional<std::string> failure = walk_rows(layout, rows)) {
+      why = "the wires failed the check: " + *failure;
+      return std::nullopt;
+    }
+    return cells;
+  };
+
+  // Partial circuits past the beam's width, per gate: where a dead end
+  // goes back to before any wire is left to SAT.
+  std::vector<std::vector<FlushState>> spare(groups.size());
+  int backtracks = 0;
+
+  for (int gi = 0; gi < static_cast<int>(groups.size());) {
     if (cancelled())
       return std::nullopt;
     const Group &group = groups[gi];
@@ -155,8 +381,16 @@ std::optional<ComposeResult> compose_flush(const Netlist &netlist,
         group.functions.begin(), group.functions.end(),
         [](std::uint8_t f) { return ((f >> 1) & 1) == ((f >> 2) & 1); });
 
+    const bool can_backtrack =
+        use_router && backtracks < kMaxBacktracks &&
+        std::any_of(
+            spare.begin(), spare.begin() + gi,
+            [](const std::vector<FlushState> &s) { return !s.empty(); });
+
     std::vector<FlushState> next;
     for (const FlushState &state : beam) {
+      const SignalCells signals =
+          use_router ? signal_cells(state, netlist, height) : SignalCells{};
       const Cells &placed = state.placed;
       const std::vector<Footprint> &footprints = state.footprints;
       const std::vector<std::optional<Vec3>> &source = state.source;
@@ -187,10 +421,21 @@ std::optional<ComposeResult> compose_flush(const Netlist &netlist,
           spots.push_back({s.x + 1, s.z - input_z[k], swapped});
           for (int gap = 1; gap <= 1 + options.flush_spacing; ++gap)
             spots.push_back({s.x + 1 + gap, s.z - input_z[k], swapped});
+          // Routed wires are cheap: also try spots a little off the line.
+          if (use_router)
+            for (int gap = 0; gap <= kRoutedGap; ++gap)
+              for (int dz = -kRoutedShift; dz <= kRoutedShift; ++dz)
+                if (dz != 0)
+                  spots.push_back(
+                      {s.x + 1 + gap, s.z - input_z[k] + dz, swapped});
         }
       }
+      // A gate of new inputs only: start a fresh row, or a few further off
+      // when the ports already there leave its inputs no room.
       if (spots.empty())
-        spots.push_back({1, next_free_z, false});
+        for (int dz = 0; dz <= (use_router ? kFreshRowShift : 0); ++dz)
+          for (int x0 = 1; x0 <= 2 + options.flush_spacing; ++x0)
+            spots.push_back({x0, next_free_z + dz, false});
 
       std::vector<Spot> candidates;
       for (auto [x0, z, swapped] : spots) {
@@ -213,23 +458,62 @@ std::optional<ComposeResult> compose_flush(const Netlist &netlist,
           if (source[ops[k]]) {
             from = *source[ops[k]];
           } else {
-            from = {0, 1, target.z}; // a new input port on the west side
-            bool taken = occupied(from);
-            for (const auto &[index, cell] : p.new_ports)
-              taken |= cell == from;
-            if (taken) {
+            // A new input port on the west side, level with its gate input
+            // or (with the router drawing the wire) a few rows off it.
+            // Wires leaving neighbouring ports need a row between them, and
+            // one more for a wire that other gates still branch off.
+            const Vec3 other_target{x0 - 1, 1, z + input_z[1 - k]};
+            auto free_port = [&](Vec3 cell) {
+              if (cell.z < 0 || occupied(cell))
+                return false;
+              // Its wire starts east of it: not where the other one ends.
+              const Vec3 first = cell + Vec3{1, 0, 0};
+              if (first == other_target && first != target)
+                return false;
+              auto crowds = [&](int input, Vec3 other) {
+                int need =
+                    last_use[input] > gi || last_use[ops[k]] > gi ? 2 : 1;
+                return std::abs(other.z - cell.z) <= need;
+              };
+              for (int i = 0; i < n; ++i)
+                if (port[i] && crowds(i, *port[i]))
+                  return false;
+              for (const auto &[index, other] : p.new_ports)
+                if (crowds(index, other))
+                  return false;
+              return true;
+            };
+            std::optional<Vec3> chosen;
+            const int reach = use_router ? kPortShift : 0;
+            // Away from the module's other input first, so the two wires
+            // do not cross at the module.
+            const int away = input_z[k] <= input_z[1 - k] ? -1 : 1;
+            for (int sign : {away, -away})
+              for (int shift = 0; shift <= reach && !chosen; ++shift) {
+                Vec3 cell{0, 1, target.z + sign * shift};
+                if (free_port(cell))
+                  chosen = cell;
+              }
+            if (!chosen) {
               ok = false;
               continue;
             }
+            from = *chosen;
             p.new_ports.push_back({ops[k], from});
           }
-          if (from == target)
-            continue; // lined up: no wire
-          if (occupied(target)) {
+          // A port right against its first gate leaves no wire for its
+          // other readers to branch off.
+          if (from == target && !source[ops[k]] && last_use[ops[k]] > gi) {
             ok = false;
             continue;
           }
-          p.routes.push_back({from, target});
+          if (from == target)
+            continue; // lined up: no wire
+          if (occupied(target) || target.x < 1) {
+            ok = false;
+            continue;
+          }
+          p.routes.push_back({from, target, ops[k]});
           route_length +=
               std::abs(from.x - target.x) + std::abs(from.z - target.z);
         }
@@ -249,8 +533,11 @@ std::optional<ComposeResult> compose_flush(const Netlist &netlist,
       std::stable_sort(
           candidates.begin(), candidates.end(),
           [](const Spot &a, const Spot &b) { return a.score < b.score; });
-      if (static_cast<int>(candidates.size()) > options.flush_candidates)
-        candidates.resize(options.flush_candidates);
+      const int kept =
+          use_router ? std::max(options.flush_candidates, kRoutedCandidates)
+                     : options.flush_candidates;
+      if (static_cast<int>(candidates.size()) > kept)
+        candidates.resize(kept);
 
       // An OR of on/off signals is two dust lines meeting (dust carries the
       // stronger signal); so is an XOR whose inputs are never on together.
@@ -269,36 +556,42 @@ std::optional<ComposeResult> compose_flush(const Netlist &netlist,
         const Vec3 sa = *source[group.a];
         const Vec3 sb = *source[group.b];
         std::vector<Spot> joins;
-        for (int z : {sa.z, sb.z}) {
-          if (!joinable)
-            break;
-          const Vec3 meet{std::max(sa.x, sb.x) + 1, 1, z};
-          if (occupied(meet))
-            continue;
-          Spot j;
-          j.join = true;
-          j.x0 = meet.x;
-          j.z = meet.z;
-          j.footprint = {meet.x, meet.x, meet.z, meet.z};
-          for (Vec3 from : {sa, sb})
-            if (from != meet)
-              j.routes.push_back({from, meet});
-          j.outputs = {meet};
-          int max_x = meet.x;
-          int max_z = meet.z;
-          for (const auto &[cell, block] : placed) {
-            max_x = std::max(max_x, cell[0]);
-            max_z = std::max(max_z, cell[2]);
+        // Routed joins start with repeaters: they need room to meet.
+        const int reach = use_router ? 3 : 1;
+        for (int dx = 1; dx <= reach; ++dx)
+          for (int z : {sa.z, sb.z}) {
+            if (!joinable)
+              break;
+            const Vec3 meet{std::max(sa.x, sb.x) + dx, 1, z};
+            if (occupied(meet))
+              continue;
+            Spot j;
+            j.join = true;
+            j.x0 = meet.x;
+            j.z = meet.z;
+            j.footprint = {meet.x, meet.x, meet.z, meet.z};
+            for (auto [from, node] :
+                 {std::pair{sa, group.a}, std::pair{sb, group.b}})
+              if (from != meet)
+                j.routes.push_back({from, meet, node});
+            j.outputs = {meet};
+            int max_x = meet.x;
+            int max_z = meet.z;
+            for (const auto &[cell, block] : placed) {
+              max_x = std::max(max_x, cell[0]);
+              max_z = std::max(max_z, cell[2]);
+            }
+            j.score = static_cast<long>(max_x + 1) * (max_z + 1) * 4;
+            joins.push_back(std::move(j));
           }
-          j.score = static_cast<long>(max_x + 1) * (max_z + 1) * 4;
-          joins.push_back(std::move(j));
-        }
         candidates.insert(candidates.begin(), joins.begin(), joins.end());
       }
 
       // Every position's stage is built, then all are solved side by side; the
       // best-ranked one that wires up is kept and the rest are stopped.
       std::vector<Spec> stages;
+      std::vector<std::optional<Cells>> routed;
+      std::vector<std::string> why_not_routed;
       for (const Spot &p : candidates) {
         Cells cells = placed;
         if (!p.join)
@@ -364,6 +657,14 @@ std::optional<ComposeResult> compose_flush(const Netlist &netlist,
             row.outputs.push_back(values[node]);
           rows.push_back(std::move(row));
         }
+        if (use_router)
+          routed.push_back(route_stage(cells, footprints, p, signals, size,
+                                       input_cells, output_cells, rows,
+                                       why_not_routed.emplace_back()));
+        else {
+          routed.push_back(std::nullopt);
+          why_not_routed.emplace_back();
+        }
         Spec spec = make_spec(size, input_cells, output_cells, rows,
                               options.horizon, options.palette);
         // Input ports are repeaters: the floor under them may hold a support.
@@ -373,10 +674,48 @@ std::optional<ComposeResult> compose_flush(const Netlist &netlist,
         stages.push_back(std::move(spec));
       }
 
-      // One position at a time, best-ranked first: solving them side by side
-      // made every one run out of time (the multiplexer's third gate).
       int children = 0;
-      for (std::size_t i = 0; i < stages.size() && children < beam_width; ++i) {
+      auto add_child = [&](const Spot &p, Cells cells) {
+        FlushState child = state;
+        child.placed = std::move(cells);
+        if (!p.join) {
+          child.footprints.push_back(p.footprint);
+          child.next_free_z = std::max(child.next_free_z, p.footprint.z1 + 2);
+        }
+        for (const auto &[index, cell] : p.new_ports) {
+          child.port[index] = cell;
+          child.source[index] = cell;
+        }
+        for (std::size_t o = 0; o < group.nodes.size(); ++o)
+          child.source[group.nodes[o]] = p.outputs[o];
+        next.push_back(std::move(child));
+        ++children;
+      };
+
+      // Routed positions first: they cost nothing more to take.
+      for (std::size_t i = 0; i < routed.size() && children < beam_width; ++i)
+        if (routed[i]) {
+          const Spot &p = candidates[i];
+          say(std::format("gate {} ({}) at x {} z {}: routed", gi + 1, names,
+                          p.x0, p.z));
+          add_child(p, std::move(*routed[i]));
+        }
+
+      // SAT wiring only when nothing routed. One position at a time,
+      // best-ranked first: solving them side by side made every one run out
+      // of time (the multiplexer's third gate).
+      const bool any_routed = children > 0;
+      if (use_router && !any_routed)
+        for (std::size_t i = 0; i < routed.size(); ++i)
+          if (!why_not_routed[i].empty()) {
+            say(std::format("router: gate {} at x {} z {}: {}", gi + 1,
+                            candidates[i].x0, candidates[i].z,
+                            why_not_routed[i]));
+            break;
+          }
+      for (std::size_t i = 0; i < stages.size() && !any_routed &&
+                              !can_backtrack && children < beam_width;
+           ++i) {
         if (cancelled())
           return std::nullopt;
         SolverOptions solver = options.solver;
@@ -392,25 +731,30 @@ std::optional<ComposeResult> compose_flush(const Netlist &netlist,
                                         : to_string(report.status)));
         if (!report.solution)
           continue;
-        FlushState child = state;
-        child.placed.clear();
-        add_layout(child.placed, report.solution->layout, {0, 0, 0});
-        if (!p.join) {
-          child.footprints.push_back(p.footprint);
-          child.next_free_z = std::max(child.next_free_z, p.footprint.z1 + 2);
-        }
-        for (const auto &[index, cell] : p.new_ports) {
-          child.port[index] = cell;
-          child.source[index] = cell;
-        }
-        for (std::size_t o = 0; o < group.nodes.size(); ++o)
-          child.source[group.nodes[o]] = p.outputs[o];
-        next.push_back(std::move(child));
-        ++children;
+        Cells cells;
+        add_layout(cells, report.solution->layout, {0, 0, 0});
+        add_child(p, std::move(cells));
       }
       if (cancelled())
         return std::nullopt;
     } // each partial circuit of the beam
+    if (next.empty() && can_backtrack) {
+      int back = gi - 1;
+      while (spare[back].empty())
+        --back;
+      ++backtracks;
+      say(std::format("flush: no place for gate {}; back to gate {}", gi + 1,
+                      back + 1));
+      std::vector<FlushState> &pool = spare[back];
+      const auto take = std::min<std::ptrdiff_t>(beam_width, pool.size());
+      beam.assign(std::make_move_iterator(pool.begin()),
+                  std::make_move_iterator(pool.begin() + take));
+      pool.erase(pool.begin(), pool.begin() + take);
+      for (std::size_t later = back + 1; later < spare.size(); ++later)
+        spare[later].clear();
+      gi = back + 1;
+      continue;
+    }
     if (next.empty()) {
       say(std::format("flush: no place for gate {} ({})", gi + 1, names));
       return std::nullopt;
@@ -419,9 +763,13 @@ std::optional<ComposeResult> compose_flush(const Netlist &netlist,
                      [](const FlushState &a, const FlushState &b) {
                        return area_of(a) < area_of(b);
                      });
-    if (static_cast<int>(next.size()) > beam_width)
+    if (static_cast<int>(next.size()) > beam_width) {
+      spare[gi].assign(std::make_move_iterator(next.begin() + beam_width),
+                       std::make_move_iterator(next.end()));
       next.resize(beam_width);
+    }
     beam = std::move(next);
+    ++gi;
   }
 
   // The finished circuit: the smallest of the beam.
