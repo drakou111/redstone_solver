@@ -17,6 +17,9 @@ namespace rs::host {
 
 namespace {
 
+// Gate modules are 2 high and a wire crosses another 2 layers up.
+constexpr int kCrossingHeight = 4;
+
 constexpr int kSettleTicks = 400;
 constexpr int kMaxTicksPerRequest = 10'000;
 constexpr const char *kDefaultExample = "and_gate.txt";
@@ -356,6 +359,7 @@ Json Api::start_compose(const Json &body) {
   options.gates.time_limit_seconds = options.stage_seconds;
   options.max_height = settings.value("maxHeight", 0);
   options.flush_beam = settings.value("flushBeam", options.flush_beam);
+  options.flush_router = settings.value("router", options.flush_router);
   options.gate_cache = &this->gate_cache_;
   // With a shrink time, every variant is built and shrunk; the best is kept.
   // totalTime: one budget for everything (build passes, then the shrink when
@@ -413,6 +417,12 @@ Json Api::start_compose(const Json &body) {
         std::chrono::duration<double>(std::chrono::steady_clock::now() - start)
             .count();
     if (!composed) {
+      // Wires cross two layers above each other: a low box may be why.
+      if (!cancel->load() && progress && o.max_height > 0 &&
+          o.max_height < kCrossingHeight)
+        progress(std::format("tip: wires that must cross need a box at least "
+                             "{} high (this one is {})",
+                             kCrossingHeight, o.max_height));
       report.status =
           cancel->load() ? SolveStatus::Cancelled : SolveStatus::OutOfTime;
       return JobResult{std::move(report), std::nullopt};
