@@ -184,13 +184,61 @@ long long network_layout_score(const Netlist &netlist) {
   return score;
 }
 
+// Smaller floor area first, then fewer layers, then fewer blocks.
+bool smaller(const ComposeResult &a, const ComposeResult &b) {
+  Vec3 sa = a.layout.size();
+  Vec3 sb = b.layout.size();
+  if (sa.x * sa.z != sb.x * sb.z)
+    return sa.x * sa.z < sb.x * sb.z;
+  if (sa.y != sb.y)
+    return sa.y < sb.y;
+  return a.spec.hints.size() < b.spec.hints.size();
+}
+
+// The plain flush build and, when the router draws the wires (each build
+// takes moments), more with shuffled spot rankings side by side; the
+// smallest is kept. The first build fills the module cache for the rest.
+std::optional<ComposeResult>
+flush_variants(const Netlist &netlist, const BoolTable &table,
+               const NetlistComposeOptions &options,
+               const ProgressCallback &progress) {
+  GateCache local_cache;
+  NetlistComposeOptions first = options;
+  if (!first.gate_cache)
+    first.gate_cache = &local_cache;
+  std::optional<ComposeResult> best =
+      compose_flush(netlist, table, first, progress);
+  if (!best || !options.flush_router || options.flush_variants <= 1)
+    return best;
+  std::vector<std::future<std::optional<ComposeResult>>> variants;
+  for (int seed = 1; seed < options.flush_variants; ++seed) {
+    NetlistComposeOptions o = first;
+    o.flush_seed = seed;
+    o.flush_sat = false; // variants are quick or nothing
+    variants.push_back(std::async(std::launch::async, [&netlist, &table, o] {
+      return compose_flush(netlist, table, o, {});
+    }));
+  }
+  for (auto &variant : variants) {
+    std::optional<ComposeResult> result = variant.get();
+    if (result && smaller(*result, *best))
+      best = std::move(result);
+  }
+  if (progress) {
+    Vec3 size = best->layout.size();
+    progress(std::format("flush: {} builds; the smallest is {}x{}x{}",
+                         options.flush_variants, size.x, size.y, size.z));
+  }
+  return best;
+}
+
 std::optional<ComposeResult>
 compose_with_palette(const Netlist &netlist, const BoolTable &table,
                      const NetlistComposeOptions &options,
                      const ProgressCallback &progress) {
   if (options.flush) {
     if (std::optional<ComposeResult> flush =
-            compose_flush(netlist, table, options, progress))
+            flush_variants(netlist, table, options, progress))
       return flush;
     if (options.cancel && options.cancel->load())
       return std::nullopt;

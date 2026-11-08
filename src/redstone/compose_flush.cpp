@@ -42,6 +42,8 @@ constexpr int kPortShift = 6;
 constexpr int kRoutedGap = 3;
 constexpr int kRoutedShift = 2;
 constexpr int kRoutedCandidates = 24;
+// A shuffled ranking moves a spot's score by up to 1 / this of it.
+constexpr long kNoiseShare = 3;
 // Dead ends the router's search may go back from before SAT wires.
 constexpr int kMaxBacktracks = 24;
 // Rows a gate of new inputs may start below the free rows.
@@ -536,6 +538,15 @@ std::optional<ComposeResult> compose_flush(const Netlist &netlist,
           p.outputs.push_back({x0 + out.x, 1, z + out.z});
         candidates.push_back(std::move(p));
       }
+      // Variants of the build rank spots with a little noise.
+      if (options.flush_seed != 0)
+        for (Spot &p : candidates) {
+          std::uint64_t h = static_cast<std::uint64_t>(options.flush_seed);
+          for (int v : {gi, p.x0, p.z, p.join ? 1 : 0})
+            h = (h ^ static_cast<std::uint64_t>(v + 0x9e37)) * 0x100000001b3ULL;
+          p.score += static_cast<long>(
+              h % static_cast<std::uint64_t>(p.score / kNoiseShare + 1));
+        }
       std::stable_sort(
           candidates.begin(), candidates.end(),
           [](const Spot &a, const Spot &b) { return a.score < b.score; });
@@ -719,8 +730,9 @@ std::optional<ComposeResult> compose_flush(const Netlist &netlist,
                             why_not_routed[i]));
             break;
           }
-      for (std::size_t i = 0; i < stages.size() && !any_routed &&
-                              !can_backtrack && children < beam_width;
+      for (std::size_t i = 0;
+           i < stages.size() && options.flush_sat && !any_routed &&
+           !can_backtrack && children < beam_width;
            ++i) {
         if (cancelled())
           return std::nullopt;

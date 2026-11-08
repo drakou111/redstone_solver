@@ -70,6 +70,11 @@ struct NetlistComposeOptions {
   // Draw wires with the path-finding router (milliseconds) and solve a wire
   // with SAT only where it finds none or its wires fail the check.
   bool flush_router = true;
+  // Routed builds are quick: this many are made (spot rankings shuffled a
+  // little, in parallel) and the smallest is kept.
+  int flush_variants = 8;
+  int flush_seed = 0;    // 0: the plain ranking
+  bool flush_sat = true; // false: router only, a gate nothing routes fails
   // Rows beside a wire's straight path it may use, and how many extra cells
   // a gate may sit away from its signal; later deadline passes raise both.
   int flush_margin = 1;
