@@ -62,6 +62,30 @@ struct Spot {
   std::vector<Vec3> outputs; // where the gate's signals leave
 };
 
+// A partial circuit: every gate so far placed and wired.
+struct FlushState {
+  Cells placed;
+  std::vector<Footprint> footprints;
+  std::vector<std::optional<Vec3>> source; // where a signal leaves
+  std::vector<std::optional<Vec3>> port;   // input port cells
+  int next_free_z = 0;
+};
+
+// Floor area of everything placed: smaller partial circuits finish smaller.
+long area_of(const FlushState &state) {
+  if (state.placed.empty())
+    return 0;
+  int min_z = std::numeric_limits<int>::max();
+  int max_x = 0;
+  int max_z = 0;
+  for (const auto &[cell, block] : state.placed) {
+    min_z = std::min(min_z, cell[2]);
+    max_x = std::max(max_x, cell[0]);
+    max_z = std::max(max_z, cell[2]);
+  }
+  return static_cast<long>(max_x + 1) * (max_z - min_z + 1);
+}
+
 constexpr std::uint8_t kOr = 0b1110;
 constexpr std::uint8_t kXor = 0b0110;
 
@@ -103,18 +127,15 @@ std::optional<ComposeResult> compose_flush(const Netlist &netlist,
   for (int out : netlist.outputs)
     last_use[out] = forever;
 
-  Cells placed;
-  std::vector<Footprint> footprints;
-  std::vector<std::optional<Vec3>> source(nodes); // where a signal leaves
-  std::vector<std::optional<Vec3>> port(n);       // input port cells
-  int next_free_z = kMarginZ;
-
-  auto occupied = [&](Vec3 p) {
-    if (placed.contains(key(p)))
-      return true;
-    return std::any_of(footprints.begin(), footprints.end(),
-                       [&](const Footprint &f) { return inside(f, p); });
-  };
+  // A beam of the best partial circuits: each gate is placed in every one of
+  // them, and the smallest few results go on to the next gate.
+  std::vector<FlushState> beam(1);
+  beam[0].source.resize(nodes);
+  beam[0].port.resize(n);
+  beam[0].next_free_z = kMarginZ;
+  const int beam_width = std::max(1, options.flush_beam);
+  // Rows beside a wire's straight path it may also use (to go around).
+  const int margin = std::max(1, options.flush_margin);
 
   for (int gi = 0; gi < static_cast<int>(groups.size()); ++gi) {
     if (cancelled())
@@ -134,250 +155,280 @@ std::optional<ComposeResult> compose_flush(const Netlist &netlist,
         group.functions.begin(), group.functions.end(),
         [](std::uint8_t f) { return ((f >> 1) & 1) == ((f >> 2) & 1); });
 
-    // Spots: line an input up with its signal, or leave one cell between.
-    struct Choice {
-      int x0 = 0;
-      int z = 0;
-      bool swapped = false;
-    };
-    std::vector<Choice> spots;
-    for (bool swapped : {false, true}) {
-      if (swapped && !symmetric)
-        continue;
-      for (int k = 0; k < 2; ++k) {
-        const int op = swapped ? operands[1 - k] : operands[k];
-        if (!source[op])
-          continue;
-        Vec3 s = *source[op];
-        spots.push_back({s.x + 1, s.z - input_z[k], swapped});
-        spots.push_back({s.x + 2, s.z - input_z[k], swapped});
-      }
-    }
-    if (spots.empty())
-      spots.push_back({1, next_free_z, false});
+    std::vector<FlushState> next;
+    for (const FlushState &state : beam) {
+      const Cells &placed = state.placed;
+      const std::vector<Footprint> &footprints = state.footprints;
+      const std::vector<std::optional<Vec3>> &source = state.source;
+      const std::vector<std::optional<Vec3>> &port = state.port;
+      const int next_free_z = state.next_free_z;
+      auto occupied = [&](Vec3 p) {
+        if (placed.contains(key(p)))
+          return true;
+        return std::any_of(footprints.begin(), footprints.end(),
+                           [&](const Footprint &f) { return inside(f, p); });
+      };
 
-    std::vector<Spot> candidates;
-    for (auto [x0, z, swapped] : spots) {
-      if (z < 0)
-        continue;
-      const std::array<int, 2> ops =
-          swapped ? std::array<int, 2>{operands[1], operands[0]} : operands;
-      Spot p{x0, z, {x0, x0 + msize.x - 1, z, z + msize.z - 1}, {}, {}, 0};
-      bool ok = std::none_of(
-          footprints.begin(), footprints.end(),
-          [&](const Footprint &f) { return clashes(f, p.footprint); });
-      for (int x = p.footprint.x0; ok && x <= p.footprint.x1; ++x)
-        for (int y = 0; ok && y < height; ++y)
-          for (int zz = p.footprint.z0; ok && zz <= p.footprint.z1; ++zz)
-            ok = !placed.contains(key({x, y, zz}));
-      long route_length = 0;
-      for (int k = 0; ok && k < 2; ++k) {
-        const Vec3 target{x0 - 1, 1, z + input_z[k]};
-        Vec3 from;
-        if (source[ops[k]]) {
-          from = *source[ops[k]];
-        } else {
-          from = {0, 1, target.z}; // a new input port on the west side
-          bool taken = occupied(from);
-          for (const auto &[index, cell] : p.new_ports)
-            taken |= cell == from;
-          if (taken) {
+      // Spots: line an input up with its signal, or leave one cell between.
+      struct Choice {
+        int x0 = 0;
+        int z = 0;
+        bool swapped = false;
+      };
+      std::vector<Choice> spots;
+      for (bool swapped : {false, true}) {
+        if (swapped && !symmetric)
+          continue;
+        for (int k = 0; k < 2; ++k) {
+          const int op = swapped ? operands[1 - k] : operands[k];
+          if (!source[op])
+            continue;
+          Vec3 s = *source[op];
+          spots.push_back({s.x + 1, s.z - input_z[k], swapped});
+          for (int gap = 1; gap <= 1 + options.flush_spacing; ++gap)
+            spots.push_back({s.x + 1 + gap, s.z - input_z[k], swapped});
+        }
+      }
+      if (spots.empty())
+        spots.push_back({1, next_free_z, false});
+
+      std::vector<Spot> candidates;
+      for (auto [x0, z, swapped] : spots) {
+        if (z < 0)
+          continue;
+        const std::array<int, 2> ops =
+            swapped ? std::array<int, 2>{operands[1], operands[0]} : operands;
+        Spot p{x0, z, {x0, x0 + msize.x - 1, z, z + msize.z - 1}, {}, {}, 0};
+        bool ok = std::none_of(
+            footprints.begin(), footprints.end(),
+            [&](const Footprint &f) { return clashes(f, p.footprint); });
+        for (int x = p.footprint.x0; ok && x <= p.footprint.x1; ++x)
+          for (int y = 0; ok && y < height; ++y)
+            for (int zz = p.footprint.z0; ok && zz <= p.footprint.z1; ++zz)
+              ok = !placed.contains(key({x, y, zz}));
+        long route_length = 0;
+        for (int k = 0; ok && k < 2; ++k) {
+          const Vec3 target{x0 - 1, 1, z + input_z[k]};
+          Vec3 from;
+          if (source[ops[k]]) {
+            from = *source[ops[k]];
+          } else {
+            from = {0, 1, target.z}; // a new input port on the west side
+            bool taken = occupied(from);
+            for (const auto &[index, cell] : p.new_ports)
+              taken |= cell == from;
+            if (taken) {
+              ok = false;
+              continue;
+            }
+            p.new_ports.push_back({ops[k], from});
+          }
+          if (from == target)
+            continue; // lined up: no wire
+          if (occupied(target)) {
             ok = false;
             continue;
           }
-          p.new_ports.push_back({ops[k], from});
+          p.routes.push_back({from, target});
+          route_length +=
+              std::abs(from.x - target.x) + std::abs(from.z - target.z);
         }
-        if (from == target)
-          continue; // lined up: no wire
-        if (occupied(target)) {
-          ok = false;
+        if (!ok)
           continue;
-        }
-        p.routes.push_back({from, target});
-        route_length +=
-            std::abs(from.x - target.x) + std::abs(from.z - target.z);
-      }
-      if (!ok)
-        continue;
-      int max_x = p.footprint.x1;
-      int max_z = p.footprint.z1;
-      for (const auto &[cell, block] : placed) {
-        max_x = std::max(max_x, cell[0]);
-        max_z = std::max(max_z, cell[2]);
-      }
-      p.score = static_cast<long>(max_x + 1) * (max_z + 1) * 4 + route_length;
-      for (Vec3 out : m.outs)
-        p.outputs.push_back({x0 + out.x, 1, z + out.z});
-      candidates.push_back(std::move(p));
-    }
-    std::stable_sort(
-        candidates.begin(), candidates.end(),
-        [](const Spot &a, const Spot &b) { return a.score < b.score; });
-    if (static_cast<int>(candidates.size()) > options.flush_candidates)
-      candidates.resize(options.flush_candidates);
-
-    // An OR of on/off signals is two dust lines meeting (dust carries the
-    // stronger signal); so is an XOR whose inputs are never on together.
-    // Tried first: it needs no module at all.
-    if (options.flush_joins && group.functions.size() == 1 && source[group.a] &&
-        source[group.b]) {
-      const std::uint8_t f = group.functions[0];
-      bool joinable = f == kOr;
-      if (f == kXor) {
-        joinable = true;
-        for (int t = 0; t < (1 << n) && joinable; ++t) {
-          std::vector<bool> v = netlist.evaluate(t);
-          joinable = !(v[group.a] && v[group.b]);
-        }
-      }
-      const Vec3 sa = *source[group.a];
-      const Vec3 sb = *source[group.b];
-      std::vector<Spot> joins;
-      for (int z : {sa.z, sb.z}) {
-        if (!joinable)
-          break;
-        const Vec3 meet{std::max(sa.x, sb.x) + 1, 1, z};
-        if (occupied(meet))
-          continue;
-        Spot j;
-        j.join = true;
-        j.x0 = meet.x;
-        j.z = meet.z;
-        j.footprint = {meet.x, meet.x, meet.z, meet.z};
-        for (Vec3 from : {sa, sb})
-          if (from != meet)
-            j.routes.push_back({from, meet});
-        j.outputs = {meet};
-        int max_x = meet.x;
-        int max_z = meet.z;
+        int max_x = p.footprint.x1;
+        int max_z = p.footprint.z1;
         for (const auto &[cell, block] : placed) {
           max_x = std::max(max_x, cell[0]);
           max_z = std::max(max_z, cell[2]);
         }
-        j.score = static_cast<long>(max_x + 1) * (max_z + 1) * 4;
-        joins.push_back(std::move(j));
+        p.score = static_cast<long>(max_x + 1) * (max_z + 1) * 4 + route_length;
+        for (Vec3 out : m.outs)
+          p.outputs.push_back({x0 + out.x, 1, z + out.z});
+        candidates.push_back(std::move(p));
       }
-      candidates.insert(candidates.begin(), joins.begin(), joins.end());
-    }
+      std::stable_sort(
+          candidates.begin(), candidates.end(),
+          [](const Spot &a, const Spot &b) { return a.score < b.score; });
+      if (static_cast<int>(candidates.size()) > options.flush_candidates)
+        candidates.resize(options.flush_candidates);
 
-    // Every position's stage is built, then all are solved side by side; the
-    // best-ranked one that wires up is kept and the rest are stopped.
-    std::vector<Spec> stages;
-    for (const Spot &p : candidates) {
-      Cells cells = placed;
-      if (!p.join)
-        add_layout(cells, m.layout, {p.x0, 0, p.z});
-      std::set<std::array<int, 3>> free_cells;
-      for (const Route &r : p.routes)
-        for (int x = std::min(r.from.x, r.to.x);
-             x <= std::max(r.from.x, r.to.x); ++x)
-          for (int z = std::max(0, std::min(r.from.z, r.to.z) - 1);
-               z <= std::max(r.from.z, r.to.z) + 1; ++z)
-            for (int y = 0; y < height; ++y)
-              if (!cells.contains(key({x, y, z})))
-                free_cells.insert(key({x, y, z}));
-
-      // Ports: every input placed so far plus the new ones, in input order.
-      std::vector<std::optional<Vec3>> ports = port;
-      for (const auto &[index, cell] : p.new_ports)
-        ports[index] = cell;
-      std::vector<int> stage_inputs;
-      std::vector<Vec3> input_cells;
-      for (int i = 0; i < n; ++i)
-        if (ports[i]) {
-          stage_inputs.push_back(i);
-          input_cells.push_back(*ports[i]);
+      // An OR of on/off signals is two dust lines meeting (dust carries the
+      // stronger signal); so is an XOR whose inputs are never on together.
+      // Tried first: it needs no module at all.
+      if (options.flush_joins && group.functions.size() == 1 &&
+          source[group.a] && source[group.b]) {
+        const std::uint8_t f = group.functions[0];
+        bool joinable = f == kOr;
+        if (f == kXor) {
+          joinable = true;
+          for (int t = 0; t < (1 << n) && joinable; ++t) {
+            std::vector<bool> v = netlist.evaluate(t);
+            joinable = !(v[group.a] && v[group.b]);
+          }
         }
-      // Outputs: the new module's, and older signals still to be read.
-      std::vector<int> watched;
-      std::vector<Vec3> output_cells;
-      for (std::size_t o = 0; o < group.nodes.size(); ++o) {
-        watched.push_back(group.nodes[o]);
-        output_cells.push_back(p.outputs[o]);
+        const Vec3 sa = *source[group.a];
+        const Vec3 sb = *source[group.b];
+        std::vector<Spot> joins;
+        for (int z : {sa.z, sb.z}) {
+          if (!joinable)
+            break;
+          const Vec3 meet{std::max(sa.x, sb.x) + 1, 1, z};
+          if (occupied(meet))
+            continue;
+          Spot j;
+          j.join = true;
+          j.x0 = meet.x;
+          j.z = meet.z;
+          j.footprint = {meet.x, meet.x, meet.z, meet.z};
+          for (Vec3 from : {sa, sb})
+            if (from != meet)
+              j.routes.push_back({from, meet});
+          j.outputs = {meet};
+          int max_x = meet.x;
+          int max_z = meet.z;
+          for (const auto &[cell, block] : placed) {
+            max_x = std::max(max_x, cell[0]);
+            max_z = std::max(max_z, cell[2]);
+          }
+          j.score = static_cast<long>(max_x + 1) * (max_z + 1) * 4;
+          joins.push_back(std::move(j));
+        }
+        candidates.insert(candidates.begin(), joins.begin(), joins.end());
       }
-      for (int node = n; node < nodes; ++node)
-        if (source[node] && last_use[node] > gi) {
-          watched.push_back(node);
-          output_cells.push_back(*source[node]);
-        }
 
-      Vec3 size{p.footprint.x1 + 1, height, p.footprint.z1 + 1};
-      auto grow = [&](const std::array<int, 3> &c) {
-        size.x = std::max(size.x, c[0] + 1);
-        size.z = std::max(size.z, c[2] + 1);
-      };
-      for (const auto &[cell, block] : cells)
-        grow(cell);
-      for (const auto &cell : free_cells)
-        grow(cell);
-      for (Vec3 c : input_cells)
-        grow(key(c));
+      // Every position's stage is built, then all are solved side by side; the
+      // best-ranked one that wires up is kept and the rest are stopped.
+      std::vector<Spec> stages;
+      for (const Spot &p : candidates) {
+        Cells cells = placed;
+        if (!p.join)
+          add_layout(cells, m.layout, {p.x0, 0, p.z});
+        std::set<std::array<int, 3>> free_cells;
+        for (const Route &r : p.routes)
+          for (int x = std::min(r.from.x, r.to.x);
+               x <= std::max(r.from.x, r.to.x); ++x)
+            for (int z = std::max(0, std::min(r.from.z, r.to.z) - margin);
+                 z <= std::max(r.from.z, r.to.z) + margin; ++z)
+              for (int y = 0; y < height; ++y)
+                if (!cells.contains(key({x, y, z})))
+                  free_cells.insert(key({x, y, z}));
 
-      std::vector<StageRow> rows;
-      for (int mask = 0; mask < (1 << stage_inputs.size()); ++mask) {
-        int vector = 0;
-        StageRow row;
-        for (std::size_t i = 0; i < stage_inputs.size(); ++i) {
-          bool on = ((mask >> i) & 1) != 0;
-          row.inputs.push_back(on);
-          if (on)
-            vector |= 1 << stage_inputs[i];
+        // Ports: every input placed so far plus the new ones, in input order.
+        std::vector<std::optional<Vec3>> ports = port;
+        for (const auto &[index, cell] : p.new_ports)
+          ports[index] = cell;
+        std::vector<int> stage_inputs;
+        std::vector<Vec3> input_cells;
+        for (int i = 0; i < n; ++i)
+          if (ports[i]) {
+            stage_inputs.push_back(i);
+            input_cells.push_back(*ports[i]);
+          }
+        // Outputs: the new module's, and older signals still to be read.
+        std::vector<int> watched;
+        std::vector<Vec3> output_cells;
+        for (std::size_t o = 0; o < group.nodes.size(); ++o) {
+          watched.push_back(group.nodes[o]);
+          output_cells.push_back(p.outputs[o]);
         }
-        std::vector<bool> values = netlist.evaluate(vector);
-        for (int node : watched)
-          row.outputs.push_back(values[node]);
-        rows.push_back(std::move(row));
+        for (int node = n; node < nodes; ++node)
+          if (source[node] && last_use[node] > gi) {
+            watched.push_back(node);
+            output_cells.push_back(*source[node]);
+          }
+
+        Vec3 size{p.footprint.x1 + 1, height, p.footprint.z1 + 1};
+        auto grow = [&](const std::array<int, 3> &c) {
+          size.x = std::max(size.x, c[0] + 1);
+          size.z = std::max(size.z, c[2] + 1);
+        };
+        for (const auto &[cell, block] : cells)
+          grow(cell);
+        for (const auto &cell : free_cells)
+          grow(cell);
+        for (Vec3 c : input_cells)
+          grow(key(c));
+
+        std::vector<StageRow> rows;
+        for (int mask = 0; mask < (1 << stage_inputs.size()); ++mask) {
+          int vector = 0;
+          StageRow row;
+          for (std::size_t i = 0; i < stage_inputs.size(); ++i) {
+            bool on = ((mask >> i) & 1) != 0;
+            row.inputs.push_back(on);
+            if (on)
+              vector |= 1 << stage_inputs[i];
+          }
+          std::vector<bool> values = netlist.evaluate(vector);
+          for (int node : watched)
+            row.outputs.push_back(values[node]);
+          rows.push_back(std::move(row));
+        }
+        Spec spec = make_spec(size, input_cells, output_cells, rows,
+                              options.horizon, options.palette);
+        // Input ports are repeaters: the floor under them may hold a support.
+        pin(spec, cells, [&](Vec3 c) {
+          return free_cells.contains(key(c)) || (c.y == 0 && c.x == 0);
+        });
+        stages.push_back(std::move(spec));
       }
-      Spec spec =
-          make_spec(size, input_cells, output_cells, rows, options.horizon,
-                    options.palette);
-      // Input ports are repeaters: the floor under them may hold a support.
-      pin(spec, cells, [&](Vec3 c) {
-        return free_cells.contains(key(c)) || (c.y == 0 && c.x == 0);
-      });
-      stages.push_back(std::move(spec));
-    }
 
-    // One position at a time, best-ranked first: solving them side by side
-    // made every one run out of time (the multiplexer's third gate).
-    bool done = false;
-    for (std::size_t i = 0; i < stages.size() && !done; ++i) {
+      // One position at a time, best-ranked first: solving them side by side
+      // made every one run out of time (the multiplexer's third gate).
+      int children = 0;
+      for (std::size_t i = 0; i < stages.size() && children < beam_width; ++i) {
+        if (cancelled())
+          return std::nullopt;
+        SolverOptions solver = options.solver;
+        solver.time_limit_seconds = options.flush_seconds;
+        solver.stop_at_first = true;
+        solver.cancel = options.cancel;
+        SolveReport report = solve(stages[i], solver);
+        const Spot &p = candidates[i];
+        say(std::format("gate {} ({}){} at x {} z {}{}: {}", gi + 1, names,
+                        p.join ? " as joined wires" : "", p.x0, p.z,
+                        p.routes.empty() ? ", no wire" : "",
+                        report.solution ? std::string_view("wired")
+                                        : to_string(report.status)));
+        if (!report.solution)
+          continue;
+        FlushState child = state;
+        child.placed.clear();
+        add_layout(child.placed, report.solution->layout, {0, 0, 0});
+        if (!p.join) {
+          child.footprints.push_back(p.footprint);
+          child.next_free_z = std::max(child.next_free_z, p.footprint.z1 + 2);
+        }
+        for (const auto &[index, cell] : p.new_ports) {
+          child.port[index] = cell;
+          child.source[index] = cell;
+        }
+        for (std::size_t o = 0; o < group.nodes.size(); ++o)
+          child.source[group.nodes[o]] = p.outputs[o];
+        next.push_back(std::move(child));
+        ++children;
+      }
       if (cancelled())
         return std::nullopt;
-      SolverOptions solver = options.solver;
-      solver.time_limit_seconds = options.flush_seconds;
-      solver.stop_at_first = true;
-      solver.cancel = options.cancel;
-      SolveReport report = solve(stages[i], solver);
-      const Spot &p = candidates[i];
-      say(std::format("gate {} ({}){} at x {} z {}{}: {}", gi + 1, names,
-                      p.join ? " as joined wires" : "", p.x0, p.z,
-                      p.routes.empty() ? ", no wire" : "",
-                      report.solution ? std::string_view("wired")
-                                      : to_string(report.status)));
-      if (!report.solution)
-        continue;
-      placed.clear();
-      add_layout(placed, report.solution->layout, {0, 0, 0});
-      if (!p.join) {
-        footprints.push_back(p.footprint);
-        next_free_z = std::max(next_free_z, p.footprint.z1 + 2);
-      }
-      for (const auto &[index, cell] : p.new_ports) {
-        port[index] = cell;
-        source[index] = cell;
-      }
-      for (std::size_t o = 0; o < group.nodes.size(); ++o)
-        source[group.nodes[o]] = p.outputs[o];
-      done = true;
-    }
-    if (cancelled())
-      return std::nullopt;
-    if (!done) {
+    } // each partial circuit of the beam
+    if (next.empty()) {
       say(std::format("flush: no place for gate {} ({})", gi + 1, names));
       return std::nullopt;
     }
+    std::stable_sort(next.begin(), next.end(),
+                     [](const FlushState &a, const FlushState &b) {
+                       return area_of(a) < area_of(b);
+                     });
+    if (static_cast<int>(next.size()) > beam_width)
+      next.resize(beam_width);
+    beam = std::move(next);
   }
+
+  // The finished circuit: the smallest of the beam.
+  const FlushState &best = beam.front();
+  const Cells &placed = best.placed;
+  const std::vector<std::optional<Vec3>> &source = best.source;
+  const std::vector<std::optional<Vec3>> &port = best.port;
 
   // The finished circuit: every input and output must be a placed cell.
   std::vector<Vec3> inputs;

@@ -42,3 +42,23 @@ TEST_CASE("the circuit library keeps the smallest circuit per request") {
   CHECK_FALSE(reopened.find("c"));
   std::filesystem::remove_all(dir);
 }
+
+TEST_CASE("the circuit library finds the smallest circuit of a shape") {
+  std::filesystem::path dir = fresh_directory();
+  CircuitLibrary library(dir);
+  CircuitLibrary::Entry big = entry(9, 40);
+  big.shape = "box A";
+  CircuitLibrary::Entry small = entry(7, 30);
+  small.shape = "box A";
+  CircuitLibrary::Entry other = entry(1, 5);
+  other.shape = "box B";
+  library.offer("and", big);
+  library.offer("or", small);
+  library.offer("xor", other);
+
+  REQUIRE(library.smallest_of_shape("box A"));
+  CHECK(library.smallest_of_shape("box A")->blocks == 7);
+  CHECK(library.smallest_of_shape("box B")->volume == 5);
+  CHECK_FALSE(library.smallest_of_shape("box C"));
+  std::filesystem::remove_all(dir);
+}

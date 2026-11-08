@@ -764,6 +764,10 @@ std::optional<ComposeResult> compose_spec(const Spec &spec,
     o.gates.time_limit_seconds =
         std::min(options.gates.time_limit_seconds * scale, remaining);
     o.max_channel_width = options.max_channel_width + 2 * pass;
+    // Different shapes, not only more time: wires get room to go around
+    // modules, gates may sit further from their signals.
+    o.flush_margin = options.flush_margin + pass;
+    o.flush_spacing = options.flush_spacing + pass;
     o.solver.sat_seed = options.solver.sat_seed + pass;
     if (pass > 0 && progress)
       progress(std::format("pass {}: step limits x{:.0f}, {:.0f} s left",

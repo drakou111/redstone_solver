@@ -72,6 +72,15 @@ std::string solve_key(const Spec &spec, const SolverOptions &options) {
                      options.verification.placements.size());
 }
 
+// What a sketch from another request needs to match: the box, ports,
+// blocks and fixed cells, whatever the truth table and timing.
+std::string solve_shape(const Spec &spec) {
+  Json json = to_json(spec);
+  for (const char *field : {"hints", "rows", "timing"})
+    json.erase(field);
+  return "shape|" + json.dump();
+}
+
 // Compose places its own ports: the same on/off table, height limit,
 // blocks and checking give the same request.
 std::string compose_key(const Spec &spec,
@@ -111,17 +120,17 @@ JobWork from_library(const CircuitLibrary::Entry &entry, bool with_spec) {
 
 // The job's work, then its circuit (if any) offered to the library.
 JobWork offering(CircuitLibrary *library, std::string key, Json request_spec,
-                 JobWork work) {
+                 std::string shape, JobWork work) {
   return [library, key = std::move(key), request_spec = std::move(request_spec),
-          work = std::move(work)](const ProgressCallback &progress,
-                                  std::atomic<bool> *cancel) {
+          shape = std::move(shape), work = std::move(work)](
+             const ProgressCallback &progress, std::atomic<bool> *cancel) {
     JobResult result = work(progress, cancel);
     if (library && result.report.solution) {
       const World &layout = result.report.solution->layout;
       Vec3 size = layout.size();
       CircuitLibrary::Entry entry{
           result.spec ? to_json(*result.spec) : request_spec, to_json(layout),
-          result.report.solution->block_count, size.x * size.y * size.z};
+          result.report.solution->block_count, size.x * size.y * size.z, shape};
       if (library->offer(key, entry) && progress)
         progress("kept in the circuit library");
     }
@@ -262,15 +271,36 @@ Json Api::start_solve(const Json &body) {
           std::make_unique<SolveJob>(spec, from_library(*entry, false));
       return Json{{"fromLibrary", true}};
     }
-  JobWork work = [spec, options](const ProgressCallback &progress,
-                                 std::atomic<bool> *cancel) {
+  // Not asked before: a kept circuit with the same box and ports (another
+  // truth table) is a sketch to start from, when the request has none.
+  Spec search = spec;
+  bool retrieved = false;
+  if (use_library && search.hints.empty())
+    if (std::optional<CircuitLibrary::Entry> near =
+            this->library_->smallest_of_shape(solve_shape(spec))) {
+      World layout = world_from_json(near->layout);
+      if (layout.size() == search.size) {
+        for (int i = 0; i < layout.volume(); ++i) {
+          Vec3 p = layout.position_of(i);
+          const Block &block = layout.at(p);
+          if (block.type != BlockType::Air && block.type != BlockType::Input &&
+              block.type != BlockType::Output)
+            search.hints.emplace_back(p, block);
+        }
+        retrieved = !search.hints.empty();
+      }
+    }
+  JobWork work = [search, options, retrieved](const ProgressCallback &progress,
+                                              std::atomic<bool> *cancel) {
+    if (retrieved && progress)
+      progress("starting from a similar circuit in the library (a sketch)");
     SolverOptions o = options;
     o.cancel = cancel;
-    return JobResult{solve(spec, o, progress), std::nullopt};
+    return JobResult{solve(search, o, progress), std::nullopt};
   };
   this->job_ = std::make_unique<SolveJob>(
-      spec,
-      offering(this->library_.get(), key, to_json(spec), std::move(work)));
+      spec, offering(this->library_.get(), key, to_json(spec),
+                     solve_shape(spec), std::move(work)));
   return Json::object();
 }
 
@@ -325,6 +355,7 @@ Json Api::start_compose(const Json &body) {
   options.stage_seconds = settings.value("timeLimit", 120.0);
   options.gates.time_limit_seconds = options.stage_seconds;
   options.max_height = settings.value("maxHeight", 0);
+  options.flush_beam = settings.value("flushBeam", options.flush_beam);
   options.gate_cache = &this->gate_cache_;
   // With a shrink time, every variant is built and shrunk; the best is kept.
   // totalTime: one budget for everything (build passes, then the shrink when
@@ -397,7 +428,7 @@ Json Api::start_compose(const Json &body) {
   };
   this->job_ = std::make_unique<SolveJob>(
       spec,
-      offering(this->library_.get(), key, to_json(spec), std::move(work)));
+      offering(this->library_.get(), key, to_json(spec), "", std::move(work)));
   return Json::object();
 }
 

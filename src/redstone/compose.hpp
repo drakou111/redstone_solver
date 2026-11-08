@@ -63,6 +63,12 @@ struct NetlistComposeOptions {
   // The step limits above are the first pass's.
   std::optional<std::chrono::steady_clock::time_point> deadline;
   double flush_seconds = 30.0; // per position
+  // Partial circuits kept per gate; each is finished and the smallest wins.
+  int flush_beam = 3;
+  // Rows beside a wire's straight path it may use, and how many extra cells
+  // a gate may sit away from its signal; later deadline passes raise both.
+  int flush_margin = 1;
+  int flush_spacing = 0;
 };
 
 // The composed circuit for `netlist`; its spec has the table's rows (don't

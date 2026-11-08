@@ -34,19 +34,46 @@ std::filesystem::path CircuitLibrary::file_for(const std::string &key) const {
 }
 
 std::optional<CircuitLibrary::Entry>
-CircuitLibrary::find(const std::string &key) const {
-  std::lock_guard lock(this->mutex_);
-  std::ifstream in(this->file_for(key));
+CircuitLibrary::read(const std::filesystem::path &file,
+                     const std::string *key) {
+  std::ifstream in(file);
   if (!in)
     return std::nullopt;
   std::stringstream text;
   text << in.rdbuf();
   Json json = Json::parse(text.str(), nullptr, false);
-  // A damaged file or a different key with the same hash: not this entry.
-  if (json.is_discarded() || !json.is_object() || json.value("key", "") != key)
+  // A damaged file, or a different key with the same hash: not this entry.
+  if (json.is_discarded() || !json.is_object() || !json.contains("spec") ||
+      !json.contains("layout"))
+    return std::nullopt;
+  if (key && json.value("key", "") != *key)
     return std::nullopt;
   return Entry{json.at("spec"), json.at("layout"), json.value("blocks", 0),
-               json.value("volume", 0)};
+               json.value("volume", 0), json.value("shape", "")};
+}
+
+std::optional<CircuitLibrary::Entry>
+CircuitLibrary::find(const std::string &key) const {
+  std::lock_guard lock(this->mutex_);
+  return read(this->file_for(key), &key);
+}
+
+std::optional<CircuitLibrary::Entry>
+CircuitLibrary::smallest_of_shape(const std::string &shape) const {
+  std::lock_guard lock(this->mutex_);
+  std::optional<Entry> best;
+  for (const auto &file :
+       std::filesystem::directory_iterator(this->directory_)) {
+    if (file.path().extension() != ".json")
+      continue;
+    std::optional<Entry> entry = read(file.path(), nullptr);
+    if (!entry || entry->shape.empty() || entry->shape != shape)
+      continue;
+    if (!best || entry->volume < best->volume ||
+        (entry->volume == best->volume && entry->blocks < best->blocks))
+      best = std::move(entry);
+  }
+  return best;
 }
 
 bool CircuitLibrary::offer(const std::string &key, const Entry &entry) {
@@ -65,7 +92,8 @@ bool CircuitLibrary::offer(const std::string &key, const Entry &entry) {
                 {"spec", entry.spec},
                 {"layout", entry.layout},
                 {"blocks", entry.blocks},
-                {"volume", entry.volume}}
+                {"volume", entry.volume},
+                {"shape", entry.shape}}
                .dump();
   }
   std::filesystem::rename(temporary, file);

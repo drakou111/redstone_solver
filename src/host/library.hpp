@@ -19,6 +19,9 @@ public:
     Json layout; // the verified circuit
     int blocks = 0;
     int volume = 0;
+    // Requests of the same shape (box, ports, blocks; any truth table) can
+    // start from this circuit as a sketch.
+    std::string shape;
   };
 
   explicit CircuitLibrary(std::filesystem::path directory);
@@ -29,8 +32,13 @@ public:
   // small (fewer cells, then fewer blocks). Returns whether it was kept.
   bool offer(const std::string &key, const Entry &entry);
 
+  // The smallest circuit kept for any request of this shape.
+  std::optional<Entry> smallest_of_shape(const std::string &shape) const;
+
 private:
   std::filesystem::path file_for(const std::string &key) const;
+  static std::optional<Entry> read(const std::filesystem::path &file,
+                                   const std::string *key);
 
   std::filesystem::path directory_;
   mutable std::mutex mutex_;
