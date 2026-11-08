@@ -40,8 +40,7 @@ public final class DraftAutosave {
     private void join(Minecraft client) {
         this.currentName = worldId(client).map(DraftFiles::autosaveName).orElse(null);
         this.state.replaceDraft(new CircuitDraft());
-        this.state.setLastResult(Optional.empty());
-        this.state.setResultWaiting(false);
+        this.state.clearResults();
         this.state.setSolving(false);
         if (this.currentName == null) return;
         try {

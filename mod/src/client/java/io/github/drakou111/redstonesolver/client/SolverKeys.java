@@ -62,7 +62,10 @@ public final class SolverKeys {
         while (this.outputPort.consumeClick()) this.setPort(client, false);
         while (this.cellMenu.consumeClick()) this.openCellMenu(client);
         while (this.panel.consumeClick()) {
-            if (client.player != null) client.setScreenAndShow(new SolverScreen(this.state, this.server, this.files));
+            if (client.player != null) {
+                client.setScreenAndShow(new SolverScreen(this.state, this.server, this.files, lookedAtPlacement(client),
+                        ClientRsCommands.toDir(client.player.getDirection())));
+            }
         }
     }
 
@@ -123,6 +126,12 @@ public final class SolverKeys {
         }
 
         Optional<Port> existing = draft.portAt(cell);
+        // The same key on the same kind of port takes it away again.
+        if (existing.isPresent() && existing.get().input() == input) {
+            draft.removePort(existing.get().name());
+            player.sendOverlayMessage(Chat.hint("Removed " + existing.get().name() + "."));
+            return;
+        }
         if (existing.isPresent() && existing.get().input() != input) {
             player.sendOverlayMessage(Chat.hint("That cell is already " + existing.get().name()
                     + "; clear it with P before changing its direction."));

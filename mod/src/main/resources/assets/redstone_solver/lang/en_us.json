@@ -2,8 +2,8 @@
   "key.category.redstone_solver.main": "Redstone Solver",
   "key.redstone_solver.corner1": "Set box corner 1",
   "key.redstone_solver.corner2": "Set box corner 2",
-  "key.redstone_solver.input": "Set looked-at block as input",
-  "key.redstone_solver.output": "Set looked-at block as output",
+  "key.redstone_solver.input": "Set or remove the looked-at block as input",
+  "key.redstone_solver.output": "Set or remove the looked-at block as output",
   "key.redstone_solver.cell": "Keep/empty/clear looked-at cells",
   "key.redstone_solver.panel": "Open the Solver panel"
 }

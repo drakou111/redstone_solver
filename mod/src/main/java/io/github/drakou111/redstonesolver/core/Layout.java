@@ -41,6 +41,30 @@ public record Layout(Cell size, List<Block> blocks) {
         return new Layout(size, blocks);
     }
 
+    /**
+     * This layout turned {@code quarterTurns} times clockwise seen from above, kept at the same
+     * lowest corner: positions move and every facing turns with them.
+     */
+    public Layout rotated(int quarterTurns) {
+        int turns = Math.floorMod(quarterTurns, 4);
+        Layout result = this;
+        for (int i = 0; i < turns; i++) result = result.turnedOnce();
+        return result;
+    }
+
+    // (x, z) -> (sizeZ - 1 - z, x): east (+x) becomes south (+z).
+    private Layout turnedOnce() {
+        Cell size = new Cell(this.size.z(), this.size.y(), this.size.x());
+        List<Block> turned = new ArrayList<>(this.blocks.size());
+        for (Block block : this.blocks) {
+            Cell p = block.position();
+            Cell q = new Cell(this.size.z() - 1 - p.z(), p.y(), p.x());
+            turned.add(new Block(q, block.type(), block.facing().map(Dir::turnedClockwise), block.delay(), block.mode(),
+                    block.signal(), block.kind(), block.channel()));
+        }
+        return new Layout(size, turned);
+    }
+
     public int countPlacedBlocks() {
         int count = 0;
         for (Block block : this.blocks) {

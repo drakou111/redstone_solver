@@ -2,12 +2,16 @@ package io.github.drakou111.redstonesolver.client;
 
 import com.google.gson.JsonObject;
 import io.github.drakou111.redstonesolver.core.CircuitDraft;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Optional;
 
 /** Everything the client knows: the draft being edited, solve settings and the last solve's state. */
 public final class ClientState {
     public static final double DEFAULT_TIME_LIMIT_SECONDS = 3600;
     public static final double DEFAULT_SKETCH_SECONDS = 3;
+    /** Results kept (the server keeps as many). */
+    public static final int MAX_RESULTS = 20;
 
     /** How the circuit is built: one search of the whole box, or from gates. */
     public enum Method {
@@ -20,8 +24,8 @@ public final class ClientState {
     private boolean showOutlines = true;
     private boolean solving;
     private String progress = "";
-    private JsonObject lastResult;
-    private boolean resultWaiting;
+    private final List<JsonObject> results = new ArrayList<>(); // newest last
+    private int selected = -1;
     private Method method = Method.SOLVE;
     private double sketchSeconds = DEFAULT_SKETCH_SECONDS;
     private int version;
@@ -114,23 +118,50 @@ public final class ClientState {
         this.progress = progress;
     }
 
-    /** The server's last "result" message, if any (see SolverNetworking.finish for its fields). */
-    public Optional<JsonObject> getLastResult() {
-        return Optional.ofNullable(this.lastResult);
+    /** The result shown on the card (see SolverNetworking.finish for its fields), if any. */
+    public Optional<JsonObject> getSelectedResult() {
+        if (this.selected < 0 || this.selected >= this.results.size()) return Optional.empty();
+        return Optional.of(this.results.get(this.selected));
     }
 
-    public void setLastResult(Optional<JsonObject> result) {
-        this.lastResult = result.orElse(null);
+    /** Keeps a result from the server and shows it; the oldest go past the server's limit. */
+    public void addResult(JsonObject result) {
+        this.results.add(result);
+        while (this.results.size() > MAX_RESULTS) this.results.removeFirst();
+        this.selected = this.results.size() - 1;
         this.version++;
     }
 
-    /** True while a solved circuit waits on the server for Place or Discard. */
-    public boolean isResultWaiting() {
-        return this.resultWaiting;
+    public void removeResult(int id) {
+        this.results.removeIf(r -> r.has("id") && r.get("id").getAsInt() == id);
+        this.selected = Math.min(this.selected, this.results.size() - 1);
+        this.version++;
     }
 
-    public void setResultWaiting(boolean waiting) {
-        this.resultWaiting = waiting;
+    public void clearResults() {
+        this.results.clear();
+        this.selected = -1;
         this.version++;
+    }
+
+    public int getResultCount() {
+        return this.results.size();
+    }
+
+    /** 0-based position of the shown result. */
+    public int getSelectedIndex() {
+        return this.selected;
+    }
+
+    /** Shows an older (negative) or newer (positive) result. */
+    public void step(int by) {
+        if (this.results.isEmpty()) return;
+        this.selected = Math.clamp(this.selected + by, 0, this.results.size() - 1);
+        this.version++;
+    }
+
+    /** The shown result's server id, if it is a circuit (failed solves have none). */
+    public Optional<Integer> getSelectedId() {
+        return this.getSelectedResult().filter(r -> r.has("id")).map(r -> r.get("id").getAsInt());
     }
 }

@@ -7,6 +7,7 @@ import io.github.drakou111.redstonesolver.Chat;
 import io.github.drakou111.redstonesolver.core.Box;
 import io.github.drakou111.redstonesolver.core.Cell;
 import io.github.drakou111.redstonesolver.core.CircuitDraft;
+import io.github.drakou111.redstonesolver.core.Dir;
 import io.github.drakou111.redstonesolver.net.SolverPayloads.ToClient;
 import io.github.drakou111.redstonesolver.net.SolverPayloads.ToServer;
 import java.util.List;
@@ -84,19 +85,19 @@ public final class ServerLink {
         this.state.setProgress("Starting the solver...");
     }
 
-    /** Shrinks the last result: removes columns, rows and layers while it still works. */
+    /** Shrinks the shown result: removes columns, rows and layers while it still works. */
     public void shrink() {
         if (this.state.isSolving()) throw new IllegalStateException("A solve is already running.");
-        JsonObject body = new JsonObject();
+        JsonObject body = this.selectedBody();
         body.add("options", this.shrinkOptions());
         this.send("shrink", body);
         this.state.setSolving(true);
         this.state.setProgress("Starting the shrink...");
     }
 
-    /** Asks for the last result as /setblock commands; they arrive as an "export" message. */
+    /** Asks for the shown result as /setblock commands; they arrive as an "export" message. */
     public void export() {
-        this.send("export", new JsonObject());
+        this.send("export", this.selectedBody());
     }
 
     /** Shrinks the circuit built in the box; the server checks that it works first. */
@@ -125,12 +126,50 @@ public final class ServerLink {
         this.state.setCancelling(true);
     }
 
+    /** Places the shown result back where it was solved. */
     public void place() {
-        this.send("place", new JsonObject());
+        this.send("place", this.selectedBody());
+    }
+
+    /**
+     * Places the shown result at a cell, turned to face {@code facing}: its input side towards
+     * where the player looked, the circuit going forward and to the right from the cell.
+     */
+    public void placeAt(Cell target, Dir facing) {
+        JsonObject result = this.state.getSelectedResult()
+                .orElseThrow(() -> new IllegalStateException("No circuit to place."));
+        int turns = switch (facing) {
+            case SOUTH -> 1;
+            case WEST -> 2;
+            case NORTH -> 3;
+            default -> 0;
+        };
+        Cell size = Cell.fromJson(result.get("size"));
+        int sizeX = turns % 2 == 0 ? size.x() : size.z();
+        int sizeZ = turns % 2 == 0 ? size.z() : size.x();
+        Cell back = switch (turns) {
+            case 1 -> new Cell(sizeX - 1, 0, 0);
+            case 2 -> new Cell(sizeX - 1, 0, sizeZ - 1);
+            case 3 -> new Cell(0, 0, sizeZ - 1);
+            default -> new Cell(0, 0, 0);
+        };
+        boolean floor = result.has("floorAssumed") && result.get("floorAssumed").getAsBoolean();
+        Cell origin = target.minus(back).minus(new Cell(0, floor ? 1 : 0, 0));
+        JsonObject body = this.selectedBody();
+        body.add("at", origin.toJson());
+        body.addProperty("turns", turns);
+        this.send("place", body);
     }
 
     public void discard() {
-        this.send("discard", new JsonObject());
+        this.send("discard", this.selectedBody());
+    }
+
+    // {id} of the shown result, or {} (the server then takes the newest).
+    private JsonObject selectedBody() {
+        JsonObject body = new JsonObject();
+        this.state.getSelectedId().ifPresent(id -> body.addProperty("id", id));
+        return body;
     }
 
     private JsonObject shrinkOptions() {
@@ -160,11 +199,10 @@ public final class ServerLink {
             }
             case "result" -> this.onResult(player, json);
             case "placed" -> {
-                this.state.setResultWaiting(false);
                 player.sendSystemMessage(Chat.good("Placed. Drive the inputs with levers to test it."));
-                this.adoptPlacedResult(player);
+                if (json.get("inPlace").getAsBoolean()) this.adoptPlacedResult(player, json.get("id").getAsInt());
             }
-            case "discarded" -> this.state.setResultWaiting(false);
+            case "discarded" -> this.state.removeResult(json.get("id").getAsInt());
             case "export" -> {
                 Minecraft.getInstance().keyboardHandler.setClipboard(json.get("text").getAsString());
                 player.sendSystemMessage(Chat.good("Copied the /setblock commands to the clipboard (run them from the box's lowest corner)."));
@@ -177,8 +215,9 @@ public final class ServerLink {
         }
     }
 
-    private void adoptPlacedResult(LocalPlayer player) {
-        Optional<JsonObject> result = this.state.getLastResult();
+    private void adoptPlacedResult(LocalPlayer player, int id) {
+        Optional<JsonObject> result = this.state.getSelectedResult()
+                .filter(r -> r.has("id") && r.get("id").getAsInt() == id);
         if (result.isEmpty() || !result.get().has("reshaped") || !result.get().get("reshaped").getAsBoolean()) return;
         try {
             boolean floor = result.get().has("floorAssumed") && result.get().get("floorAssumed").getAsBoolean();
@@ -192,19 +231,16 @@ public final class ServerLink {
 
     private void onResult(LocalPlayer player, JsonObject json) {
         this.state.setSolving(false);
-        this.state.setLastResult(Optional.of(json));
+        this.state.addResult(json);
         if (json.has("error")) {
-            this.state.setResultWaiting(false);
             player.sendSystemMessage(Chat.error("Solve failed: " + json.get("error").getAsString()));
             return;
         }
         if (!json.has("blockCount")) {
-            this.state.setResultWaiting(false);
             player.sendSystemMessage(Chat.error("No circuit found (%s after %.0f s). Try a bigger box, looser timing or more time."
                     .formatted(json.get("status").getAsString(), json.get("seconds").getAsDouble())));
             return;
         }
-        this.state.setResultWaiting(true);
         player.sendSystemMessage(resultMessage(json));
     }
 

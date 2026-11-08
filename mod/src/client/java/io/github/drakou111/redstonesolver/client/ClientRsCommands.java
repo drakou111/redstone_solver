@@ -36,7 +36,7 @@ public final class ClientRsCommands {
                becomes a port (with its kind and facing).
              /rs row IN1=1..15 -> OUT1=0   (ranges: 0, 15, 1..15, *)
              /rs formula OUT1 (IN1 + IN2) % 16   (a comparison like IN1 > IN2 means on/off)
-             /rs timing 4 | any | <not before> <by>,  /rs solve [seconds],  /rs cancel,  /rs place,  /rs discard,  /rs shrink [build]
+             /rs timing 4 | any | <not before> <by>,  /rs solve [seconds],  /rs cancel,  /rs place [here],  /rs discard,  /rs shrink [build]
              /rs show, /rs remove <port>, /rs rows remove <n>, /rs rows clear, /rs outlines
              /rs save <name> [overwrite], /rs load <name>, /rs drafts, /rs new, /rs export""";
 
@@ -116,7 +116,8 @@ public final class ClientRsCommands {
                 }))
                 .then(ClientCommands.literal("cancel").executes(context -> this.run(context, this.server::cancel,
                         "Cancelling; the best circuit so far (if any) still comes back.")))
-                .then(ClientCommands.literal("place").executes(context -> this.run(context, this.server::place, "")))
+                .then(ClientCommands.literal("place").executes(context -> this.run(context, this.server::place, ""))
+                        .then(ClientCommands.literal("here").executes(this::placeHere)))
                 .then(ClientCommands.literal("discard").executes(context -> this.run(context, this.server::discard,
                         "Discarded the circuit."))));
     }
@@ -141,6 +142,14 @@ public final class ClientRsCommands {
         } catch (IllegalArgumentException | IllegalStateException e) {
             return fail(context, e.getMessage());
         }
+    }
+
+    // The shown result at the looked-at cell, turned the way the player faces.
+    private int placeHere(CommandContext<FabricClientCommandSource> context) {
+        FabricClientCommandSource source = context.getSource();
+        Optional<Cell> target = SolverKeys.lookedAtPlacement(source.getClient());
+        if (target.isEmpty()) return fail(context, "Look at the block to build on.");
+        return this.run(context, () -> this.server.placeAt(target.get(), toDir(source.getPlayer().getDirection())), "");
     }
 
     private int save(CommandContext<FabricClientCommandSource> context, boolean overwrite) {

@@ -37,6 +37,17 @@ public enum Dir {
         };
     }
 
+    /** This direction a quarter turn clockwise, seen from above (east becomes south). */
+    public Dir turnedClockwise() {
+        return switch (this) {
+            case NORTH -> EAST;
+            case EAST -> SOUTH;
+            case SOUTH -> WEST;
+            case WEST -> NORTH;
+            case UP, DOWN -> this;
+        };
+    }
+
     public boolean isHorizontal() {
         return this.dy == 0;
     }

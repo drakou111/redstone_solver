@@ -6,6 +6,7 @@ import com.google.gson.JsonObject;
 import io.github.drakou111.redstonesolver.core.Box;
 import io.github.drakou111.redstonesolver.core.Cell;
 import io.github.drakou111.redstonesolver.core.CircuitDraft;
+import io.github.drakou111.redstonesolver.core.Dir;
 import io.github.drakou111.redstonesolver.core.Durations;
 import io.github.drakou111.redstonesolver.core.Formula;
 import io.github.drakou111.redstonesolver.core.Port;
@@ -47,6 +48,8 @@ public final class SolverScreen extends Screen {
     private static final int MAX_LOG_LINES = 12;
     private static final int RESULT_CARD_HEIGHT = 112;
     private static final int MAX_FORMULA_LENGTH = 200;
+    // Place in box, Discard, Shrink, Export and the gaps between them.
+    private static final int RESULT_BUTTONS_WIDTH = 64 + 50 + 46 + 46 + 3 * GAP;
     private static final int MANY_ROWS = 64;
     private static final Map<String, String> PALETTE_LABELS = Map.ofEntries(Map.entry("solid", "Solid block (wool)"),
             Map.entry("glass", "Glass (does not conduct)"), Map.entry("dust", "Redstone dust"),
@@ -85,6 +88,8 @@ public final class SolverScreen extends Screen {
     private final ClientState state;
     private final ServerLink server;
     private final DraftFiles files;
+    private final Optional<Cell> lookTarget;
+    private final Dir lookFacing;
     private final List<Label> labels = new ArrayList<>();
     private final List<Card> cards = new ArrayList<>();
     private int seenVersion;
@@ -102,6 +107,7 @@ public final class SolverScreen extends Screen {
     private int resultTop;
     private int resultLeft;
     private int resultWidth;
+    private int resultButtonsTop;
     private int progressX;
     private String formulaStatus = "";
     private boolean formulaStatusGood;
@@ -110,11 +116,18 @@ public final class SolverScreen extends Screen {
     private int formulaStatusWidth;
     private int progressY;
 
-    public SolverScreen(ClientState state, ServerLink server, DraftFiles files) {
+    /**
+     * @param lookTarget the cell in front of the block the player looked at when opening the panel
+     * @param lookFacing the way the player faced then
+     */
+    public SolverScreen(ClientState state, ServerLink server, DraftFiles files, Optional<Cell> lookTarget,
+            Dir lookFacing) {
         super(Component.literal("Redstone Solver"));
         this.state = state;
         this.server = server;
         this.files = files;
+        this.lookTarget = lookTarget;
+        this.lookFacing = lookFacing;
     }
 
     @Override
@@ -601,20 +614,41 @@ public final class SolverScreen extends Screen {
         this.resultTop = y;
         this.resultWidth = width;
         this.heading("Result", x, y);
-        Optional<JsonObject> result = this.state.getLastResult();
+        Optional<JsonObject> result = this.state.getSelectedResult();
+        int count = this.state.getResultCount();
+        if (count > 1) {
+            // Older and newer results: each can be placed, shrunk or exported.
+            int navX = x + this.font.width("Result") + 2 * GAP;
+            this.button(navX, y - 5, SMALL_BUTTON, "<", "Older result", () -> this.state.step(-1));
+            this.label("%d/%d".formatted(this.state.getSelectedIndex() + 1, count), navX + SMALL_BUTTON + GAP, y,
+                    HINT_COLOR);
+            this.button(navX + SMALL_BUTTON + 2 * GAP + this.font.width(count + "/" + count), y - 5, SMALL_BUTTON, ">",
+                    "Newer result", () -> this.state.step(1));
+        }
         if (result.isPresent() && result.get().has("log")) {
             this.button(x + width - 40, y - 5, 40, this.logOpen ? "Log -" : "Log +", "The solver's log", () -> {
                 this.logOpen = !this.logOpen;
                 this.rebuildWidgets();
             });
         }
-        boolean hasCircuit = result.isPresent() && result.get().has("blockCount");
-        this.flowStart(x, y + RESULT_CARD_HEIGHT - ROW - 2, x + width);
-        if (hasCircuit && this.state.isResultWaiting()) {
+        boolean hasCircuit = result.isPresent() && result.get().has("id");
+        // Enough rows for the buttons below the text: measured, then built.
+        int buttonsWidth = RESULT_BUTTONS_WIDTH + (this.lookTarget.isPresent() ? 100 + GAP : 0);
+        int buttonRows = Math.max(1, (buttonsWidth + width - 1) / Math.max(1, width));
+        this.resultButtonsTop = y + RESULT_CARD_HEIGHT - buttonRows * (ROW + GAP) + GAP - 2;
+        this.flowStart(x, this.resultButtonsTop, x + width);
+        if (hasCircuit) {
             boolean occupied = result.get().has("boxOccupied") && result.get().get("boxOccupied").getAsBoolean();
-            this.flowButton(Component.literal(occupied ? "Replace box" : "Place"), occupied ? 70 : 50,
-                    occupied ? "Clears the box (blocks in it are lost) and builds the circuit" : "Builds the circuit in the box",
+            this.flowButton(Component.literal(occupied ? "Replace box" : "Place in box"), occupied ? 70 : 64,
+                    occupied ? "Clears the box (blocks in it are lost) and builds the circuit"
+                            : "Builds the circuit where it was solved; can be done again",
                     () -> this.run(this.server::place));
+            if (this.lookTarget.isPresent()) {
+                this.flowButton(Component.literal("Place where I look"), 100,
+                        "Builds a copy at the block you looked at when you opened this panel, turned to face the way "
+                                + "you looked (blocks there are replaced)",
+                        () -> this.run(() -> this.server.placeAt(this.lookTarget.get(), this.lookFacing)));
+            }
             this.flowButton(Component.literal("Discard"), 50, "Forget this circuit", () -> this.run(this.server::discard));
         }
         if (hasCircuit && !this.state.isSolving()) {
@@ -743,7 +777,7 @@ public final class SolverScreen extends Screen {
         int x = this.resultLeft;
         int y = this.resultTop + LINE;
         int width = this.resultWidth;
-        Optional<JsonObject> found = this.state.getLastResult();
+        Optional<JsonObject> found = this.state.getSelectedResult();
         if (found.isEmpty()) {
             graphics.text(this.font, "Nothing solved yet.", x, y, HINT_COLOR);
             return;
@@ -784,9 +818,8 @@ public final class SolverScreen extends Screen {
                 first = false;
             }
             lines.add(counts.toString());
-            if (!this.state.isResultWaiting()) lines.add("Placed or discarded.");
         }
-        int maxY = this.resultTop + RESULT_CARD_HEIGHT - ROW - 4;
+        int maxY = this.resultButtonsTop - 2;
         for (String line : lines) {
             for (FormattedCharSequence part : this.font.split(Component.literal(line), width)) {
                 if (y + LINE > maxY) return;

@@ -5,8 +5,7 @@ import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParseException;
 import com.google.gson.JsonParser;
-import io.github.drakou111.redstonesolver.PlayerSessions.LastResult;
-import io.github.drakou111.redstonesolver.PlayerSessions.PendingResult;
+import io.github.drakou111.redstonesolver.PlayerSessions.StoredResult;
 import io.github.drakou111.redstonesolver.PlayerSessions.Session;
 import io.github.drakou111.redstonesolver.core.Box;
 import io.github.drakou111.redstonesolver.core.Cell;
@@ -67,12 +66,15 @@ public final class SolverNetworking {
                 this.solver.cancel();
                 send(player, "cancelling", new JsonObject());
             }
-            case "place" -> this.place(player);
+            case "place" -> this.place(player, body);
             case "shrink" -> this.shrink(server, player, body);
-            case "export" -> this.export(player);
+            case "export" -> this.export(player, body);
             case "discard" -> {
-                this.sessions.get(player.getUUID()).setPending(Optional.empty());
-                send(player, "discarded", new JsonObject());
+                StoredResult result = this.result(player, body);
+                this.sessions.get(player.getUUID()).forget(result.id());
+                JsonObject json = new JsonObject();
+                json.addProperty("id", result.id());
+                send(player, "discarded", json);
             }
             default -> throw new IllegalArgumentException("unknown action " + payload.action());
         }
@@ -103,7 +105,8 @@ public final class SolverNetworking {
     }
 
     /**
-     * Body: {options: {timeLimit, cutTime, onePlacement, sketchTime}} shrinks the last result. With
+     * Body: {id?, options: {timeLimit, cutTime, onePlacement, sketchTime}} shrinks a result (the newest
+     * without an id). With
      * {spec, world, origin} as well it shrinks the circuit built in the world, once it is checked to
      * work. Placing the result clears the old, bigger box.
      */
@@ -130,12 +133,11 @@ public final class SolverNetworking {
                 throw new IllegalStateException("Your build does not work yet, so it cannot be shrunk: "
                         + describeFailure(verdict.getAsJsonObject("failure")));
         } else {
-            LastResult last = this.sessions.get(player.getUUID()).getLast()
-                    .orElseThrow(() -> new IllegalStateException("Solve something first; Shrink works on the last result."));
+            StoredResult last = this.result(player, body);
             spec = last.spec();
             world = last.layoutJson();
             origin = last.origin();
-            floor = last.floorAssumed();
+            floor = last.skipBottom();
         }
         JsonObject request = new JsonObject();
         request.add("spec", spec);
@@ -148,7 +150,6 @@ public final class SolverNetworking {
     private void startJob(MinecraftServer server, ServerPlayer player, String route, JsonObject request, Cell origin,
             Optional<Box> alsoClear, boolean floorAssumed) {
         UUID playerId = player.getUUID();
-        this.sessions.get(playerId).setPending(Optional.empty());
         this.solver.startJob(route, request, new SolverService.Listener() {
             @Override
             public void progress(double seconds, String lastLogLine) {
@@ -217,8 +218,8 @@ public final class SolverNetworking {
             json.addProperty("reshaped", !route.equals("solve/start"));
             Session session = this.sessions.get(playerId);
             boolean skip = skipBottom;
-            session.setPending(Optional.of(new PendingResult(layout, box, alsoClear, skip)));
-            session.setLast(Optional.of(new LastResult(layoutJson, outcome.spec().orElseThrow(), origin, skip)));
+            StoredResult stored = session.add(layout, layoutJson, outcome.spec().orElseThrow(), origin, alsoClear, skip);
+            json.addProperty("id", stored.id());
             if (player != null) {
                 boolean occupied = LayoutPlacer.hasBlocks(player.level(), LayoutPlacer.placedPart(box, skip))
                         || alsoClear.map(old -> LayoutPlacer.hasBlocks(player.level(), LayoutPlacer.placedPart(old, skip)))
@@ -229,22 +230,40 @@ public final class SolverNetworking {
         sendTo(server, playerId, "result", json);
     }
 
-    private void export(ServerPlayer player) {
-        LastResult last = this.sessions.get(player.getUUID()).getLast()
-                .orElseThrow(() -> new IllegalStateException("Solve something first; Export works on the last result."));
-        JsonObject body = new JsonObject();
-        body.add("world", last.layoutJson());
-        send(player, "export", this.solver.call("export", body));
+    private void export(ServerPlayer player, JsonObject body) {
+        JsonObject request = new JsonObject();
+        request.add("world", this.result(player, body).layoutJson());
+        send(player, "export", this.solver.call("export", request));
     }
 
-    private void place(ServerPlayer player) {
-        Session session = this.sessions.get(player.getUUID());
-        PendingResult pending = session.getPending()
-                .orElseThrow(() -> new IllegalStateException("No solved circuit to place. Solve first."));
-        pending.alsoClear().ifPresent(old -> LayoutPlacer.clear(player.level(), LayoutPlacer.placedPart(old, pending.skipBottom())));
-        LayoutPlacer.place(player.level(), pending.box(), pending.layout(), pending.skipBottom());
-        session.setPending(Optional.empty());
-        send(player, "placed", new JsonObject());
+    /**
+     * Body: {id?, at?: [x, y, z], turns?}. Without "at" the result goes back where it was solved (an
+     * older, bigger box from before a shrink is cleared). With "at" it goes there instead (its lowest
+     * corner, the assumed floor layer included), turned {@code turns} quarter turns clockwise.
+     * A result can be placed any number of times.
+     */
+    private void place(ServerPlayer player, JsonObject body) {
+        StoredResult result = this.result(player, body);
+        boolean inPlace = !body.has("at");
+        int turns = body.has("turns") ? body.get("turns").getAsInt() : 0;
+        Layout layout = inPlace ? result.layout() : result.layout().rotated(turns);
+        Cell origin = inPlace ? result.origin() : Cell.fromJson(body.get("at"));
+        Box box = new Box(origin, origin.plus(layout.size()).minus(new Cell(1, 1, 1)));
+        if (inPlace)
+            result.alsoClear().ifPresent(old -> LayoutPlacer.clear(player.level(), LayoutPlacer.placedPart(old, result.skipBottom())));
+        LayoutPlacer.place(player.level(), box, layout, result.skipBottom());
+        JsonObject json = new JsonObject();
+        json.addProperty("id", result.id());
+        json.addProperty("inPlace", inPlace);
+        send(player, "placed", json);
+    }
+
+    // The result named by the body's "id", or the newest.
+    private StoredResult result(ServerPlayer player, JsonObject body) {
+        Optional<Integer> id = body.has("id") ? Optional.of(body.get("id").getAsInt()) : Optional.empty();
+        return this.sessions.get(player.getUUID()).find(id).orElseThrow(() -> new IllegalStateException(
+                id.isPresent() ? "That result is gone (only the last " + PlayerSessions.MAX_RESULTS + " are kept)."
+                        : "Solve something first."));
     }
 
     private boolean worksAs(JsonObject spec, JsonObject world, JsonObject request) {

@@ -4,43 +4,55 @@ import com.google.gson.JsonObject;
 import io.github.drakou111.redstonesolver.core.Box;
 import io.github.drakou111.redstonesolver.core.Cell;
 import io.github.drakou111.redstonesolver.core.Layout;
+import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
 
-/** Each player's solved circuits: the one waiting to be placed and the last one. Server thread only. */
+/** Each player's solved circuits, newest last, so any of them can be placed, shrunk or exported. Server thread only. */
 public final class PlayerSessions {
+    /** How many results a player keeps; the oldest goes first. */
+    public static final int MAX_RESULTS = 20;
+
     /**
-     * A solved layout, the world box it goes in, an older box to clear first (after a shrink), and
-     * whether its bottom layer is an assumed floor that is never placed.
+     * A solved circuit: its layout (also as solver JSON for shrinking and export), its spec, where it was
+     * solved (the lowest corner, the floor layer included when one is assumed), an older box to clear when
+     * placed back there (after a shrink), and whether its bottom layer is an assumed floor never placed.
      */
-    public record PendingResult(Layout layout, Box box, Optional<Box> alsoClear, boolean skipBottom) {
+    public record StoredResult(int id, Layout layout, JsonObject layoutJson, JsonObject spec, Cell origin,
+            Optional<Box> alsoClear, boolean skipBottom) {
+        public Box box() {
+            return new Box(this.origin, this.origin.plus(this.layout.size()).minus(new Cell(1, 1, 1)));
+        }
     }
 
-    /** The last solved circuit (kept after placing) so it can be shrunk: solver JSON and world origin. */
-    public record LastResult(JsonObject layoutJson, JsonObject spec, Cell origin, boolean floorAssumed) {
-    }
-
-    /** One player's state. */
+    /** One player's results. */
     public static final class Session {
-        private PendingResult pending;
-        private LastResult last;
+        private final List<StoredResult> results = new ArrayList<>();
+        private int nextId = 1;
 
-        public Optional<PendingResult> getPending() {
-            return Optional.ofNullable(this.pending);
+        public StoredResult add(Layout layout, JsonObject layoutJson, JsonObject spec, Cell origin,
+                Optional<Box> alsoClear, boolean skipBottom) {
+            StoredResult result = new StoredResult(this.nextId++, layout, layoutJson, spec, origin, alsoClear,
+                    skipBottom);
+            this.results.add(result);
+            while (this.results.size() > MAX_RESULTS) this.results.removeFirst();
+            return result;
         }
 
-        public void setPending(Optional<PendingResult> pending) {
-            this.pending = pending.orElse(null);
+        /** The result with this id, or the newest when the id is absent. */
+        public Optional<StoredResult> find(Optional<Integer> id) {
+            if (id.isEmpty()) return this.results.isEmpty() ? Optional.empty() : Optional.of(this.results.getLast());
+            for (StoredResult result : this.results) {
+                if (result.id() == id.get()) return Optional.of(result);
+            }
+            return Optional.empty();
         }
 
-        public Optional<LastResult> getLast() {
-            return Optional.ofNullable(this.last);
-        }
-
-        public void setLast(Optional<LastResult> last) {
-            this.last = last.orElse(null);
+        public boolean forget(int id) {
+            return this.results.removeIf(result -> result.id() == id);
         }
     }
 
