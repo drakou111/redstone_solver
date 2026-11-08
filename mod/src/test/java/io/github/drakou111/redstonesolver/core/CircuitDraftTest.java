@@ -3,6 +3,7 @@ package io.github.drakou111.redstonesolver.core;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
+import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
 import java.util.List;
 import java.util.Optional;
@@ -317,5 +318,36 @@ class CircuitDraftTest {
         draft.adoptSpec(spec, draft.specOrigin(), true);
         assertThat(draft.requireBox()).isEqualTo(new Box(new Cell(0, 70, 0), new Cell(2, 70, 1)));
         assertThat(draft.getInputs().getFirst().position()).isEqualTo(new Cell(0, 70, 0));
+    }
+
+    @Test
+    void portsMayMoveAlongTheirSideAtTheirHeight() {
+        JsonObject spec = new JsonObject();
+        spec.add("size", new Cell(5, 2, 4).toJson());
+        JsonArray inputs = new JsonArray();
+        JsonArray outputs = new JsonArray();
+        for (Cell cell : List.of(new Cell(0, 1, 2), new Cell(2, 1, 1))) {
+            JsonObject port = new JsonObject();
+            port.add("position", cell.toJson());
+            port.add("region", new JsonArray());
+            inputs.add(port);
+        }
+        JsonObject output = new JsonObject();
+        output.add("position", new Cell(2, 1, 3).toJson());
+        output.add("region", new JsonArray());
+        outputs.add(output);
+        spec.add("inputs", inputs);
+        spec.add("outputs", outputs);
+
+        CircuitDraft.freePortsAlongTheirSide(spec);
+
+        // West side: every z at height 1.
+        assertThat(spec.getAsJsonArray("inputs").get(0).getAsJsonObject().getAsJsonArray("region"))
+                .containsExactly(new Cell(0, 1, 0).toJson(), new Cell(0, 1, 1).toJson(), new Cell(0, 1, 2).toJson(),
+                        new Cell(0, 1, 3).toJson());
+        // Inside the box: stays fixed.
+        assertThat(spec.getAsJsonArray("inputs").get(1).getAsJsonObject().getAsJsonArray("region")).isEmpty();
+        // South side: every x at height 1.
+        assertThat(spec.getAsJsonArray("outputs").get(0).getAsJsonObject().getAsJsonArray("region")).hasSize(5);
     }
 }

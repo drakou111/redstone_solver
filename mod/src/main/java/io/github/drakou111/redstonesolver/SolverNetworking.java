@@ -224,7 +224,7 @@ public final class SolverNetworking {
             outcome.analysisError().ifPresent(error -> json.addProperty("analysisError", error));
             outcome.spec().ifPresent(spec -> json.add("spec", spec));
             // Compose and Shrink change the box or the ports; the client adopts them once placed.
-            json.addProperty("reshaped", !route.equals("solve/start"));
+            json.addProperty("reshaped", !route.equals("solve/start") || portsMoved(request, outcome));
             Session session = this.sessions.get(playerId);
             boolean skip = skipBottom;
             StoredResult stored = session.add(layout, layoutJson, outcome.spec().orElseThrow(), origin, alsoClear, skip);
@@ -354,6 +354,13 @@ public final class SolverNetworking {
         JsonObject json = new JsonObject();
         for (Map.Entry<String, Integer> entry : counts.entrySet()) json.addProperty(entry.getKey(), entry.getValue());
         return json;
+    }
+
+    // A search whose ports could move comes back with them fixed where the circuit has them.
+    private static boolean portsMoved(JsonObject request, SolveOutcome outcome) {
+        JsonObject asked = request.getAsJsonObject("spec");
+        return outcome.spec().map(spec -> !spec.get("inputs").equals(asked.get("inputs"))
+                || !spec.get("outputs").equals(asked.get("outputs"))).orElse(false);
     }
 
     private static void sendTo(MinecraftServer server, UUID playerId, String event, JsonElement json) {

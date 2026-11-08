@@ -560,6 +560,17 @@ public final class SolverScreen extends Screen {
                     this.state.setMethod(compose ? ClientState.Method.SOLVE : ClientState.Method.COMPOSE);
                     this.rebuildWidgets();
                 });
+        if (!compose) {
+            boolean alongSide = this.state.isPortsAlongSide();
+            this.flowButton(alongSide ? "Ports: along their side" : "Ports: as placed",
+                    "As placed: inputs and outputs stay exactly where you put them. Along their side: each may "
+                            + "move along the side of the box it is on (same height) and turn, which can give "
+                            + "smaller circuits but searches longer; placing the result moves your ports",
+                    () -> {
+                        this.state.setPortsAlongSide(!alongSide);
+                        this.rebuildWidgets();
+                    });
+        }
         if (compose) {
             boolean shrinkAfter = this.state.isAutoShrink();
             this.flowButton(shrinkAfter ? "Then shrink: on" : "Then shrink: off",

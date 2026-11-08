@@ -294,13 +294,25 @@ Json Api::start_solve(const Json &body) {
         retrieved = !search.hints.empty();
       }
     }
-  JobWork work = [search, options, retrieved](const JobContext &job) {
+  JobWork work = [spec, search, options, retrieved](const JobContext &job) {
     if (retrieved && job.progress)
       job.progress("starting from a similar circuit in the library (a sketch)");
     SolverOptions o = options;
     o.cancel = job.cancel;
     o.preview = job.preview;
-    return JobResult{solve(search, o, job.progress), std::nullopt};
+    SolveReport report = solve(search, o, job.progress);
+    // Ports the solver could move end where the circuit has them.
+    std::optional<Spec> placed;
+    const bool free_ports =
+        std::any_of(spec.inputs.begin(), spec.inputs.end(),
+                    [](const InputPort &p) { return p.is_free(); }) ||
+        std::any_of(spec.outputs.begin(), spec.outputs.end(),
+                    [](const OutputPort &p) { return p.is_free(); });
+    if (free_ports && report.solution) {
+      placed = spec_with_layout(spec, report.solution->layout);
+      placed->hints.clear();
+    }
+    return JobResult{std::move(report), std::move(placed)};
   };
   this->job_ = std::make_unique<SolveJob>(
       spec, offering(this->library_.get(), key, to_json(spec),

@@ -63,7 +63,10 @@ public final class ServerLink {
             client.player.sendSystemMessage(Chat.hint("No port block at " + String.join(", ", stale)
                     + " any more; using its last kind and facing."));
         }
-        body.add("spec", this.state.getDraft().toSpecJson(blocks));
+        JsonObject spec = this.state.getDraft().toSpecJson(blocks);
+        if (this.state.getMethod() == ClientState.Method.SOLVE && this.state.isPortsAlongSide())
+            CircuitDraft.freePortsAlongTheirSide(spec);
+        body.add("spec", spec);
         body.add("origin", this.state.getDraft().specOrigin().toJson());
         body.addProperty("floorAssumed", this.state.getDraft().assumesFloor());
         body.addProperty("method", this.state.getMethod().name().toLowerCase(Locale.ROOT));

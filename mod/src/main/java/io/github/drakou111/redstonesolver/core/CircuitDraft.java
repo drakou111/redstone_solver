@@ -717,6 +717,35 @@ public final class CircuitDraft {
         return names;
     }
 
+    /**
+     * Lets the solver move every port of {@code spec} (the solver's JSON) along the side of the box it
+     * sits on, at its own height, and pick its facing: each port's region becomes that row of the
+     * side. Ports on no side (inside the box) stay where they are. Changes {@code spec} in place.
+     */
+    public static void freePortsAlongTheirSide(JsonObject spec) {
+        Cell size = Cell.fromJson(spec.get("size"));
+        for (String group : List.of("inputs", "outputs")) {
+            for (JsonElement element : spec.getAsJsonArray(group)) {
+                JsonObject port = element.getAsJsonObject();
+                port.add("region", sideRow(Cell.fromJson(port.get("position")), size));
+            }
+        }
+    }
+
+    // The row of cells along the side of the box the cell sits on (west, east, north, south first
+    // found), at its height; empty when it is on no side.
+    private static JsonArray sideRow(Cell cell, Cell size) {
+        JsonArray row = new JsonArray();
+        boolean westOrEast = cell.x() == 0 || cell.x() == size.x() - 1;
+        boolean northOrSouth = cell.z() == 0 || cell.z() == size.z() - 1;
+        if (westOrEast) {
+            for (int z = 0; z < size.z(); z++) row.add(new Cell(cell.x(), cell.y(), z).toJson());
+        } else if (northOrSouth) {
+            for (int x = 0; x < size.x(); x++) row.add(new Cell(x, cell.y(), cell.z()).toJson());
+        }
+        return row;
+    }
+
     private static JsonArray portsJson(List<Port> ports, Cell origin) {
         JsonArray array = new JsonArray();
         for (Port port : ports) {
