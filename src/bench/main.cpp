@@ -47,6 +47,8 @@ constexpr std::string_view kUsage =
     "  --label <text>         name stored with the results\n"
     "  --seeds <n>            runs per spec with SAT seeds 0..n-1 (default 1)\n"
     "  --no-quick-palette     skip the simultaneous basic-block search\n"
+    "  --initial-cases <n>    settled states encoded from the start (0: all)\n"
+    "  --extra-searches <n>   more complete searches per solve, other seeds\n"
     "  --jobs <n>             solves run in parallel (default 1); compare\n"
     "                         conflicts, since times then depend on load\n"
     "  --profile <spec>       print the model size per part (settled states\n"
@@ -63,6 +65,8 @@ struct Options {
   bool progress = false;
   bool one_placement = false;
   bool quick_palette_search = true;
+  int initial_cases = 0;
+  int extra_searches = 0;
   int max_height = 0;
   int extra_layers = 1;
   int channel_width = 1;
@@ -139,6 +143,10 @@ Options parse(int argc, char **argv) {
       o.one_placement = true;
     } else if (arg == "--no-quick-palette") {
       o.quick_palette_search = false;
+    } else if (arg == "--initial-cases") {
+      o.initial_cases = positive_int(value(), arg);
+    } else if (arg == "--extra-searches") {
+      o.extra_searches = positive_int(value(), arg);
     } else if (arg == "--max-height") {
       std::string_view v = value();
       auto [end, error] = std::from_chars(v.data(), v.data() + v.size(), o.max_height);
@@ -256,6 +264,8 @@ Row run(const std::filesystem::path &path, bool first, int seed,
   options.max_sat_workers = o.sat_workers;
   options.sat_seed = seed;
   options.quick_palette_search = o.quick_palette_search;
+  options.initial_cases = o.initial_cases;
+  options.extra_searches = o.extra_searches;
   if (o.one_placement)
     options.verification.placements = {rs::Placement{}};
   auto say = [&](std::string_view message) {

@@ -38,6 +38,13 @@ struct SolverOptions {
   // dust, torches and repeaters. Its model is several times smaller, so it
   // often finds circuits much sooner; the best circuit of either bounds both.
   bool quick_palette_search = true;
+  // Settled states encoded from the start (0: every row, up to 64); the
+  // rest are added when a candidate fails them.
+  int initial_cases = 0;
+  // More complete searches side by side, each with its own seed (every
+  // second one starting from two settled states): search times vary widely
+  // from seed to seed, and the first circuit found bounds them all.
+  int extra_searches = 0;
   // Time for one solve that keeps part of a sketch (hint lines) fixed;
   // past it the sketch only guides. Large boxes need more.
   double sketch_step_seconds = 3.0;

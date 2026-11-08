@@ -6,6 +6,7 @@
 #include <fstream>
 #include <sstream>
 #include <stdexcept>
+#include <thread>
 
 #include "host/minecraft_assets.hpp"
 #include "redstone/compose.hpp"
@@ -19,6 +20,10 @@ namespace {
 
 // Gate modules are 2 high and a wire crosses another 2 layers up.
 constexpr int kCrossingHeight = 4;
+// Search the box: extra searches, each with its seed (they need memory and
+// a core or two each).
+constexpr int kThreadsPerExtraSearch = 3;
+constexpr int kMaxExtraSearches = 7;
 
 constexpr int kSettleTicks = 400;
 constexpr int kMaxTicksPerRequest = 10'000;
@@ -262,6 +267,14 @@ Json Api::start_solve(const Json &body) {
   options.stop_at_first = settings.value("first", false);
   options.sketch_step_seconds = settings.value("sketchTime", 3.0);
   options.verification = verification_from(settings);
+  // One search alone leaves most cores idle, and how long it takes varies a
+  // lot with its seed: several run side by side.
+  options.extra_searches = settings.value(
+      "extraSearches",
+      std::clamp(static_cast<int>(std::thread::hardware_concurrency()) /
+                         kThreadsPerExtraSearch -
+                     1,
+                 0, kMaxExtraSearches));
   if (options.sketch_step_seconds <= 0)
     throw std::invalid_argument("the sketch step time must be positive");
   if (options.time_limit_seconds <= 0)

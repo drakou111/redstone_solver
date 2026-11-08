@@ -172,8 +172,12 @@ int find_or_add_steady(ModelPlan &plan, const Spec &spec,
 // With one_row_each, candidates use each row's low endpoint. Fully specified
 // multi-input tables also get the high endpoint, so the quick palette search
 // sees weak and full-strength combinations without expanding don't-care rows.
-ModelPlan initial_plan(const Spec &spec, bool one_row_each = false) {
+ModelPlan initial_plan(const Spec &spec, bool one_row_each = false,
+                       int max_cases = 0) {
   constexpr std::size_t kMaxInitialCases = 64;
+  const std::size_t limit =
+      max_cases > 0 ? std::min<std::size_t>(max_cases, kMaxInitialCases)
+                    : kMaxInitialCases;
   std::vector<InputVector> candidates;
   std::set<InputVector> seen;
   auto add_candidate = [&](InputVector inputs) {
@@ -205,14 +209,14 @@ ModelPlan initial_plan(const Spec &spec, bool one_row_each = false) {
       add_candidate(std::move(inputs));
   }
 
-  if (candidates.size() > kMaxInitialCases) {
+  if (candidates.size() > limit) {
     const std::size_t count = candidates.size();
-    std::size_t stride = std::max<std::size_t>(1, count / kMaxInitialCases);
+    std::size_t stride = std::max<std::size_t>(1, count / limit);
     while (std::gcd(stride, count) != 1)
       ++stride;
     std::vector<InputVector> sampled;
     sampled.reserve(kMaxInitialCases);
-    for (std::size_t i = 0; i < kMaxInitialCases; ++i)
+    for (std::size_t i = 0; i < limit; ++i)
       sampled.push_back(std::move(candidates[(i * stride) % count]));
     candidates = std::move(sampled);
   }
@@ -440,6 +444,11 @@ SolveReport solve_cp_sat(const Spec &spec, const SolverOptions &options,
   return finish(SolveStatus::RefinementLimit);
 }
 
+// Extra searches: seeds this far apart, and the settled states the lazy ones
+// start from.
+constexpr int kExtraSeedStride = 1000;
+constexpr int kLazyCases = 2;
+
 // Blocks the quick search may place (those the spec's palette allows).
 constexpr std::array<BlockType, 4> kQuickPalette{
     BlockType::Solid, BlockType::Dust, BlockType::Torch, BlockType::Repeater};
@@ -464,6 +473,8 @@ struct SatSearch {
   // Set when another search finds a better circuit, so this one stops its
   // current solve and takes the tighter bound.
   std::atomic<bool> interrupt = false;
+  int seed_offset = 0;   // added to the SAT seed
+  int initial_cases = 0; // 0: as the options say
 };
 
 // Settles the answer: every search stops.
@@ -516,7 +527,9 @@ SearchResult run_sat_search(SatSearch &search,
                             const std::function<void(std::string)> &say) {
   const Spec &spec = search.spec;
   auto cancelled = [&] { return options.cancel && options.cancel->load(); };
-  ModelPlan plan = initial_plan(spec, search.one_row_each);
+  ModelPlan plan = initial_plan(
+      spec, search.one_row_each,
+      search.initial_cases > 0 ? search.initial_cases : options.initial_cases);
   std::map<std::pair<InputVector, InputVector>, int> rejections;
   std::vector<InputVector> verification_vectors = spec.verification_vectors();
   int threads =
@@ -528,7 +541,7 @@ SearchResult run_sat_search(SatSearch &search,
   CircuitEncoder encoder(
       spec, plan,
       EncoderOptions{.minimize_blocks = false, .build_cp_model = false});
-  SatPortfolio portfolio(workers, options.sat_seed);
+  SatPortfolio portfolio(workers, options.sat_seed + search.seed_offset);
   std::size_t clauses_sent = 0;
   int applied_bound = std::numeric_limits<int>::max();
   say(std::format("model: {} steady states, {} variables, {} clauses",
@@ -724,6 +737,15 @@ SolveReport solve_sat(const Spec &spec, const SolverOptions &options,
   main_search->spec = spec;
   main_search->complete = true;
   searches.push_back(std::move(main_search));
+  for (int k = 1; k <= options.extra_searches; ++k) {
+    auto search = std::make_unique<SatSearch>();
+    search->name = std::format("seed {}", k);
+    search->spec = spec;
+    search->complete = true;
+    search->seed_offset = k * kExtraSeedStride;
+    search->initial_cases = k % 2 == 1 ? kLazyCases : 0;
+    searches.push_back(std::move(search));
+  }
   if (options.quick_palette_search) {
     Spec quick = spec;
     quick.palette.clear();
