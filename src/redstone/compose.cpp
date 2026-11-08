@@ -1,6 +1,8 @@
 #include "redstone/compose.hpp"
 
 #include "redstone/compose_parts.hpp"
+#include "redstone/simulator.hpp"
+#include "redstone/verifier.hpp"
 
 #include <algorithm>
 #include <array>
@@ -800,9 +802,100 @@ private:
 
 } // namespace
 
+namespace {
+
+// Game ticks the slowest switch between two input vectors takes until every
+// output has its final value for good.
+int slowest_switch(const World &layout, const Spec &spec) {
+  constexpr int kMaxTicks = 400;
+  const std::vector<InputVector> vectors = spec.verification_vectors();
+  auto apply = [](Simulator &sim, const InputVector &v) {
+    for (std::size_t c = 0; c < v.size(); ++c)
+      sim.set_input(static_cast<int>(c), v[c]);
+  };
+  auto outputs = [&](const Simulator &sim) {
+    std::vector<int> values;
+    for (std::size_t o = 0; o < spec.outputs.size(); ++o)
+      values.push_back(sim.output(static_cast<int>(o)));
+    return values;
+  };
+  std::vector<std::vector<int>> settled;
+  for (const InputVector &v : vectors) {
+    Simulator sim(layout);
+    apply(sim, v);
+    sim.run_until_quiet(kMaxTicks);
+    settled.push_back(outputs(sim));
+  }
+  int slowest = 0;
+  for (std::size_t from = 0; from < vectors.size(); ++from) {
+    Simulator sim(layout);
+    apply(sim, vectors[from]);
+    sim.run_until_quiet(kMaxTicks);
+    for (std::size_t to = 0; to < vectors.size(); ++to) {
+      if (to == from)
+        continue;
+      Simulator step = sim;
+      apply(step, vectors[to]);
+      int last_wrong = outputs(step) == settled[to] ? -1 : 0;
+      for (int tick = 1; tick <= kMaxTicks && step.has_pending_ticks();
+           ++tick) {
+        step.tick();
+        if (outputs(step) != settled[to])
+          last_wrong = tick;
+      }
+      slowest = std::max(slowest, last_wrong + 1);
+    }
+  }
+  return slowest;
+}
+
+// Build from gates checks only that outputs come to rest; the request's
+// timing ("not before", "by") is checked on the finished circuit, which
+// keeps it from then on (so a shrink keeps it too).
+std::optional<ComposeResult> with_timing(std::optional<ComposeResult> result,
+                                         const Spec &spec,
+                                         const NetlistComposeOptions &options,
+                                         const ProgressCallback &progress) {
+  if (!result || (!spec.timing.earliest && !spec.timing.latest))
+    return result;
+  Spec timed = result->spec;
+  timed.timing = spec.timing;
+  if (!verify_layout(result->layout, timed, timed.verification_vectors(),
+                     options.solver.verification)) {
+    result->spec = std::move(timed);
+    return result;
+  }
+  if (progress) {
+    int ticks = slowest_switch(result->layout, result->spec);
+    progress(std::format(
+        "the circuit works but misses the timing: its slowest switch takes "
+        "{} ticks{}; Build from gates cannot make it faster, so allow more "
+        "time or use Search the box",
+        ticks,
+        spec.timing.latest ? std::format(" (asked: by {})", *spec.timing.latest)
+                           : std::string()));
+  }
+  return std::nullopt;
+}
+
+std::optional<ComposeResult>
+compose_untimed(const Spec &spec, const NetlistComposeOptions &options,
+                const ProgressCallback &progress);
+
+} // namespace
+
 std::optional<ComposeResult> compose_spec(const Spec &spec,
                                           const NetlistComposeOptions &options,
                                           const ProgressCallback &progress) {
+  return with_timing(compose_untimed(spec, options, progress), spec, options,
+                     progress);
+}
+
+namespace {
+
+std::optional<ComposeResult>
+compose_untimed(const Spec &spec, const NetlistComposeOptions &options,
+                const ProgressCallback &progress) {
   Networks networks;
   if (!options.deadline)
     return compose_once(spec, options, progress, networks);
@@ -850,5 +943,7 @@ std::optional<ComposeResult> compose_spec(const Spec &spec,
       return std::nullopt; // no network: more time will not make one
   }
 }
+
+} // namespace
 
 } // namespace rs

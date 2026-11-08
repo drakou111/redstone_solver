@@ -255,3 +255,27 @@ TEST_CASE("compose with a deadline stops on time and still composes") {
   CHECK_FALSE(verify_layout(result->layout, result->spec,
                             result->spec.verification_vectors()));
 }
+
+TEST_CASE("compose keeps the request's timing or says it misses it") {
+  Spec spec = spec_of(2, 1, [](int t, int) { return (t & 1) ^ (t >> 1); });
+  NetlistComposeOptions options;
+  options.max_height = 2;
+
+  Spec relaxed = spec;
+  relaxed.timing.latest = 40;
+  std::optional<ComposeResult> result = compose_spec(relaxed, options);
+  REQUIRE(result);
+  CHECK(result->spec.timing.latest == 40);
+  CHECK_FALSE(verify_layout(result->layout, result->spec,
+                            result->spec.verification_vectors()));
+
+  Spec rushed = spec;
+  rushed.timing.latest = 1;
+  std::vector<std::string> log;
+  CHECK_FALSE(compose_spec(rushed, options,
+                           [&](std::string_view m) { log.emplace_back(m); }));
+  bool told = std::any_of(log.begin(), log.end(), [](const std::string &l) {
+    return l.find("misses the timing") != std::string::npos;
+  });
+  CHECK(told);
+}
