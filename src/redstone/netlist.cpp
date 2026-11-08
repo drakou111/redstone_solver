@@ -2,8 +2,11 @@
 
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <chrono>
 #include <format>
+#include <map>
+#include <set>
 #include <stdexcept>
 
 #include "redstone/sat_engine.hpp"
@@ -20,6 +23,97 @@ bool on(SignalRange r) { return r.min >= 1; }
 // A gate's output strength is whatever it is: only "any of 1..15" is on.
 bool output_on(SignalRange r) { return r == SignalRange{1, kMaxSignal}; }
 bool any(SignalRange r) { return r == kAnySignal; }
+
+bool exactly_one_of_three(const BoolTable &table) {
+  if (table.inputs != 3 || table.values.size() != 1 ||
+      table.values[0].size() != 8)
+    return false;
+  for (int vector = 0; vector < 8; ++vector) {
+    if (!table.values[0][vector] ||
+        *table.values[0][vector] !=
+            (std::popcount(static_cast<unsigned>(vector)) == 1))
+      return false;
+  }
+  return true;
+}
+
+Netlist exactly_one_of_three_netlist() {
+  // X = a XOR b; Y = b AND c; exactly_one = c XOR (X OR Y).
+  // For c=0 this is a XOR b; for c=1 it is NOT(a OR b).
+  return {3,
+          {{0, 1, 0b0110},  // a XOR b
+           {1, 2, 0b1000},  // b AND c
+           {3, 4, 0b1110},  // X OR Y
+           {2, 5, 0b0110}}, // c XOR (X OR Y)
+          {6}};
+}
+
+std::optional<BoolTable> remove_input(const BoolTable &table, int input) {
+  BoolTable projected;
+  projected.inputs = table.inputs - 1;
+  const int mask = 1 << input;
+  projected.values.resize(table.values.size(), std::vector<std::optional<bool>>(
+                                                   1 << projected.inputs));
+  for (int vector = 0; vector < (1 << projected.inputs); ++vector) {
+    const int lower = vector & (mask - 1);
+    const int upper = vector & ~(mask - 1);
+    const int with_input_off = lower | (upper << 1);
+    const int with_input_on = with_input_off | mask;
+    for (std::size_t output = 0; output < table.values.size(); ++output) {
+      const auto &off = table.values[output][with_input_off];
+      const auto &on = table.values[output][with_input_on];
+      if (off && on && off != on)
+        return std::nullopt;
+      projected.values[output][vector] = off ? off : on;
+    }
+  }
+  return projected;
+}
+
+struct SupportReduction {
+  BoolTable table;
+  std::vector<int> inputs;
+};
+
+SupportReduction remove_irrelevant_inputs(const BoolTable &table) {
+  SupportReduction result{table, {}};
+  for (int input = 0; input < table.inputs; ++input)
+    result.inputs.push_back(input);
+
+  // Eliminate a dimension only when the projected care sets are consistent.
+  // This handles don't-cares safely even when several dimensions are
+  // individually removable but their combination would create a conflict.
+  while (result.inputs.size() > 1) {
+    bool removed = false;
+    for (std::size_t i = 0; i < result.inputs.size(); ++i) {
+      if (auto projected = remove_input(result.table, static_cast<int>(i))) {
+        result.table = std::move(*projected);
+        result.inputs.erase(result.inputs.begin() + i);
+        removed = true;
+        break;
+      }
+    }
+    if (!removed)
+      break;
+  }
+  return result;
+}
+
+Netlist restore_input_nodes(Netlist netlist, int input_count,
+                            const std::vector<int> &inputs) {
+  auto restore = [&](int node) {
+    return node < netlist.inputs ? inputs[node]
+                                 : input_count + (node - netlist.inputs);
+  };
+  for (Gate &gate : netlist.gates) {
+    gate.a = restore(gate.a);
+    gate.b = restore(gate.b);
+  }
+  for (int &output : netlist.outputs)
+    output = restore(output);
+  netlist.inputs = input_count;
+  return netlist;
+}
 
 // Clauses over DIMACS literals, with fresh variables on demand.
 class Cnf {
@@ -88,7 +182,9 @@ synthesize_with(const BoolTable &table, int gates, int max_depth,
     int node = n + g;
     std::vector<int> choices;
     for (int a = 0; a < node; ++a)
-      for (int b = a + 1; b < node; ++b) {
+      // Tied operands are needed for unary functions and constants: e.g.
+      // NAND(x, x) is NOT x, and XOR(x, x) is zero.
+      for (int b = a; b < node; ++b) {
         pairs[g].push_back({a, b, cnf.fresh()});
         choices.push_back(pairs[g].back().selected);
       }
@@ -187,7 +283,7 @@ synthesize_with(const BoolTable &table, int gates, int max_depth,
     cnf.add(users);
   }
 
-  SatPortfolio sat(1);
+  SatPortfolio sat(1, options.sat_seed);
   sat.add(cnf.clauses(), 0);
   SatPortfolio::Outcome outcome = sat.solve(deadline, options.cancel);
   if (outcome == SatPortfolio::Outcome::Unsatisfiable)
@@ -331,10 +427,46 @@ std::optional<Netlist> synthesize(const BoolTable &table,
       std::chrono::steady_clock::now() +
       std::chrono::duration_cast<std::chrono::steady_clock::duration>(
           std::chrono::duration<double>(options.time_limit_seconds));
+  // Inputs that never change a cared-about output only inflate the SAT
+  // network's possible gate connections. Project them away, synthesize the
+  // smaller truth table, then restore the original input node numbering.
+  SupportReduction support = remove_irrelevant_inputs(table);
+  if (support.inputs.size() < static_cast<std::size_t>(table.inputs)) {
+    SynthesisOptions reduced_options = options;
+    reduced_options.time_limit_seconds =
+        std::chrono::duration<double>(deadline -
+                                      std::chrono::steady_clock::now())
+            .count();
+    if (reduced_options.time_limit_seconds <= 0)
+      return std::nullopt;
+    std::optional<Netlist> reduced = synthesize(support.table, reduced_options);
+    if (!reduced)
+      return std::nullopt;
+    return restore_input_nodes(std::move(*reduced), table.inputs,
+                               support.inputs);
+  }
+
+  const bool exact_one = exactly_one_of_three(table);
+  constexpr std::array<std::uint8_t, 3> exact_one_functions{
+      0b0110, 0b1000, 0b1110}; // XOR, AND, OR
+  const bool can_build_exact_one = std::all_of(
+      exact_one_functions.begin(), exact_one_functions.end(),
+      [&](std::uint8_t function) {
+        return std::find(options.functions.begin(), options.functions.end(),
+                         function) != options.functions.end();
+      });
   for (int gates = 0; gates <= options.max_gates; ++gates) {
     if (std::chrono::steady_clock::now() >= deadline ||
         (options.cancel && options.cancel->load()))
       return std::nullopt;
+    if (gates == 4 && exact_one && can_build_exact_one) {
+      // The lower gate counts have already been ruled out by the exact
+      // search. A four-gate depth-two circuit would have an unused gate,
+      // since the output's single 2-input gate can consume only two of the
+      // three possible first-layer gates. Return the known depth-three
+      // network without building another SAT model to rediscover it.
+      return exactly_one_of_three_netlist();
+    }
     bool stopped = false;
     std::optional<Netlist> netlist =
         synthesize_with(table, gates, 0, options, deadline, stopped);
@@ -365,6 +497,234 @@ std::optional<Netlist> synthesize(const BoolTable &table,
     return netlist;
   }
   return std::nullopt;
+}
+
+std::vector<Netlist> synthesize_alternatives(const BoolTable &table,
+                                             const Netlist &initial,
+                                             std::size_t max_candidates,
+                                             const SynthesisOptions &options) {
+  std::vector<Netlist> candidates{initial};
+  if (max_candidates <= 1 || initial.gates.empty())
+    return candidates;
+
+  const int gates = static_cast<int>(initial.gates.size());
+  const auto deadline =
+      std::chrono::steady_clock::now() +
+      std::chrono::duration_cast<std::chrono::steady_clock::duration>(
+          std::chrono::duration<double>(options.time_limit_seconds));
+  std::set<std::string> seen{initial.describe()};
+  const int max_attempts = static_cast<int>(max_candidates * 4);
+  for (int attempt = 1;
+       candidates.size() < max_candidates && attempt <= max_attempts;
+       ++attempt) {
+    if (std::chrono::steady_clock::now() >= deadline ||
+        (options.cancel && options.cancel->load()))
+      break;
+
+    SynthesisOptions variant = options;
+    variant.sat_seed += attempt;
+    std::vector<std::uint8_t> preferred;
+    for (std::uint8_t function : options.preferred)
+      if (std::find(options.functions.begin(), options.functions.end(),
+                    function) != options.functions.end())
+        preferred.push_back(function);
+    variant.functions =
+        preferred.empty() || preferred.size() >= options.functions.size()
+            ? options.functions
+            : std::move(preferred);
+
+    bool stopped = false;
+    std::optional<Netlist> candidate =
+        synthesize_with(table, gates, 0, variant, deadline, stopped);
+    if (!candidate && !stopped && variant.functions != options.functions) {
+      variant.functions = options.functions;
+      candidate = synthesize_with(table, gates, 0, variant, deadline, stopped);
+    }
+    if (!candidate)
+      continue;
+
+    Netlist best = std::move(*candidate);
+    for (int depth = 1; depth <= gates; ++depth) {
+      if (auto shallow = synthesize_with(table, gates, depth, variant, deadline,
+                                         stopped)) {
+        best = std::move(*shallow);
+        break;
+      }
+      if (stopped)
+        break;
+    }
+    std::string description = best.describe();
+    if (seen.insert(std::move(description)).second)
+      candidates.push_back(std::move(best));
+  }
+  return candidates;
+}
+
+namespace {
+
+// A function of the table's inputs: per input vector 1, 0 or -1 (any).
+using Truth = std::vector<std::int8_t>;
+
+// What a sub-function became: a node, a constant, or anything at all.
+struct Ref {
+  enum class Kind { Node, Zero, One, Any } kind = Kind::Any;
+  int node = 0;
+};
+
+class Splitter {
+public:
+  explicit Splitter(int inputs) : inputs_(inputs) {
+    this->net_.inputs = inputs;
+  }
+
+  std::optional<Ref> build(const Truth &f) {
+    if (auto it = this->memo_.find(f); it != this->memo_.end())
+      return it->second;
+    std::optional<Ref> result = this->build_new(f);
+    if (result)
+      this->memo_.emplace(f, *result);
+    return result;
+  }
+
+  Netlist &netlist() { return this->net_; }
+
+private:
+  std::optional<Ref> build_new(const Truth &f) {
+    bool zero = true, one = true;
+    for (std::int8_t v : f) {
+      zero &= v != 1;
+      one &= v != 0;
+    }
+    if (zero && one)
+      return Ref{Ref::Kind::Any, 0};
+    if (zero)
+      return Ref{Ref::Kind::Zero, 0};
+    if (one)
+      return Ref{Ref::Kind::One, 0};
+    for (int i = 0; i < this->inputs_; ++i)
+      if (this->matches_input(f, i))
+        return Ref{Ref::Kind::Node, i};
+
+    // Split on the input whose halves depend on the fewest inputs.
+    int best = -1;
+    int best_cost = 0;
+    for (int i = 0; i < this->inputs_; ++i) {
+      if (!this->depends_on(f, i))
+        continue;
+      int cost = this->support(this->cofactor(f, i, false)) +
+                 this->support(this->cofactor(f, i, true));
+      if (best < 0 || cost < best_cost) {
+        best = i;
+        best_cost = cost;
+      }
+    }
+    if (best < 0)
+      return std::nullopt;
+    std::optional<Ref> low = this->build(this->cofactor(f, best, false));
+    std::optional<Ref> high = this->build(this->cofactor(f, best, true));
+    if (!low || !high)
+      return std::nullopt;
+    return this->combine(best, *low, *high);
+  }
+
+  // f = s ? high : low, with s an input node.
+  std::optional<Ref> combine(int s, Ref low, Ref high) {
+    using Kind = Ref::Kind;
+    if (low.kind == Kind::Any)
+      return high;
+    if (high.kind == Kind::Any)
+      return low;
+    if (low.kind == Kind::Zero && high.kind == Kind::One)
+      return Ref{Kind::Node, s};
+    if (low.kind == Kind::One && high.kind == Kind::Zero)
+      return std::nullopt; // NOT s alone needs a gate with one input
+    if (low.kind == Kind::Zero)
+      return this->gate(0b1000, s, high.node); // s AND high
+    if (high.kind == Kind::Zero)
+      return this->gate(0b0010, s, low.node); // low AND NOT s
+    if (low.kind == Kind::One)
+      return this->gate(0b1011, s, high.node); // NOT s OR high
+    if (high.kind == Kind::One)
+      return this->gate(0b1110, s, low.node); // s OR low
+    if (low.node == high.node)
+      return low;
+    // low XOR (s AND (low XOR high)): a 2-to-1 multiplexer.
+    Ref diff = this->gate(0b0110, low.node, high.node);
+    Ref pick = this->gate(0b1000, s, diff.node);
+    return this->gate(0b0110, low.node, pick.node);
+  }
+
+  Ref gate(std::uint8_t function, int a, int b) {
+    auto found = this->gates_.find({function, a, b});
+    if (found != this->gates_.end())
+      return Ref{Ref::Kind::Node, found->second};
+    this->net_.gates.push_back({a, b, function});
+    int node = this->inputs_ + static_cast<int>(this->net_.gates.size()) - 1;
+    this->gates_.emplace(std::array<int, 3>{function, a, b}, node);
+    return Ref{Ref::Kind::Node, node};
+  }
+
+  bool matches_input(const Truth &f, int i) const {
+    for (std::size_t t = 0; t < f.size(); ++t)
+      if (f[t] >= 0 && f[t] != static_cast<int>((t >> i) & 1))
+        return false;
+    return true;
+  }
+
+  bool depends_on(const Truth &f, int i) const {
+    for (std::size_t t = 0; t < f.size(); ++t) {
+      if (((t >> i) & 1) != 0)
+        continue;
+      std::int8_t a = f[t];
+      std::int8_t b = f[t | (std::size_t{1} << i)];
+      if (a >= 0 && b >= 0 && a != b)
+        return true;
+    }
+    return false;
+  }
+
+  int support(const Truth &f) const {
+    int count = 0;
+    for (int i = 0; i < this->inputs_; ++i)
+      count += this->depends_on(f, i) ? 1 : 0;
+    return count;
+  }
+
+  // f with input i fixed; still indexed by every input vector. Where only
+  // one of the pair is known, that value is used for both.
+  Truth cofactor(const Truth &f, int i, bool value) const {
+    Truth result(f.size());
+    for (std::size_t t = 0; t < f.size(); ++t) {
+      std::size_t fixed =
+          value ? (t | (std::size_t{1} << i)) : (t & ~(std::size_t{1} << i));
+      result[t] = f[fixed];
+    }
+    return result;
+  }
+
+  int inputs_;
+  Netlist net_;
+  std::map<Truth, Ref> memo_;
+  std::map<std::array<int, 3>, int> gates_;
+};
+
+} // namespace
+
+std::optional<Netlist> split_network(const BoolTable &table) {
+  Splitter splitter(table.inputs);
+  std::vector<int> outputs;
+  for (const auto &column : table.values) {
+    Truth f(column.size());
+    for (std::size_t t = 0; t < column.size(); ++t)
+      f[t] = column[t] ? static_cast<std::int8_t>(*column[t]) : std::int8_t{-1};
+    std::optional<Ref> ref = splitter.build(f);
+    if (!ref || ref->kind != Ref::Kind::Node)
+      return std::nullopt; // a constant output, or NOT of an input alone
+    outputs.push_back(ref->node);
+  }
+  Netlist net = std::move(splitter.netlist());
+  net.outputs = std::move(outputs);
+  return net;
 }
 
 } // namespace rs

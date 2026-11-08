@@ -29,7 +29,8 @@ struct StageRow {
 // rows and no deadline (only coming to rest within `horizon`).
 Spec make_spec(Vec3 size, const std::vector<Vec3> &inputs,
                const std::vector<Vec3> &outputs,
-               const std::vector<StageRow> &rows, int horizon);
+               const std::vector<StageRow> &rows, int horizon,
+               const std::optional<std::vector<BlockType>> &palette);
 
 // Blocks of a layout moved by `offset`, ports turned into the plain blocks
 // they are (repeater inputs, dust outputs).

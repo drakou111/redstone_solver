@@ -15,8 +15,8 @@ import java.util.function.Function;
 
 /** One player's circuit description in world coordinates, edited by keys, the panel and /rs. */
 public final class CircuitDraft {
-    public static final List<String> DEFAULT_PALETTE = List.of("solid", "glass", "dust", "torch", "redstone_block",
-            "repeater", "comparator", "target", "note_block", "hopper", "barrel", "chest");
+    public static final List<String> DEFAULT_PALETTE = List.of("solid", "glass", "dust", "torch", "repeater",
+            "comparator", "target", "barrel", "chest");
 
     private static final int DEFAULT_SETTLE_TICKS = 4;
     private static final int DEFAULT_HORIZON_TICKS = 20;
@@ -595,8 +595,8 @@ public final class CircuitDraft {
         Box box = this.requireBox();
         List<Port> inputs = this.getInputs();
         List<Port> outputs = this.getOutputs();
-        if (inputs.isEmpty()) throw new IllegalStateException("Add an input first (look at a cell and press P).");
-        if (outputs.isEmpty()) throw new IllegalStateException("Add an output first (look at a cell and press P).");
+        if (inputs.isEmpty()) throw new IllegalStateException("Add an input first (look at a block and press I).");
+        if (outputs.isEmpty()) throw new IllegalStateException("Add an output first (look at a block and press O).");
         List<TruthRow> tableRows = this.formulaMode ? this.formulaRows() : this.rows;
         if (tableRows.isEmpty()) throw new IllegalStateException("Add a truth table row first.");
         for (Port port : this.ports.values()) {

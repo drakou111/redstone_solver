@@ -183,6 +183,14 @@ Spec spec_with_layout(const Spec &spec, const World &layout) {
   return result;
 }
 
+int shrink_workers(const ShrinkOptions &options) {
+  if (options.parallel > 0)
+    return options.parallel;
+  constexpr int kMinWorkers = 3;
+  return std::max(kMinWorkers,
+                  static_cast<int>(std::thread::hardware_concurrency() / 2));
+}
+
 ShrinkResult shrink(const Spec &spec, const World &layout,
                     const ShrinkOptions &options,
                     const ProgressCallback &progress) {
@@ -264,7 +272,7 @@ ShrinkResult shrink(const Spec &spec, const World &layout,
       }
     };
     std::vector<std::future<void>> workers;
-    for (int w = 0; w < std::max(1, options.parallel); ++w)
+    for (int w = 0; w < shrink_workers(options); ++w)
       workers.push_back(std::async(std::launch::async, worker));
     for (auto &w : workers)
       while (w.wait_for(kCancelPollInterval) != std::future_status::ready)

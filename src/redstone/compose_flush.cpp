@@ -4,7 +4,10 @@
 // in a narrow corridor with everything else pinned, so each solve is small.
 
 #include <algorithm>
+#include <atomic>
+#include <chrono>
 #include <format>
+#include <future>
 #include <limits>
 #include <set>
 #include <string>
@@ -22,6 +25,7 @@ using namespace compose_parts;
 // Rows kept free north of the first modules (lower z) for wires.
 // Generous: lining a module up may move it north; empty rows are cropped.
 constexpr int kMarginZ = 16;
+constexpr std::chrono::milliseconds kPollInterval{50};
 
 // A placed module's cells, both ends included.
 struct Footprint {
@@ -256,10 +260,10 @@ std::optional<ComposeResult> compose_flush(const Netlist &netlist,
       candidates.insert(candidates.begin(), joins.begin(), joins.end());
     }
 
-    bool done = false;
+    // Every position's stage is built, then all are solved side by side; the
+    // best-ranked one that wires up is kept and the rest are stopped.
+    std::vector<Spec> stages;
     for (const Spot &p : candidates) {
-      if (cancelled())
-        return std::nullopt;
       Cells cells = placed;
       if (!p.join)
         add_layout(cells, m.layout, {p.x0, 0, p.z});
@@ -325,17 +329,27 @@ std::optional<ComposeResult> compose_flush(const Netlist &netlist,
         rows.push_back(std::move(row));
       }
       Spec spec =
-          make_spec(size, input_cells, output_cells, rows, options.horizon);
+          make_spec(size, input_cells, output_cells, rows, options.horizon,
+                    options.palette);
       // Input ports are repeaters: the floor under them may hold a support.
       pin(spec, cells, [&](Vec3 c) {
         return free_cells.contains(key(c)) || (c.y == 0 && c.x == 0);
       });
+      stages.push_back(std::move(spec));
+    }
 
+    // One position at a time, best-ranked first: solving them side by side
+    // made every one run out of time (the multiplexer's third gate).
+    bool done = false;
+    for (std::size_t i = 0; i < stages.size() && !done; ++i) {
+      if (cancelled())
+        return std::nullopt;
       SolverOptions solver = options.solver;
       solver.time_limit_seconds = options.flush_seconds;
       solver.stop_at_first = true;
       solver.cancel = options.cancel;
-      SolveReport report = solve(spec, solver);
+      SolveReport report = solve(stages[i], solver);
+      const Spot &p = candidates[i];
       say(std::format("gate {} ({}){} at x {} z {}{}: {}", gi + 1, names,
                       p.join ? " as joined wires" : "", p.x0, p.z,
                       p.routes.empty() ? ", no wire" : "",
@@ -356,8 +370,9 @@ std::optional<ComposeResult> compose_flush(const Netlist &netlist,
       for (std::size_t o = 0; o < group.nodes.size(); ++o)
         source[group.nodes[o]] = p.outputs[o];
       done = true;
-      break;
     }
+    if (cancelled())
+      return std::nullopt;
     if (!done) {
       say(std::format("flush: no place for gate {} ({})", gi + 1, names));
       return std::nullopt;
@@ -410,7 +425,8 @@ std::optional<ComposeResult> compose_flush(const Netlist &netlist,
       row.outputs.push_back(column[t]);
     rows.push_back(std::move(row));
   }
-  Spec spec = make_spec(size, inputs, outputs, rows, options.horizon);
+  Spec spec =
+      make_spec(size, inputs, outputs, rows, options.horizon, options.palette);
   World layout = spec.base_world();
   for (const auto &[cell, block] : placed) {
     Vec3 p = Vec3{cell[0], cell[1], cell[2]} + shift;

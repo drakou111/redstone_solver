@@ -20,17 +20,14 @@ struct PaletteName {
   std::string_view name;
 };
 
-constexpr std::array<PaletteName, 13> kPaletteNames{{
+constexpr std::array<PaletteName, 10> kPaletteNames{{
     {BlockType::Solid, "solid"},
     {BlockType::Glass, "glass"},
     {BlockType::Dust, "dust"},
     {BlockType::Torch, "torch"},
-    {BlockType::RedstoneBlock, "redstone_block"},
     {BlockType::Repeater, "repeater"},
     {BlockType::Comparator, "comparator"},
     {BlockType::Target, "target"},
-    {BlockType::NoteBlock, "note_block"},
-    {BlockType::Hopper, "hopper"},
     {BlockType::Barrel, "barrel"},
     {BlockType::Chest, "chest"},
     {BlockType::Observer, "observer"},

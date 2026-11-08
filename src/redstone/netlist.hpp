@@ -1,6 +1,7 @@
 #pragma once
 
 #include <atomic>
+#include <cstddef>
 #include <cstdint>
 #include <optional>
 #include <string>
@@ -55,6 +56,7 @@ struct SynthesisOptions {
   // Used instead when they give a network just as small.
   std::vector<std::uint8_t> preferred = {0b1000, 0b1110, 0b0110}; // AND OR XOR
   double time_limit_seconds = 60.0;
+  int sat_seed = 0;
   std::atomic<bool> *cancel = nullptr;
 };
 
@@ -62,5 +64,20 @@ struct SynthesisOptions {
 // SAT, trying 0, 1, 2... gates). Nothing if none within max_gates or time.
 std::optional<Netlist> synthesize(const BoolTable &table,
                                   const SynthesisOptions &options = {});
+
+// Finds alternative networks with the same already-known minimum gate count,
+// using varied SAT seeds. The first result is `initial`; the remaining time
+// budget is spent looking for structurally different networks.
+std::vector<Netlist>
+synthesize_alternatives(const BoolTable &table, const Netlist &initial,
+                        std::size_t max_candidates,
+                        const SynthesisOptions &options = {});
+
+// A network that is quick to find but not the smallest: the table split on
+// one input at a time ("if IN then f1 else f0"), splitting on the input that
+// leaves the simplest halves, with shared sub-networks and don't-cares used
+// to simplify. For when exact synthesis takes too long (many inputs).
+// Nothing if an output is constant or a half needs an inverted input alone.
+std::optional<Netlist> split_network(const BoolTable &table);
 
 } // namespace rs

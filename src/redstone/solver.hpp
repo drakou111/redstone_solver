@@ -1,6 +1,7 @@
 #pragma once
 
 #include <atomic>
+#include <chrono>
 #include <cstdint>
 #include <functional>
 #include <optional>
@@ -62,6 +63,23 @@ struct SolveReport {
 };
 
 using ProgressCallback = std::function<void(std::string_view)>;
+
+struct LayoutRefinement {
+  int removed_blocks = 0;
+  int reduced_repeaters = 0;
+  int simplified_blocks = 0; // special blocks made solid, chests made barrels
+};
+
+// Lowers repeater delays, removes blocks and simplifies special blocks
+// (target, glass, containers, note and redstone blocks become plain solid
+// ones; a chest that must stay a container becomes a barrel), one at a time,
+// keeping each edit only while the layout still verifies. Kept cells and
+// ports are never changed.
+LayoutRefinement refine_layout(World &layout, const Spec &spec,
+                               const std::vector<InputVector> &vectors,
+                               const VerificationOptions &options,
+                               const std::atomic<bool> *cancel,
+                               std::chrono::steady_clock::time_point deadline);
 
 // Solves the model, verifies the best candidate in the simulator, and refines
 // the model with each counterexample until a candidate passes.

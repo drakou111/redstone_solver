@@ -50,15 +50,15 @@ public final class SolverScreen extends Screen {
     private static final int MANY_ROWS = 64;
     private static final Map<String, String> PALETTE_LABELS = Map.ofEntries(Map.entry("solid", "Solid block (wool)"),
             Map.entry("glass", "Glass (does not conduct)"), Map.entry("dust", "Redstone dust"),
-            Map.entry("torch", "Redstone torch"), Map.entry("redstone_block", "Redstone block"),
+            Map.entry("torch", "Redstone torch"),
             Map.entry("repeater", "Repeater"), Map.entry("comparator", "Comparator"), Map.entry("target", "Target"),
-            Map.entry("note_block", "Note block"), Map.entry("hopper", "Hopper"), Map.entry("barrel", "Barrel"),
+            Map.entry("barrel", "Barrel"),
             Map.entry("chest", "Chest"));
     private static final Map<String, String> PALETTE_ITEMS = Map.ofEntries(Map.entry("solid", "cyan_wool"),
             Map.entry("glass", "cyan_stained_glass"), Map.entry("dust", "redstone"), Map.entry("torch", "redstone_torch"),
-            Map.entry("redstone_block", "redstone_block"), Map.entry("repeater", "repeater"),
-            Map.entry("comparator", "comparator"), Map.entry("target", "target"), Map.entry("note_block", "note_block"),
-            Map.entry("hopper", "hopper"), Map.entry("barrel", "barrel"), Map.entry("chest", "chest"));
+            Map.entry("repeater", "repeater"),
+            Map.entry("comparator", "comparator"), Map.entry("target", "target"),
+            Map.entry("barrel", "barrel"), Map.entry("chest", "chest"));
 
     private static final int PANEL_COLOR = 0xE0101010;
     private static final int CARD_COLOR = 0x70000000;
@@ -307,7 +307,7 @@ public final class SolverScreen extends Screen {
         List<Port> ports = new ArrayList<>(draft.getInputs());
         ports.addAll(draft.getOutputs());
         if (ports.isEmpty()) {
-            this.label("None yet: place a repeater, comparator, dust or barrel, look at it, press P.", x, y + LINE + 2,
+            this.label("None yet: place a port block, look at it, press I or O.", x, y + LINE + 2,
                 HINT_COLOR);
             return;
         }

@@ -1,3 +1,5 @@
+#include <algorithm>
+
 #include <catch2/catch_test_macros.hpp>
 
 #include <string>
@@ -68,6 +70,27 @@ TEST_CASE("spec files parse into ports, timing, palette and rows") {
   CHECK(spec.palette ==
         std::vector{BlockType::Solid, BlockType::Dust, BlockType::Torch});
   CHECK(spec.rows.size() == 3);
+}
+
+TEST_CASE("note blocks are not available in the solver palette") {
+  std::vector<BlockType> palette = default_palette();
+  CHECK(std::find(palette.begin(), palette.end(), BlockType::NoteBlock) ==
+        palette.end());
+  CHECK_FALSE(parse_palette_block("note_block"));
+}
+
+TEST_CASE("hoppers are not available in the solver palette") {
+  std::vector<BlockType> palette = default_palette();
+  CHECK(std::find(palette.begin(), palette.end(), BlockType::Hopper) ==
+        palette.end());
+  CHECK_FALSE(parse_palette_block("hopper"));
+}
+
+TEST_CASE("redstone blocks are not available in the solver palette") {
+  std::vector<BlockType> palette = default_palette();
+  CHECK(std::find(palette.begin(), palette.end(), BlockType::RedstoneBlock) ==
+        palette.end());
+  CHECK_FALSE(parse_palette_block("redstone_block"));
 }
 
 TEST_CASE("expected outputs intersect every matching row") {

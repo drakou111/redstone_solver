@@ -8,6 +8,7 @@
 #include <map>
 #include <memory>
 #include <mutex>
+#include <numeric>
 #include <set>
 #include <stdexcept>
 #include <string>
@@ -36,28 +37,77 @@ constexpr std::chrono::milliseconds kCancelPollInterval{50};
 constexpr int kRejectionsBeforeTransition = 3;
 constexpr int kFirstRejectionsBeforeTransition = 10;
 
-// Pruning a large first-found circuit verifies it once per block, which can
-// take minutes; the cleanup after a solve gets this long at most.
-constexpr std::chrono::seconds kFinalPruneTime{30};
+// Keep first-solution callers (notably Compose's gate and wiring stages)
+// responsive; longer searches can spend more time polishing their best.
+constexpr std::chrono::seconds kFinalRefinementTime{10};
+constexpr std::chrono::seconds kFirstSolutionRefinementTime{1};
 
-// Removes blocks one at a time while the layout still passes verification.
-// Cheap compared to solving, and it cleans up first-found solutions.
-int prune_layout(World &layout, const Spec &spec,
-                 const std::vector<InputVector> &vectors,
-                 const VerificationOptions &options,
-                 const std::atomic<bool> *cancel,
-                 std::chrono::steady_clock::time_point deadline) {
+// Blocks a plain solid block may stand in for when the circuit does not use
+// what makes them special (a target's pull on dust, glass not conducting, a
+// container's signal, a note block, a redstone block's power).
+bool simplifies_to_solid(BlockType type) {
+  switch (type) {
+  case BlockType::Target:
+  case BlockType::Glass:
+  case BlockType::Barrel:
+  case BlockType::Hopper:
+  case BlockType::Chest:
+  case BlockType::NoteBlock:
+  case BlockType::RedstoneBlock:
+    return true;
+  default:
+    return false;
+  }
+}
+
+} // namespace
+
+// Repeatedly lower repeater delays and remove blocks while the layout still
+// passes verification. Every accepted edit is checked against the full set of
+// verification vectors and placements.
+LayoutRefinement refine_layout(World &layout, const Spec &spec,
+                               const std::vector<InputVector> &vectors,
+                               const VerificationOptions &options,
+                               const std::atomic<bool> *cancel,
+                               std::chrono::steady_clock::time_point deadline) {
+  LayoutRefinement result;
   std::vector<bool> kept(layout.volume(), false);
   for (const auto &[position, block] : spec.fixed)
     kept[layout.index_of(position)] = true;
-  int removed = 0;
   bool changed = true;
-  while (changed) {
+  while (changed && !(cancel && cancel->load()) &&
+         std::chrono::steady_clock::now() < deadline) {
     changed = false;
+
+    // Try each shorter delay, from shortest upward. The first passing value
+    // is the smallest delay that works with the current layout.
     for (int i = 0; i < layout.volume(); ++i) {
       if ((cancel && cancel->load()) ||
           std::chrono::steady_clock::now() >= deadline)
-        return removed;
+        return result;
+      Vec3 p = layout.position_of(i);
+      Block block = layout.at(p);
+      if (kept[i] || block.type != BlockType::Repeater ||
+          block.repeater_delay() <= kMinRepeaterDelay)
+        continue;
+      for (int delay = kMinRepeaterDelay; delay < block.repeater_delay();
+           ++delay) {
+        layout.set(p, Block::repeater(block.facing, delay));
+        if (!verify_layout(layout, spec, vectors, options)) {
+          ++result.reduced_repeaters;
+          changed = true;
+          break;
+        }
+        layout.set(p, block);
+      }
+    }
+
+    // Remove blocks one at a time; repeat after delay changes/removals since
+    // either kind of simplification can make another edit possible.
+    for (int i = 0; i < layout.volume(); ++i) {
+      if ((cancel && cancel->load()) ||
+          std::chrono::steady_clock::now() >= deadline)
+        return result;
       Vec3 p = layout.position_of(i);
       Block block = layout.at(p);
       if (kept[i] || block.type == BlockType::Air ||
@@ -68,12 +118,43 @@ int prune_layout(World &layout, const Spec &spec,
         layout.set(p, block);
         continue;
       }
-      ++removed;
+      ++result.removed_blocks;
       changed = true;
     }
+
+    // Replace special blocks by simpler ones where the circuit still works:
+    // a plain solid block first, and a chest that must stay a container by a
+    // barrel holding the same signal (one block, never joins a neighbour).
+    const bool solid_allowed = spec.palette_contains(BlockType::Solid);
+    const bool barrel_allowed = spec.palette_contains(BlockType::Barrel);
+    for (int i = 0; i < layout.volume(); ++i) {
+      if ((cancel && cancel->load()) ||
+          std::chrono::steady_clock::now() >= deadline)
+        return result;
+      Vec3 p = layout.position_of(i);
+      Block block = layout.at(p);
+      if (kept[i])
+        continue;
+      std::vector<Block> simpler;
+      if (solid_allowed && simplifies_to_solid(block.type))
+        simpler.push_back(Block::solid());
+      if (barrel_allowed && block.type == BlockType::Chest)
+        simpler.push_back(Block::barrel(block.stored_signal()));
+      for (const Block &replacement : simpler) {
+        layout.set(p, replacement);
+        if (!verify_layout(layout, spec, vectors, options)) {
+          ++result.simplified_blocks;
+          changed = true;
+          break;
+        }
+        layout.set(p, block);
+      }
+    }
   }
-  return removed;
+  return result;
 }
+
+namespace {
 
 int find_or_add_steady(ModelPlan &plan, const Spec &spec,
                        const InputVector &inputs) {
@@ -85,21 +166,59 @@ int find_or_add_steady(ModelPlan &plan, const Spec &spec,
 }
 
 // Settled states only: unrolling every transition up front makes the model far
-// larger, and the verifier adds the transitions that actually misbehave.
-// With one_row_each, only the lowest input vector of each truth row; the
-// verifier adds the others when a candidate fails them.
+// larger, and the verifier adds the transitions that actually misbehave. For
+// large tables, begin with a well-spread subset; exact verification supplies
+// counterexamples and every returned candidate still passes the full table.
+// With one_row_each, candidates use each row's low endpoint. Fully specified
+// multi-input tables also get the high endpoint, so the quick palette search
+// sees weak and full-strength combinations without expanding don't-care rows.
 ModelPlan initial_plan(const Spec &spec, bool one_row_each = false) {
-  ModelPlan plan;
+  constexpr std::size_t kMaxInitialCases = 64;
+  std::vector<InputVector> candidates;
+  std::set<InputVector> seen;
+  auto add_candidate = [&](InputVector inputs) {
+    if (seen.insert(inputs).second)
+      candidates.push_back(std::move(inputs));
+  };
   if (one_row_each) {
+    const bool every_row_explicit =
+        spec.inputs.size() > 1 &&
+        std::all_of(
+            spec.rows.begin(), spec.rows.end(), [](const TruthRow &row) {
+              return std::none_of(row.inputs.begin(), row.inputs.end(),
+                                  [](SignalRange range) {
+                                    return range == SignalRange{0, kMaxSignal};
+                                  });
+            });
     for (const TruthRow &row : spec.rows) {
-      InputVector lowest;
-      for (SignalRange range : row.inputs)
+      InputVector lowest, highest;
+      for (SignalRange range : row.inputs) {
         lowest.push_back(range.min);
-      find_or_add_steady(plan, spec, lowest);
+        highest.push_back(range.max);
+      }
+      add_candidate(std::move(lowest));
+      if (every_row_explicit)
+        add_candidate(std::move(highest));
     }
-    return plan;
+  } else {
+    for (InputVector inputs : spec.representative_vectors())
+      add_candidate(std::move(inputs));
   }
-  for (const InputVector &inputs : spec.representative_vectors())
+
+  if (candidates.size() > kMaxInitialCases) {
+    const std::size_t count = candidates.size();
+    std::size_t stride = std::max<std::size_t>(1, count / kMaxInitialCases);
+    while (std::gcd(stride, count) != 1)
+      ++stride;
+    std::vector<InputVector> sampled;
+    sampled.reserve(kMaxInitialCases);
+    for (std::size_t i = 0; i < kMaxInitialCases; ++i)
+      sampled.push_back(std::move(candidates[(i * stride) % count]));
+    candidates = std::move(sampled);
+  }
+
+  ModelPlan plan;
+  for (const InputVector &inputs : candidates)
     find_or_add_steady(plan, spec, inputs);
   return plan;
 }
@@ -189,15 +308,21 @@ SolveReport solve_cp_sat(const Spec &spec, const SolverOptions &options,
   SolveReport report;
   auto finish = [&](SolveStatus status) {
     report.status = status;
-    if (report.solution && status != SolveStatus::Optimal) {
-      report.status = SolveStatus::Feasible;
-      int removed =
-          prune_layout(report.solution->layout, spec, verification_vectors,
-                       options.verification, options.cancel,
-                       std::chrono::steady_clock::now() + kFinalPruneTime);
-      report.solution->block_count -= removed;
-      if (removed > 0)
-        report_progress(std::format("removed {} unneeded blocks", removed));
+    if (report.solution) {
+      LayoutRefinement refined = refine_layout(
+          report.solution->layout, spec, verification_vectors,
+          options.verification, options.cancel,
+          std::chrono::steady_clock::now() + (options.stop_at_first
+                                                  ? kFirstSolutionRefinementTime
+                                                  : kFinalRefinementTime));
+      report.solution->block_count -= refined.removed_blocks;
+      if (refined.removed_blocks > 0 || refined.reduced_repeaters > 0 ||
+          refined.simplified_blocks > 0)
+        report_progress(std::format(
+            "refinement: removed {} unneeded blocks, reduced {} repeater "
+            "delays, simplified {} special blocks",
+            refined.removed_blocks, refined.reduced_repeaters,
+            refined.simplified_blocks));
     }
     report.seconds = elapsed();
     return report;
@@ -332,7 +457,7 @@ struct SharedSearch {
 struct SatSearch {
   std::string name;
   Spec spec;
-  bool one_row_each = false; // start from one input vector per truth row
+  bool one_row_each = false; // start from row endpoints where fully specified
   // Its palette is the spec's, so running out of circuits proves the best
   // one optimal.
   bool complete = false;
@@ -514,14 +639,21 @@ SearchResult run_sat_search(SatSearch &search,
     std::optional<VerificationFailure> failure = verify_layout(
         candidate.layout, spec, verification_vectors, options.verification);
     if (!failure) {
-      say(std::format("verified a {}-block circuit, pruning",
+      say(std::format("verified a {}-block circuit, refining",
                       candidate.block_count));
-      // Pruning is cheap next to solving and lets the bound drop in jumps.
-      candidate.block_count -=
-          prune_layout(candidate.layout, spec, verification_vectors,
-                       options.verification, options.cancel, deadline);
+      LayoutRefinement refined = refine_layout(
+          candidate.layout, spec, verification_vectors, options.verification,
+          options.cancel,
+          std::min(deadline, Clock::now() + (options.stop_at_first
+                                                 ? kFirstSolutionRefinementTime
+                                                 : kFinalRefinementTime)));
+      candidate.block_count -= refined.removed_blocks;
       int blocks = candidate.block_count;
-      say(std::format("pruned to {} blocks", blocks));
+      say(std::format(
+          "refined to {} blocks (removed {}, reduced {} repeater delays, "
+          "simplified {} special blocks)",
+          blocks, refined.removed_blocks, refined.reduced_repeaters,
+          refined.simplified_blocks));
       // The sketch has done its job; smaller circuits may look different.
       sketch.clear();
       publish(shared, searches, search, std::move(candidate));
@@ -653,16 +785,6 @@ SolveReport solve_sat(const Spec &spec, const SolverOptions &options,
     status = SolveStatus::RefinementLimit;
 
   report.status = status;
-  if (report.solution && status != SolveStatus::Optimal) {
-    report.status = SolveStatus::Feasible;
-    std::vector<InputVector> vectors = spec.verification_vectors();
-    int removed = prune_layout(report.solution->layout, spec, vectors,
-                               options.verification, options.cancel,
-                               Clock::now() + kFinalPruneTime);
-    report.solution->block_count -= removed;
-    if (removed > 0 && progress)
-      progress(std::format("removed {} unneeded blocks", removed));
-  }
   report.seconds = std::chrono::duration<double>(Clock::now() - start).count();
   return report;
 }

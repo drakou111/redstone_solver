@@ -58,6 +58,16 @@ TEST_CASE("synthesis uses don't-cares and reads inputs directly") {
   CHECK(c->outputs[0] == 0);
 }
 
+TEST_CASE("synthesis ties gate inputs for unary functions") {
+  BoolTable inverse = table_of(1, {{1, 0}});
+  std::optional<Netlist> network = synthesize(inverse);
+  REQUIRE(network);
+  REQUIRE(network->gates.size() == 1);
+  CHECK(network->gates[0].a == 0);
+  CHECK(network->gates[0].b == 0);
+  check_computes(*network, inverse);
+}
+
 TEST_CASE("the boolean table of a spec rejects exact strengths") {
   Spec ok = parse_spec(R"(
 size 4 2 3
@@ -126,4 +136,36 @@ TEST_CASE("synthesis keeps the network as shallow as the gate count allows") {
   std::vector<int> levels = fa->levels();
   CHECK(*std::max_element(levels.begin(), levels.end()) == 3);
   check_computes(*fa, adder);
+}
+
+TEST_CASE("a split network computes a 4-to-1 multiplexer with mux gates") {
+  // IN1, IN2 select one of IN3..IN6.
+  BoolTable table;
+  table.inputs = 6;
+  table.values.resize(1);
+  for (int t = 0; t < 64; ++t) {
+    int select = ((t & 1) << 1) | ((t >> 1) & 1);
+    table.values[0].push_back(((t >> (2 + select)) & 1) != 0);
+  }
+  std::optional<Netlist> net = split_network(table);
+  REQUIRE(net);
+  CHECK(net->gates.size() == 9); // three 2-to-1 multiplexers of 3 gates
+  for (int t = 0; t < 64; ++t)
+    CHECK(net->evaluate(t)[net->outputs[0]] == *table.values[0][t]);
+}
+
+TEST_CASE("a split network uses don't-cares and shares sub-networks") {
+  BoolTable table;
+  table.inputs = 3;
+  table.values.resize(2);
+  for (int t = 0; t < 8; ++t) {
+    bool a = t & 1, b = (t >> 1) & 1, c = (t >> 2) & 1;
+    table.values[0].push_back(a && b); // AND
+    // a AND b where c is on, anything where c is off.
+    table.values[1].push_back(c ? std::optional<bool>(a && b) : std::nullopt);
+  }
+  std::optional<Netlist> net = split_network(table);
+  REQUIRE(net);
+  CHECK(net->gates.size() == 1);
+  CHECK(net->outputs[0] == net->outputs[1]);
 }

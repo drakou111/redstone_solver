@@ -1,9 +1,11 @@
 #include "redstone/verifier.hpp"
 
+#include <algorithm>
 #include <format>
 #include <functional>
 #include <future>
 #include <stdexcept>
+#include <thread>
 
 #include "redstone/simulator.hpp"
 
@@ -83,33 +85,45 @@ public:
     return values;
   }
 
-  std::optional<std::string> outside(const std::vector<int> &values,
-                                     const std::vector<SignalRange> &expected,
-                                     int tick, int copy) const {
-    for (std::size_t o = 0; o < values.size(); ++o)
-      if (!expected[o].contains(values[o]))
+  std::optional<std::string>
+  outside(const Simulator &sim, const std::vector<SignalRange> &expected,
+          int tick, int copy) const {
+    int count = static_cast<int>(this->spec_.outputs.size());
+    for (int o = 0; o < count; ++o) {
+      int value = sim.output(copy * count + o);
+      if (!expected[o].contains(value))
         return std::format("{}OUT{} is {} at tick {}, expected {}",
-                           this->copy_name(copy), o + 1, values[o], tick,
+                           this->copy_name(copy), o + 1, value, tick,
                            to_string(expected[o]));
+    }
     return std::nullopt;
+  }
+
+  bool outputs_equal(const Simulator &sim, int copy,
+                     const std::vector<int> &expected) const {
+    int count = static_cast<int>(this->spec_.outputs.size());
+    for (int o = 0; o < count; ++o)
+      if (sim.output(copy * count + o) != expected[o])
+        return false;
+    return true;
   }
 
   // Rules for a copy whose inputs just switched: correct from the deadline
   // on, and unchanged before the earliest tick if requested.
   std::optional<std::string>
-  check_switched(const std::vector<int> &values, const std::vector<int> &before,
+  check_switched(const Simulator &sim, const std::vector<int> &before,
                  const std::vector<SignalRange> &expected, int tick,
                  int copy) const {
     const TimingSpec &timing = this->spec_.timing;
     int deadline = timing.latest ? *timing.latest : timing.horizon();
     if (tick >= deadline)
-      if (auto problem = this->outside(values, expected, tick, copy))
+      if (auto problem = this->outside(sim, expected, tick, copy))
         return problem;
     if (timing.hold_previous && timing.earliest && tick < *timing.earliest &&
-        values != before)
-      return std::format(
-          "{}outputs changed at tick {}, before the earliest allowed tick {}",
-          this->copy_name(copy), tick, *timing.earliest);
+        !this->outputs_equal(sim, copy, before))
+      return std::format("{}outputs changed at tick {}, before the earliest "
+                         "allowed tick {}",
+                         this->copy_name(copy), tick, *timing.earliest);
     return std::nullopt;
   }
 
@@ -147,6 +161,7 @@ private:
 std::optional<VerificationFailure>
 check_placement(const Tiling &tiling, const Spec &spec,
                 const std::vector<InputVector> &vectors,
+                const std::vector<std::vector<SignalRange>> &expected,
                 const std::vector<InputVector> &backgrounds,
                 const VerificationOptions &options, Placement placement) {
   Harness h(spec, tiling, options);
@@ -167,16 +182,6 @@ check_placement(const Tiling &tiling, const Spec &spec,
     return fail(std::nullopt, vectors.front(),
                 "does not settle after being built", false);
 
-  std::vector<std::vector<SignalRange>> expected;
-  for (const InputVector &vector : vectors) {
-    std::optional<std::vector<SignalRange>> wanted =
-        spec.expected_outputs(vector);
-    if (!wanted)
-      throw std::invalid_argument("verification vector " + to_string(vector) +
-                                  " has no row");
-    expected.push_back(std::move(*wanted));
-  }
-
   // Every copy gets the same inputs (the only case without tiling).
   std::vector<Simulator> settled;
   for (std::size_t u = 0; u < vectors.size(); ++u) {
@@ -186,7 +191,7 @@ check_placement(const Tiling &tiling, const Spec &spec,
     if (!sim.run_until_quiet(options.max_settle_ticks))
       return fail(std::nullopt, vectors[u], "does not settle", false);
     for (int copy = 0; copy < tiling.copies; ++copy)
-      if (auto problem = h.outside(h.outputs(sim, copy), expected[u], 0, copy))
+      if (auto problem = h.outside(sim, expected[u], 0, copy))
         return fail(std::nullopt, vectors[u],
                     "settled state wrong: " + *problem, false);
     settled.push_back(std::move(sim));
@@ -203,8 +208,7 @@ check_placement(const Tiling &tiling, const Spec &spec,
       }
       auto problem = h.run(sim, [&](const Simulator &s, int t) {
         for (int copy = 0; copy < tiling.copies; ++copy)
-          if (auto p = h.check_switched(h.outputs(s, copy), before[copy],
-                                        expected[v], t, copy))
+          if (auto p = h.check_switched(s, before[copy], expected[v], t, copy))
             return p;
         return std::optional<std::string>{};
       });
@@ -228,8 +232,8 @@ check_placement(const Tiling &tiling, const Spec &spec,
         return fail(
             std::nullopt, vectors[u],
             "does not settle next to copies at " + to_string(background), true);
-      if (auto problem = h.outside(h.outputs(base, tiling.center), expected[u],
-                                   0, tiling.center))
+      if (auto problem =
+              h.outside(base, expected[u], 0, tiling.center))
         return fail(std::nullopt, vectors[u],
                     "settled state wrong next to copies at " +
                         to_string(background) + ": " + *problem,
@@ -245,12 +249,11 @@ check_placement(const Tiling &tiling, const Spec &spec,
         h.set_inputs(sim, tiling.center, vectors[v]);
         auto problem = h.run(sim, [&](const Simulator &s, int t) {
           for (int copy = 0; copy < tiling.copies; ++copy) {
-            std::vector<int> now = h.outputs(s, copy);
             if (copy == tiling.center) {
-              if (auto p =
-                      h.check_switched(now, before[copy], expected[v], t, copy))
+              if (auto p = h.check_switched(s, before[copy], expected[v], t,
+                                            copy))
                 return p;
-            } else if (now != before[copy]) {
+            } else if (!h.outputs_equal(s, copy, before[copy])) {
               return std::optional<std::string>{std::format(
                   "{}output changed at tick {} although its inputs did not",
                   h.copy_name(copy), t)};
@@ -293,23 +296,41 @@ verify_layout(const World &layout, const Spec &spec,
     throw std::invalid_argument("nothing to verify: no input vectors");
   std::vector<Placement> placements =
       options.placements.empty() ? standard_placements() : options.placements;
+  std::vector<std::vector<SignalRange>> expected;
+  expected.reserve(vectors.size());
+  for (const InputVector &vector : vectors) {
+    std::optional<std::vector<SignalRange>> wanted =
+        spec.expected_outputs(vector);
+    if (!wanted)
+      throw std::invalid_argument("verification vector " + to_string(vector) +
+                                  " has no row");
+    expected.push_back(std::move(*wanted));
+  }
   Tiling tiling = make_tiling(layout, spec);
   std::vector<InputVector> backgrounds = spec.representative_vectors();
 
-  std::vector<std::future<std::optional<VerificationFailure>>> checks;
-  for (const Placement &placement : placements)
-    checks.push_back(std::async(std::launch::async, check_placement,
-                                std::cref(tiling), std::cref(spec),
-                                std::cref(vectors), std::cref(backgrounds),
-                                std::cref(options), placement));
-
-  std::optional<VerificationFailure> first;
-  for (auto &check : checks) {
-    std::optional<VerificationFailure> failure = check.get();
-    if (failure && !first)
-      first = std::move(failure);
+  // Verification often runs inside parallel solver or shrink jobs. Launching
+  // every placement at once multiplies those worker counts and can leave the
+  // machine oversubscribed. Process bounded batches in placement order so the
+  // reported failure stays deterministic and later placements are skipped
+  // once an earlier batch has found one.
+  const unsigned hardware = std::max(1u, std::thread::hardware_concurrency());
+  const std::size_t workers = std::min<std::size_t>(
+      placements.size(), std::min(8u, std::max(1u, hardware / 2)));
+  for (std::size_t begin = 0; begin < placements.size(); begin += workers) {
+    const std::size_t end = std::min(placements.size(), begin + workers);
+    std::vector<std::future<std::optional<VerificationFailure>>> checks;
+    checks.reserve(end - begin);
+    for (std::size_t i = begin; i < end; ++i)
+      checks.push_back(std::async(
+          std::launch::async, check_placement, std::cref(tiling),
+          std::cref(spec), std::cref(vectors), std::cref(expected),
+          std::cref(backgrounds), std::cref(options), placements[i]));
+    for (auto &check : checks)
+      if (std::optional<VerificationFailure> failure = check.get())
+        return failure;
   }
-  return first;
+  return std::nullopt;
 }
 
 std::string to_string(const InputVector &vector) {

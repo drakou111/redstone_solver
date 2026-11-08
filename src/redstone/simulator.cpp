@@ -51,6 +51,7 @@ Simulator::Simulator(const World &world, Placement placement)
 
   int volume = world.volume();
   this->states_.resize(volume);
+  this->due_ticks_.reserve(volume);
   this->comparator_outputs_.assign(volume, 0);
   this->has_scheduled_.assign(volume, false);
   this->ticks_this_tick_.assign(volume, false);
@@ -155,16 +156,16 @@ int Simulator::output(int channel) const {
 
 void Simulator::tick() {
   ++this->time_;
-  std::vector<int> due;
+  this->due_ticks_.clear();
   while (!this->scheduled_.empty() &&
          this->scheduled_.top().time <= this->time_) {
     int c = this->scheduled_.top().cell;
     this->scheduled_.pop();
     this->has_scheduled_[c] = false;
     this->ticks_this_tick_[c] = true;
-    due.push_back(c);
+    this->due_ticks_.push_back(c);
   }
-  for (int c : due) {
+  for (int c : this->due_ticks_) {
     this->ticks_this_tick_[c] = false;
     this->run_scheduled_tick(c);
   }

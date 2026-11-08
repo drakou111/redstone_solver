@@ -10,7 +10,7 @@ using namespace rs;
 TEST_CASE("the gate library builds clean-faced modules for every 2-input "
           "function") {
   GateLibraryOptions options;
-  options.seconds_per_size = 30.0;
+  options.time_limit_seconds = 30.0;
   for (std::uint8_t function : two_input_functions()) {
     INFO(function_name(function));
     std::optional<GateModule> gate = build_gate({function}, options);
@@ -35,7 +35,7 @@ TEST_CASE("the gate library builds clean-faced modules for every 2-input "
 
 TEST_CASE("the gate library builds a half adder as one two-output module") {
   GateLibraryOptions options;
-  options.seconds_per_size = 30.0;
+  options.time_limit_seconds = 30.0;
   std::optional<GateModule> ha = build_gate({0b0110, 0b1000}, options);
   REQUIRE(ha);
   REQUIRE(ha->outs.size() == 2);

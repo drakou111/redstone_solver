@@ -31,12 +31,18 @@ struct NetlistComposeOptions {
   // Most layers the circuit may use (0: no limit). Taller gate shapes and
   // spare layers that do not fit are left out.
   int max_height = 0;
-  double stage_seconds = 120.0;
+  double stage_seconds = 120.0; // total budget for one wiring channel
+  int network_candidates = 3; // same-size Boolean networks tried
+  // Total budget to find alternatives; routed in estimated-cost order.
+  double network_candidate_seconds = 2.0;
   // Channels narrower than this get a short try first: when they work they
   // are found quickly, and a long failing try costs a whole stage time.
   int comfortable_width = 3;
-  double narrow_seconds = 20.0;
+  double narrow_seconds = 20.0; // per-attempt cap below comfortable_width
   int horizon = 80;
+  // nullopt uses the default palette; compose_spec copies the source spec's
+  // palette here so module and wiring solves obey the user's restrictions.
+  std::optional<std::vector<BlockType>> palette;
   GateLibraryOptions gates;
   SolverOptions solver; // threads and verification placements
   std::atomic<bool> *cancel = nullptr;
@@ -45,6 +51,8 @@ struct NetlistComposeOptions {
   // Let flush placement make ORs (and XORs of signals never on together)
   // from two joining dust lines instead of a module.
   bool flush_joins = true;
+  // Modules built before are taken from here (and new ones stored).
+  GateCache *gate_cache = nullptr;
   int flush_candidates = 6;    // positions tried per gate, best first
   double flush_seconds = 30.0; // per position
 };
@@ -65,9 +73,9 @@ compose_flush(const Netlist &netlist, const BoolTable &table,
               const ProgressCallback &progress = {});
 
 // Composes the spec in its variants (ORs as joined wires or as modules),
-// shrinks each with an equal share of `shrink.time_limit_seconds` and keeps
-// the smallest. The shrink is greedy, so a smaller start does not always end
-// smaller; trying both is what finds the compact one.
+// shrinks them side by side (each with the whole time and a share of the
+// workers) and keeps the smallest. The shrink is greedy, so a smaller start
+// does not always end smaller; trying both is what finds the compact one.
 std::optional<ComposeResult>
 compose_and_shrink(const Spec &spec, const NetlistComposeOptions &options,
                    const ShrinkOptions &shrink,

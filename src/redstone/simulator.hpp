@@ -178,6 +178,7 @@ private:
 
   std::priority_queue<ScheduledTick, std::vector<ScheduledTick>, std::greater<>>
       scheduled_;
+  std::vector<int> due_ticks_; // reused by tick() to avoid per-tick allocation
   std::vector<bool> has_scheduled_;
   std::vector<bool> ticks_this_tick_;
   std::int64_t tick_order_ = 0;

@@ -19,12 +19,9 @@ const BRUSH_TYPES: readonly BlockType[] = [
   'glass',
   'dust',
   'torch',
-  'redstone_block',
   'repeater',
   'comparator',
   'target',
-  'note_block',
-  'hopper',
   'barrel',
   'chest',
   'observer',
@@ -40,7 +37,6 @@ function defaults(type: BlockType): Block {
       return { type, facing: 'east', delay: 1 };
     case 'comparator':
       return { type, facing: 'east', mode: 'compare' };
-    case 'hopper':
     case 'barrel':
     case 'chest':
       return { type, signal: 0 };

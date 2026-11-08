@@ -9,6 +9,7 @@
 #include <string_view>
 
 #include "host/json_io.hpp"
+#include "redstone/gate_library.hpp"
 #include "redstone/simulator.hpp"
 #include "redstone/solve_job.hpp"
 
@@ -23,6 +24,7 @@ public:
   Json handle(std::string_view route, const Json &body);
 
 private:
+  GateCache gate_cache_; // gate modules shared by every compose job
   Json session() const;
   Json load_spec(const Json &body) const;
   Json save_spec(const Json &body) const;

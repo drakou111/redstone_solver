@@ -231,8 +231,9 @@ Json Api::start_compose(const Json &body) {
   const Json &settings = body.value("options", Json::object());
   NetlistComposeOptions options;
   options.stage_seconds = settings.value("timeLimit", 120.0);
-  options.gates.seconds_per_size = options.stage_seconds;
+  options.gates.time_limit_seconds = options.stage_seconds;
   options.max_height = settings.value("maxHeight", 0);
+  options.gate_cache = &this->gate_cache_;
   // With a shrink time, every variant is built and shrunk; the best is kept.
   const double shrink_seconds = settings.value("shrinkTimeLimit", 0.0);
   const double cut_seconds = settings.value("cutTime", 120.0);

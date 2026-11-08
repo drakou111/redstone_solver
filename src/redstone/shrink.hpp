@@ -12,7 +12,9 @@ namespace rs {
 struct ShrinkOptions {
   double time_limit_seconds = 600.0; // the whole shrink
   double cut_seconds = 120.0;        // one repair attempt
-  int parallel = 3;                  // cuts tried at the same time
+  // Cuts tried at the same time; 0: half the hardware threads (each repair
+  // is a small, mostly single-threaded solve).
+  int parallel = 0;
   // Per repair: threads, verification placements, sketch step time. Time
   // limit, stop-at-first and cancel are set by shrink().
   SolverOptions solver;
@@ -24,6 +26,9 @@ struct ShrinkResult {
   World layout; // the last verified layout
   int steps = 0;
 };
+
+// How many cuts `options` tries at the same time.
+int shrink_workers(const ShrinkOptions &options);
 
 // The spec with slice `index` of `axis` (0 x, 1 y, 2 z) removed and
 // everything beyond it moved back by one: ports, kept, empty and sketch
