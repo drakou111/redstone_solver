@@ -335,28 +335,53 @@ Json Api::start_shrink(const Json &body) {
   options.solver.verification = verification_from(settings);
   if (options.time_limit_seconds <= 0 || options.cut_seconds <= 0)
     throw std::invalid_argument("time limits must be positive");
-  this->job_ = std::make_unique<SolveJob>(spec, [spec, layout, options](
-                                                    const JobContext &job) {
-    auto start = std::chrono::steady_clock::now();
-    ShrinkOptions o = options;
-    o.cancel = job.cancel;
-    o.preview = job.preview;
-    ShrinkResult shrunk = shrink(spec, layout, o, job.progress);
-    int blocks = 0;
-    for (int i = 0; i < shrunk.layout.volume(); ++i) {
-      BlockType type = shrunk.layout.at(shrunk.layout.position_of(i)).type;
-      if (type != BlockType::Air && type != BlockType::Input &&
-          type != BlockType::Output)
-        ++blocks;
+  // A build of an on/off table is also kept for Build from gates requests of
+  // that table in a box this high: a known design answers them at once.
+  std::optional<std::string> key;
+  if (this->library_) {
+    NetlistComposeOptions compose;
+    compose.max_height = spec.size.y;
+    compose.solver.verification = options.solver.verification;
+    try {
+      key = compose_key(spec, compose);
+    } catch (const std::invalid_argument &) {
+      // Exact strengths matter: not something Build from gates is asked.
     }
-    SolveReport report;
-    report.status = SolveStatus::Feasible;
-    report.solution = EncodedSolution{shrunk.layout, blocks, {}, {}, {}};
-    report.seconds =
-        std::chrono::duration<double>(std::chrono::steady_clock::now() - start)
-            .count();
-    return JobResult{std::move(report), std::move(shrunk.spec)};
-  });
+  }
+  CircuitLibrary *library = this->library_.get();
+  this->job_ = std::make_unique<SolveJob>(
+      spec, [spec, layout, options, key, library](const JobContext &job) {
+        auto start = std::chrono::steady_clock::now();
+        ShrinkOptions o = options;
+        o.cancel = job.cancel;
+        o.preview = job.preview;
+        ShrinkResult shrunk = shrink(spec, layout, o, job.progress);
+        if (key && library &&
+            !verify_layout(shrunk.layout, shrunk.spec,
+                           shrunk.spec.verification_vectors(),
+                           options.solver.verification)) {
+          Vec3 size = shrunk.layout.size();
+          CircuitLibrary::Entry entry{
+              to_json(shrunk.spec), to_json(shrunk.layout),
+              layout_blocks(shrunk.layout), size.x * size.y * size.z, ""};
+          if (library->offer(*key, entry) && job.progress)
+            job.progress("kept in the circuit library for Build from gates");
+        }
+        int blocks = 0;
+        for (int i = 0; i < shrunk.layout.volume(); ++i) {
+          BlockType type = shrunk.layout.at(shrunk.layout.position_of(i)).type;
+          if (type != BlockType::Air && type != BlockType::Input &&
+              type != BlockType::Output)
+            ++blocks;
+        }
+        SolveReport report;
+        report.status = SolveStatus::Feasible;
+        report.solution = EncodedSolution{shrunk.layout, blocks, {}, {}, {}};
+        report.seconds = std::chrono::duration<double>(
+                             std::chrono::steady_clock::now() - start)
+                             .count();
+        return JobResult{std::move(report), std::move(shrunk.spec)};
+      });
   return Json::object();
 }
 
