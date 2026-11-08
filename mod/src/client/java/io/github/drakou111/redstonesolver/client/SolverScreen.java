@@ -569,14 +569,6 @@ public final class SolverScreen extends Screen {
                     draft.setOtherBlocks(sketch ? CircuitDraft.OtherBlocks.IGNORE : CircuitDraft.OtherBlocks.SKETCH);
                     this.rebuildWidgets();
                 });
-        boolean drawn = this.state.isOnePlacement();
-        this.flowButton(drawn ? "Only as drawn: on" : "Only as drawn: off",
-                "On: check the circuit only as built here, facing this way. Allows faster circuits that may fail "
-                        + "when built rotated or elsewhere",
-                () -> {
-                    this.state.setOnePlacement(!drawn);
-                    this.rebuildWidgets();
-                });
         this.flowLabel("Sketch step");
         EditBox sketchStep = this.flowField(30, formatNumber(this.state.getSketchSeconds()),
                 "Seconds the solver tries to keep a sketch before freeing part of it");

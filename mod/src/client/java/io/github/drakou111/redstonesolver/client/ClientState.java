@@ -24,7 +24,6 @@ public final class ClientState {
     private JsonObject lastResult;
     private boolean resultWaiting;
     private Method method = Method.SOLVE;
-    private boolean onePlacement;
     private double sketchSeconds = DEFAULT_SKETCH_SECONDS;
     private int version;
     private boolean autoShrink = true;
@@ -42,15 +41,6 @@ public final class ClientState {
 
     public void setMethod(Method method) {
         this.method = method;
-    }
-
-    /** Verify only the circuit as built here, facing this way (allows faster circuits). */
-    public boolean isOnePlacement() {
-        return this.onePlacement;
-    }
-
-    public void setOnePlacement(boolean onePlacement) {
-        this.onePlacement = onePlacement;
     }
 
     public double getSketchSeconds() {
