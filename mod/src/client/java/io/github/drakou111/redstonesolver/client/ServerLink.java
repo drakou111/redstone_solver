@@ -22,6 +22,7 @@ import net.minecraft.network.chat.MutableComponent;
 /** Sends the client's requests to the server and applies its answers to the client state. */
 public final class ServerLink {
     private static final double MAX_CUT_SECONDS = 120;
+    private static final double FIRST_COMPOSE_STEP_SECONDS = 120;
     // Circuits are checked as built, facing this way only: much faster, and
     // rotated or moved copies behave the same in practice.
     private static final boolean ONE_PLACEMENT = true;
@@ -64,16 +65,17 @@ public final class ServerLink {
         body.addProperty("method", this.state.getMethod().name().toLowerCase(Locale.ROOT));
         JsonObject options = new JsonObject();
         boolean compose = this.state.getMethod() == ClientState.Method.COMPOSE;
-        options.addProperty("timeLimit", compose ? this.state.getComposeStepSeconds() : this.state.getTimeLimitSeconds());
+        // Build from gates: the time limit is the whole budget; the solver starts
+        // with short steps and lengthens them until the budget is used.
+        options.addProperty("timeLimit", compose ? FIRST_COMPOSE_STEP_SECONDS : this.state.getTimeLimitSeconds());
         options.addProperty("onePlacement", ONE_PLACEMENT);
         options.addProperty("sketchTime", this.state.getSketchSeconds());
         if (compose) {
             options.addProperty("maxHeight", this.state.getDraft().specSize().y());
-            // The solver builds every variant, shrinks each and keeps the smallest.
-            if (this.state.isAutoShrink()) {
-                options.addProperty("shrinkTimeLimit", this.state.getTimeLimitSeconds());
-                options.addProperty("cutTime", Math.min(MAX_CUT_SECONDS, this.state.getTimeLimitSeconds()));
-            }
+            options.addProperty("totalTime", this.state.getTimeLimitSeconds());
+            // Then shrink: every variant is built, shrunk until the deadline, the smallest kept.
+            options.addProperty("shrink", this.state.isAutoShrink());
+            options.addProperty("cutTime", Math.min(MAX_CUT_SECONDS, this.state.getTimeLimitSeconds()));
         }
         body.add("options", options);
         this.send("solve", body);

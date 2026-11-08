@@ -535,12 +535,7 @@ public final class SolverScreen extends Screen {
         this.flowHint("ticks");
         this.flowLabel("Time limit");
         this.durationField(this.state.getTimeLimitSeconds(), this.state::setTimeLimitSeconds,
-                "How long a search or shrink may take in all: 90s, 10m, 1h");
-        if (this.state.getMethod() == ClientState.Method.COMPOSE) {
-            this.flowLabel("Step limit");
-            this.durationField(this.state.getComposeStepSeconds(), this.state::setComposeStepSeconds,
-                    "Build from gates: how long each gate and each wiring step may take (90s, 2m, ...)");
-        }
+                "How long the solver may take in all (building, then shrinking): 90s, 10m, 1h");
 
         this.flowNewLine();
         boolean compose = this.state.getMethod() == ClientState.Method.COMPOSE;

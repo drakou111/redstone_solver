@@ -235,7 +235,15 @@ Json Api::start_compose(const Json &body) {
   options.max_height = settings.value("maxHeight", 0);
   options.gate_cache = &this->gate_cache_;
   // With a shrink time, every variant is built and shrunk; the best is kept.
-  const double shrink_seconds = settings.value("shrinkTimeLimit", 0.0);
+  // totalTime: one budget for everything (build passes, then the shrink when
+  // "shrink" is set); the step limits only shape the first pass.
+  const double total_seconds = settings.value("totalTime", 0.0);
+  const bool shrink_until_deadline = settings.value("shrink", false);
+  if (total_seconds < 0)
+    throw std::invalid_argument("the total time must be positive");
+  const double shrink_seconds = shrink_until_deadline && total_seconds > 0
+                                    ? total_seconds
+                                    : settings.value("shrinkTimeLimit", 0.0);
   const double cut_seconds = settings.value("cutTime", 120.0);
   if (shrink_seconds < 0 || cut_seconds <= 0)
     throw std::invalid_argument("shrink times must be positive");
@@ -249,11 +257,16 @@ Json Api::start_compose(const Json &body) {
   // composed from on/off gates.
   boolean_table(spec);
   this->job_ = std::make_unique<SolveJob>(
-      spec, [spec, options, shrink_seconds, cut_seconds](
+      spec, [spec, options, shrink_seconds, cut_seconds, total_seconds](
                 const ProgressCallback &progress, std::atomic<bool> *cancel) {
         auto start = std::chrono::steady_clock::now();
         NetlistComposeOptions o = options;
         o.cancel = cancel;
+        if (total_seconds > 0)
+          o.deadline =
+              start +
+              std::chrono::duration_cast<std::chrono::steady_clock::duration>(
+                  std::chrono::duration<double>(total_seconds));
         std::optional<ComposeResult> composed;
         if (shrink_seconds > 0) {
           ShrinkOptions s;

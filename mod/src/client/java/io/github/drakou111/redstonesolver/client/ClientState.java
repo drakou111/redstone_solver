@@ -7,7 +7,6 @@ import java.util.Optional;
 /** Everything the client knows: the draft being edited, solve settings and the last solve's state. */
 public final class ClientState {
     public static final double DEFAULT_TIME_LIMIT_SECONDS = 3600;
-    public static final double DEFAULT_COMPOSE_STEP_SECONDS = 120;
     public static final double DEFAULT_SKETCH_SECONDS = 3;
 
     /** How the circuit is built: one search of the whole box, or from gates. */
@@ -27,7 +26,6 @@ public final class ClientState {
     private double sketchSeconds = DEFAULT_SKETCH_SECONDS;
     private int version;
     private boolean autoShrink = true;
-    private double composeStepSeconds = DEFAULT_COMPOSE_STEP_SECONDS;
     private boolean cancelling;
 
     /** Grows whenever the solve state changes, so open screens know to refresh their buttons. */
@@ -50,16 +48,6 @@ public final class ClientState {
     public void setSketchSeconds(double seconds) {
         if (!(seconds > 0)) throw new IllegalArgumentException("the sketch step time must be positive");
         this.sketchSeconds = seconds;
-    }
-
-    /** Build from gates: the time each gate and each wiring step may take. */
-    public double getComposeStepSeconds() {
-        return this.composeStepSeconds;
-    }
-
-    public void setComposeStepSeconds(double seconds) {
-        if (!(seconds > 0)) throw new IllegalArgumentException("the step limit must be positive");
-        this.composeStepSeconds = seconds;
     }
 
     /** Build from gates, then shrink the result right away. */

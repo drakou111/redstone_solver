@@ -11,7 +11,9 @@
 #include <map>
 #include <mutex>
 #include <stdexcept>
+#include <stop_token>
 #include <string>
+#include <thread>
 
 namespace rs {
 
@@ -510,6 +512,11 @@ compose_and_shrink(const Spec &spec, const NetlistComposeOptions &options,
     ShrinkOptions o = shrink;
     o.parallel = workers;
     o.cancel = options.cancel;
+    if (options.deadline)
+      o.time_limit_seconds = std::max(
+          1.0, std::chrono::duration<double>(*options.deadline -
+                                             std::chrono::steady_clock::now())
+                   .count());
     shrinks.push_back(std::async(std::launch::async, [&start = start,
                                                       &name = name, o, &say] {
       ShrinkResult shrunk = shrink_layout_of(start, o, say);
@@ -542,28 +549,59 @@ GateLibraryOptions gates_within_height(GateLibraryOptions gates,
   return gates;
 }
 
-std::optional<ComposeResult> compose_spec(const Spec &spec,
+namespace {
+
+// The gate networks of one table: found once, reused by every pass.
+struct Networks {
+  bool searched = false;
+  std::optional<Netlist> best;
+  std::vector<Netlist> candidates;
+};
+
+// One pass of compose_spec with the step limits in `options`.
+std::optional<ComposeResult> compose_once(const Spec &spec,
                                           const NetlistComposeOptions &options,
-                                          const ProgressCallback &progress) {
+                                          const ProgressCallback &progress,
+                                          Networks &networks) {
   BoolTable table = boolean_table(spec);
   SynthesisOptions synthesis;
   synthesis.cancel = options.cancel;
   synthesis.sat_seed = options.solver.sat_seed;
-  std::optional<Netlist> netlist = synthesize(table, synthesis);
-  if (!netlist && !(options.cancel && options.cancel->load())) {
-    // Exact synthesis gives up on bigger tables (a 4-to-1 multiplexer has six
-    // inputs); a split network is larger but found at once.
-    netlist = split_network(table);
-    if (netlist && progress)
-      progress(std::format("no smallest network found in time; using a split "
-                           "network of {} gates",
-                           netlist->gates.size()));
+  synthesis.time_limit_seconds = options.synthesis_seconds;
+  if (!networks.searched) {
+    networks.searched = true;
+    networks.best = synthesize(table, synthesis);
+    if (!networks.best && !(options.cancel && options.cancel->load())) {
+      // Exact synthesis gives up on bigger tables (a 4-to-1 multiplexer has
+      // six inputs); a split network is larger but found at once.
+      networks.best = split_network(table);
+      if (networks.best && progress)
+        progress(std::format("no smallest network found in time; using a "
+                             "split network of {} gates",
+                             networks.best->gates.size()));
+    }
+    if (networks.best) {
+      networks.candidates = {*networks.best};
+      if (options.network_candidates > 1 && networks.best->gates.size() >= 3) {
+        SynthesisOptions alternatives = synthesis;
+        alternatives.time_limit_seconds = options.network_candidate_seconds;
+        networks.candidates = synthesize_alternatives(
+            table, *networks.best,
+            static_cast<std::size_t>(options.network_candidates), alternatives);
+        std::stable_sort(networks.candidates.begin(), networks.candidates.end(),
+                         [](const Netlist &a, const Netlist &b) {
+                           return network_layout_score(a) <
+                                  network_layout_score(b);
+                         });
+      }
+    }
   }
-  if (!netlist) {
+  if (!networks.best) {
     if (progress)
       progress("no gate network found (too many gates)");
     return std::nullopt;
   }
+  const Netlist *netlist = &*networks.best;
   if (progress)
     progress(std::format("gate network:\n{}", netlist->describe()));
 
@@ -614,18 +652,7 @@ std::optional<ComposeResult> compose_spec(const Spec &spec,
       progress("direct exact-one search found no circuit; trying gate modules");
   }
 
-  std::vector<Netlist> candidates{*netlist};
-  if (options.network_candidates > 1 && netlist->gates.size() >= 3) {
-    SynthesisOptions alternatives = synthesis;
-    alternatives.time_limit_seconds = options.network_candidate_seconds;
-    candidates = synthesize_alternatives(
-        table, *netlist, static_cast<std::size_t>(options.network_candidates),
-        alternatives);
-    std::stable_sort(candidates.begin(), candidates.end(),
-                     [](const Netlist &a, const Netlist &b) {
-                       return network_layout_score(a) < network_layout_score(b);
-                     });
-  }
+  const std::vector<Netlist> &candidates = networks.candidates;
 
   for (std::size_t index = 0; index < candidates.size(); ++index) {
     if (options.cancel && options.cancel->load())
@@ -677,6 +704,76 @@ std::optional<ComposeResult> compose_spec(const Spec &spec,
     }
   }
   return std::nullopt;
+}
+
+// Stops everything that watches `stop` once the deadline passes or `outer`
+// (the caller's cancel flag) is set.
+class DeadlineWatch {
+public:
+  DeadlineWatch(std::chrono::steady_clock::time_point deadline,
+                std::atomic<bool> *outer)
+      : thread_([this, deadline, outer](std::stop_token token) {
+          while (!token.stop_requested()) {
+            if (std::chrono::steady_clock::now() >= deadline ||
+                (outer && outer->load())) {
+              this->stop_ = true;
+              return;
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(50));
+          }
+        }) {}
+
+  std::atomic<bool> *flag() { return &this->stop_; }
+
+private:
+  std::atomic<bool> stop_ = false;
+  std::jthread thread_; // after stop_: joined before it goes
+};
+
+} // namespace
+
+std::optional<ComposeResult> compose_spec(const Spec &spec,
+                                          const NetlistComposeOptions &options,
+                                          const ProgressCallback &progress) {
+  Networks networks;
+  if (!options.deadline)
+    return compose_once(spec, options, progress, networks);
+
+  using Clock = std::chrono::steady_clock;
+  const Clock::time_point deadline = *options.deadline;
+  auto left = [&] {
+    return std::chrono::duration<double>(deadline - Clock::now()).count();
+  };
+  constexpr double kShortestPass = 5.0; // seconds; less is not worth a pass
+  constexpr double kSynthesisShare = 0.2;
+  DeadlineWatch watch(deadline, options.cancel);
+  GateCache local_cache; // modules survive from pass to pass
+  for (int pass = 0;; ++pass) {
+    const double remaining = left();
+    if (remaining < kShortestPass || (options.cancel && options.cancel->load()))
+      return std::nullopt;
+    const double scale = static_cast<double>(1 << std::min(pass, 6));
+    NetlistComposeOptions o = options;
+    o.cancel = watch.flag();
+    o.gate_cache = options.gate_cache ? options.gate_cache : &local_cache;
+    o.synthesis_seconds =
+        std::min(options.synthesis_seconds, remaining * kSynthesisShare);
+    o.flush_seconds = std::min(options.flush_seconds * scale, remaining);
+    o.stage_seconds = std::min(options.stage_seconds * scale, remaining);
+    o.narrow_seconds = std::min(options.narrow_seconds * scale, remaining);
+    o.gates.time_limit_seconds =
+        std::min(options.gates.time_limit_seconds * scale, remaining);
+    o.max_channel_width = options.max_channel_width + 2 * pass;
+    o.solver.sat_seed = options.solver.sat_seed + pass;
+    if (pass > 0 && progress)
+      progress(std::format("pass {}: step limits x{:.0f}, {:.0f} s left",
+                           pass + 1, scale, remaining));
+    if (std::optional<ComposeResult> result =
+            compose_once(spec, o, progress, networks))
+      return result;
+    if (!networks.best)
+      return std::nullopt; // no network: more time will not make one
+  }
 }
 
 } // namespace rs

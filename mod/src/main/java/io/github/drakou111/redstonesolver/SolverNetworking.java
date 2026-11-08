@@ -80,7 +80,7 @@ public final class SolverNetworking {
 
     /**
      * Body: {spec, origin: [x, y, z], method: "solve" | "compose", options: {timeLimit, onePlacement,
-     * sketchTime, maxHeight, shrinkTimeLimit, cutTime}}. The options go to the solver unchanged.
+     * sketchTime, maxHeight, totalTime, shrink, cutTime}}. The options go to the solver unchanged.
      */
     private void solve(MinecraftServer server, ServerPlayer player, JsonObject body) {
         JsonObject spec = body.getAsJsonObject("spec");

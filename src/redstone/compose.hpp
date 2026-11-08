@@ -1,6 +1,7 @@
 #pragma once
 
 #include <atomic>
+#include <chrono>
 #include <optional>
 
 #include "redstone/gate_library.hpp"
@@ -32,7 +33,7 @@ struct NetlistComposeOptions {
   // spare layers that do not fit are left out.
   int max_height = 0;
   double stage_seconds = 120.0; // total budget for one wiring channel
-  int network_candidates = 3; // same-size Boolean networks tried
+  int network_candidates = 3;   // same-size Boolean networks tried
   // Total budget to find alternatives; routed in estimated-cost order.
   double network_candidate_seconds = 2.0;
   // Channels narrower than this get a short try first: when they work they
@@ -53,7 +54,14 @@ struct NetlistComposeOptions {
   bool flush_joins = true;
   // Modules built before are taken from here (and new ones stored).
   GateCache *gate_cache = nullptr;
-  int flush_candidates = 6;    // positions tried per gate, best first
+  int flush_candidates = 6; // positions tried per gate, best first
+  // Exact synthesis of the smallest gate network gives up after this.
+  double synthesis_seconds = 60.0;
+  // With a deadline, Compose does not stop after one pass: a pass that
+  // fails is run again with doubled step limits, wider channels and a new
+  // seed until the deadline, and every running solve stops when it passes.
+  // The step limits above are the first pass's.
+  std::optional<std::chrono::steady_clock::time_point> deadline;
   double flush_seconds = 30.0; // per position
 };
 

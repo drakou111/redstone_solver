@@ -1,4 +1,5 @@
 #include <algorithm>
+#include <chrono>
 #include <format>
 #include <functional>
 #include <string>
@@ -229,6 +230,28 @@ TEST_CASE("compose routes exact-one through the core palette and restores it") {
         std::string::npos);
   CHECK(result->spec.palette == spec.palette);
   CHECK(result->layout.size().y <= options.max_height);
+  CHECK_FALSE(verify_layout(result->layout, result->spec,
+                            result->spec.verification_vectors()));
+}
+
+TEST_CASE("compose with a deadline stops on time and still composes") {
+  Spec spec = spec_of(3, 2, [](int t, int o) {
+    int count = (t & 1) + ((t >> 1) & 1) + ((t >> 2) & 1);
+    return o == 0 ? count % 2 : count >= 2 ? 1 : 0;
+  });
+  NetlistComposeOptions options;
+  options.max_height = 2;
+
+  using Clock = std::chrono::steady_clock;
+  options.deadline = Clock::now() + std::chrono::seconds(2);
+  Clock::time_point start = Clock::now();
+  compose_spec(spec, options);
+  double seconds = std::chrono::duration<double>(Clock::now() - start).count();
+  CHECK(seconds < 6);
+
+  options.deadline = Clock::now() + std::chrono::seconds(300);
+  std::optional<ComposeResult> result = compose_spec(spec, options);
+  REQUIRE(result);
   CHECK_FALSE(verify_layout(result->layout, result->spec,
                             result->spec.verification_vectors()));
 }
