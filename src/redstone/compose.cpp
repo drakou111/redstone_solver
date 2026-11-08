@@ -221,15 +221,33 @@ flush_variants(const Netlist &netlist, const BoolTable &table,
       return compose_flush(netlist, table, o, {});
     }));
   }
+  const bool timed = options.timing.earliest || options.timing.latest;
+  auto meets_timing = [&](const ComposeResult &r) {
+    if (!timed)
+      return true;
+    Spec spec = r.spec;
+    spec.timing = options.timing;
+    return !verify_layout(r.layout, spec, spec.verification_vectors(),
+                          options.solver.verification);
+  };
+  bool best_meets = meets_timing(*best);
   for (auto &variant : variants) {
     std::optional<ComposeResult> result = variant.get();
-    if (result && smaller(*result, *best))
+    if (!result)
+      continue;
+    bool meets = meets_timing(*result);
+    if ((meets && !best_meets) ||
+        (meets == best_meets && smaller(*result, *best))) {
       best = std::move(result);
+      best_meets = meets;
+    }
   }
   if (progress) {
     Vec3 size = best->layout.size();
-    progress(std::format("flush: {} builds; the smallest is {}x{}x{}",
-                         options.flush_variants, size.x, size.y, size.z));
+    progress(std::format("flush: {} builds; the {} is {}x{}x{}",
+                         options.flush_variants,
+                         timed && best_meets ? "smallest in time" : "smallest",
+                         size.x, size.y, size.z));
   }
   return best;
 }
@@ -887,8 +905,9 @@ compose_untimed(const Spec &spec, const NetlistComposeOptions &options,
 std::optional<ComposeResult> compose_spec(const Spec &spec,
                                           const NetlistComposeOptions &options,
                                           const ProgressCallback &progress) {
-  return with_timing(compose_untimed(spec, options, progress), spec, options,
-                     progress);
+  NetlistComposeOptions o = options;
+  o.timing = spec.timing;
+  return with_timing(compose_untimed(spec, o, progress), spec, o, progress);
 }
 
 namespace {
