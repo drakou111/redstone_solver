@@ -26,14 +26,16 @@ rest are open.
    near-seam repairs (done: 3 phases). Next: also try *moving* a slice (shift
    one half by one cell towards the other) and removing two slices at once,
    which escapes the greedy shrink's dead ends.
-4. **Less greedy shrink (backtracking).** When no cut works, go back one step
+4. **Done: less greedy shrink (backtracking).** When no cut works, go back one step
    and try the next cut that also worked. The full adder ended at 7x2x6 or
    6x2x7 depending on which cut won first; keeping two or three branches
    would find the better end more often.
-5. **Peephole re-synthesis.** Take a verified circuit, free one small window
+5. **Done (as tidy, in leftover shrink time): peephole re-synthesis.** Take a verified circuit, free one small window
    (3x2x3), and ask the solver for the fewest blocks there with everything
    else pinned. Repeat over all windows. Cuts blocks without changing size.
-6. **Timing-aware gates.** Build from gates ignores timing. Each module could
+6. **Partly done: timing-aware gates.** The finished build is checked
+   against the request's timing, and of the routed builds one in time wins.
+   Still open: Build from gates ignores timing. Each module could
    be built with its own delay bound and the wiring stages checked against the
    deadline, so a 1-tick-per-gate budget gives fast circuits.
 7. **Port placement freedom.** Let the user mark "any cell on the west face"
@@ -50,7 +52,8 @@ rest are open.
 2. **Incremental SAT across shrink cuts.** Every cut re-encodes the whole
    circuit. Cuts of the same layout share almost everything; one solver with
    assumptions per cut would skip the encoding.
-3. **Verify faster.** The verifier checks every ordered pair of input cases
+3. **Partly done: verify faster.** Routed stages get one pass over the
+   rows; shrink simulates each cut as it is before solving. Still open: The verifier checks every ordered pair of input cases
    (n^2 switches) at every placement. With "only as drawn" always on, one
    placement is enough; next, a cheap first pass with single-input switches
    only, and the full pass only for the final circuit.
