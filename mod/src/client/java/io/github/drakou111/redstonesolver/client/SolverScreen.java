@@ -792,7 +792,9 @@ public final class SolverScreen extends Screen {
         int color = TEXT_COLOR;
         if (this.logOpen) {
             JsonArray log = result.getAsJsonArray("log");
-            for (int i = Math.max(0, log.size() - MAX_LOG_LINES); i < log.size(); i++) lines.add(log.get(i).getAsString());
+            List<String> entries = new ArrayList<>();
+            for (JsonElement entry : log) entries.addAll(List.of(entry.getAsString().split("\\R")));
+            lines.addAll(entries.subList(Math.max(0, entries.size() - MAX_LOG_LINES), entries.size()));
             color = HINT_COLOR;
         } else if (result.has("error")) {
             lines.add("Failed: " + result.get("error").getAsString());
@@ -836,20 +838,18 @@ public final class SolverScreen extends Screen {
         }
     }
 
-    // Build from gates does not aim for the timing setting; say how this result compares.
+    // Build from gates checks the timing setting on the finished circuit; say how this result compares.
     private Optional<String> deadlineNote(JsonObject result) {
         boolean fromGates = result.has("builtFromGates") && result.get("builtFromGates").getAsBoolean();
         Optional<Integer> latest = this.state.getDraft().getLatestTicks();
         if (!fromGates || latest.isEmpty()) return Optional.empty();
         JsonArray settle = result.getAsJsonArray("settleTicks");
-        if (settle == null || settle.isEmpty()) return Optional.of("Build from gates ignores your timing setting.");
+        if (settle == null || settle.isEmpty()) return Optional.empty();
         int slowest = 0;
         for (JsonElement ticks : settle) slowest = Math.max(slowest, ticks.getAsInt());
-        String exact = this.state.getDraft().getEarliestTicks().isPresent() ? " (and does not hold outputs)" : "";
         return Optional.of(slowest <= latest.get()
-                ? "Build from gates ignores timing%s, but this one is within your %d ticks.".formatted(exact, latest.get())
-                : "Misses your deadline: %d ticks, you asked for %d. Build from gates ignores timing%s."
-                        .formatted(slowest, latest.get(), exact));
+                ? "Within your %d ticks (checked).".formatted(latest.get())
+                : "Misses your deadline: %d ticks, you asked for %d.".formatted(slowest, latest.get()));
     }
 
     private String timingText(JsonObject result) {

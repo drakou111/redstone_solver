@@ -8,6 +8,7 @@ import io.github.drakou111.redstonesolver.core.Box;
 import io.github.drakou111.redstonesolver.core.Cell;
 import io.github.drakou111.redstonesolver.core.CircuitDraft;
 import io.github.drakou111.redstonesolver.core.Dir;
+import io.github.drakou111.redstonesolver.core.ProgressLine;
 import io.github.drakou111.redstonesolver.net.SolverPayloads.ToClient;
 import io.github.drakou111.redstonesolver.net.SolverPayloads.ToServer;
 import java.util.List;
@@ -206,7 +207,7 @@ public final class ServerLink {
             case "cancelling" -> this.state.setCancelling(true);
             case "progress" -> {
                 String text = "Solving... %.0f s  %s".formatted(json.get("seconds").getAsDouble(),
-                        json.get("line").getAsString());
+                        ProgressLine.of(json.get("line").getAsString()));
                 this.state.setProgress(text);
                 player.sendOverlayMessage(Chat.hint(text));
             }
