@@ -75,6 +75,12 @@ struct NetlistComposeOptions {
   int flush_variants = 8;
   int flush_seed = 0;    // 0: the plain ranking
   bool flush_sat = true; // false: router only, a gate nothing routes fails
+  // With a shrink (compose_and_shrink): fresh searches in smaller boxes
+  // run alongside it (see search_sizes).
+  bool size_search = true;
+  // A circuit found before (the library's): the size search only tries
+  // boxes smaller than it.
+  std::optional<Vec3> beat;
   // The build so far, gate by gate (flush placement).
   PreviewCallback preview;
   // The request's timing (compose_spec sets it): builds that meet it are

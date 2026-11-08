@@ -2,6 +2,7 @@
 
 #include "redstone/compose_parts.hpp"
 #include "redstone/simulator.hpp"
+#include "redstone/size_search.hpp"
 #include "redstone/verifier.hpp"
 
 #include <algorithm>
@@ -580,23 +581,61 @@ compose_and_shrink(const Spec &spec, const NetlistComposeOptions &options,
   if (starts.empty())
     return std::nullopt;
 
-  // Both shrinks run at once: a step is shown when it is no bigger than
-  // the last one shown.
+  auto volume = [](Vec3 s) { return s.x * s.y * s.z; };
+  double seconds = shrink.time_limit_seconds;
+  if (options.deadline)
+    seconds =
+        std::max(1.0, std::chrono::duration<double>(
+                          *options.deadline - std::chrono::steady_clock::now())
+                          .count());
+
+  // The shrinks and the size search run at once: a circuit is shown when it
+  // is no bigger than the last one shown, and the smallest so far bounds the
+  // size search.
   std::mutex preview_mutex;
   int shown_cells = std::numeric_limits<int>::max();
-  PreviewCallback preview;
-  if (shrink.preview)
-    preview = [&](const World &layout) {
-      Vec3 size = layout.size();
-      std::lock_guard lock(preview_mutex);
-      if (size.x * size.y * size.z > shown_cells)
-        return;
-      shown_cells = size.x * size.y * size.z;
-      shrink.preview(layout);
-    };
+  std::atomic<int> smallest = std::numeric_limits<int>::max();
+  for (const auto &[name, start] : starts)
+    smallest = std::min(smallest.load(), volume(start.layout.size()));
+  if (options.beat)
+    smallest = std::min(smallest.load(), volume(*options.beat));
+  PreviewCallback preview = [&](const World &layout) {
+    const int cells = volume(layout.size());
+    std::lock_guard lock(preview_mutex);
+    smallest = std::min(smallest.load(), cells);
+    if (!shrink.preview || cells > shown_cells)
+      return;
+    shown_cells = cells;
+    shrink.preview(layout);
+  };
+
+  const ComposeResult *beat = &starts.front().second;
+  for (const auto &[name, start] : starts)
+    if (volume(start.layout.size()) < volume(beat->layout.size()))
+      beat = &start;
+  const int all_workers = shrink_workers(shrink);
+  const int size_workers = options.size_search ? all_workers / 2 : 0;
+  std::future<std::optional<SizeSearchResult>> sizes;
+  if (size_workers > 0) {
+    SizeSearchOptions s;
+    s.time_limit_seconds = seconds;
+    s.parallel = size_workers;
+    s.max_height = options.max_height;
+    s.solver.verification = shrink.solver.verification;
+    s.cancel = options.cancel;
+    s.preview = preview;
+    s.bound = &smallest;
+    Vec3 to_beat = beat->layout.size();
+    if (options.beat && volume(*options.beat) < volume(to_beat))
+      to_beat = *options.beat;
+    sizes = std::async(std::launch::async, [beat, to_beat, s, &say] {
+      return search_sizes(beat->spec, to_beat, s, say);
+    });
+  }
+
   std::vector<std::future<ComposeResult>> shrinks;
-  const int workers =
-      std::max(1, shrink_workers(shrink) / static_cast<int>(starts.size()));
+  const int workers = std::max(1, (all_workers - size_workers) /
+                                      static_cast<int>(starts.size()));
   for (auto &[name, start] : starts) {
     say(std::format("shrinking the {}x{}x{} build ({})", start.layout.size().x,
                     start.layout.size().y, start.layout.size().z, name));
@@ -604,11 +643,7 @@ compose_and_shrink(const Spec &spec, const NetlistComposeOptions &options,
     o.parallel = workers;
     o.cancel = options.cancel;
     o.preview = preview;
-    if (options.deadline)
-      o.time_limit_seconds = std::max(
-          1.0, std::chrono::duration<double>(*options.deadline -
-                                             std::chrono::steady_clock::now())
-                   .count());
+    o.time_limit_seconds = seconds;
     shrinks.push_back(std::async(std::launch::async, [&start = start,
                                                       &name = name, o, &say] {
       ShrinkResult shrunk = shrink_layout_of(start, o, say);
@@ -617,10 +652,18 @@ compose_and_shrink(const Spec &spec, const NetlistComposeOptions &options,
       return ComposeResult{std::move(shrunk.spec), std::move(shrunk.layout)};
     }));
   }
+  std::vector<ComposeResult> results;
+  for (auto &job : shrinks)
+    results.push_back(job.get());
+  if (sizes.valid())
+    if (std::optional<SizeSearchResult> found = sizes.get()) {
+      Vec3 size = found->layout.size();
+      say(std::format("size search: {}x{}x{}", size.x, size.y, size.z));
+      results.push_back(
+          ComposeResult{std::move(found->spec), std::move(found->layout)});
+    }
   std::optional<ComposeResult> best;
-  auto volume = [](Vec3 s) { return s.x * s.y * s.z; };
-  for (auto &job : shrinks) {
-    ComposeResult result = job.get();
+  for (ComposeResult &result : results) {
     Vec3 size = result.layout.size();
     if (!best || volume(size) < volume(best->layout.size()) ||
         (volume(size) == volume(best->layout.size()) &&
