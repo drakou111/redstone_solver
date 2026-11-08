@@ -27,6 +27,18 @@ struct ShrinkResult {
   int steps = 0;
 };
 
+// Blocks of a layout, ports left out.
+int layout_blocks(const World &layout);
+
+// Fewer blocks in the same box: windows of the layout are freed in turn
+// (everything else kept as it is) and solved for the fewest blocks, several
+// at once; the best saving of a round is kept and the windows are tried
+// again, until a round saves nothing or the time (options.time_limit_seconds)
+// runs out. `steps` counts the rounds that saved blocks.
+ShrinkResult tidy(const Spec &spec, const World &layout,
+                  const ShrinkOptions &options,
+                  const ProgressCallback &progress = {});
+
 // How many cuts `options` tries at the same time.
 int shrink_workers(const ShrinkOptions &options);
 
@@ -45,7 +57,7 @@ Spec spec_with_layout(const Spec &spec, const World &layout);
 // verifies is kept, and the search starts again from it. At a dead end it
 // goes back a step and tries the other cuts there (a few times at most).
 // Ends when no cut works, the time runs out or `cancel` is set, with the
-// smallest layout found.
+// smallest layout found; time left when no cut works goes to tidy().
 ShrinkResult shrink(const Spec &spec, const World &layout,
                     const ShrinkOptions &options,
                     const ProgressCallback &progress = {});

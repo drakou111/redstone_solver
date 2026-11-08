@@ -1,4 +1,6 @@
+#include <format>
 #include <string>
+#include <utility>
 
 #include "redstone/shrink.hpp"
 #include "redstone/simulator.hpp"
@@ -80,6 +82,38 @@ TEST_CASE("shrink takes slices out of a verified layout until none can go") {
   CHECK(result.steps > 0);
   CHECK(result.spec.size.x < spec.size.x);
   CHECK(result.layout.size() == result.spec.size);
+  CHECK_FALSE(verify_layout(result.layout, result.spec,
+                            result.spec.verification_vectors()));
+}
+
+TEST_CASE("tidy straightens a wire that takes a detour") {
+  // A buffer whose wire goes around a U instead of straight across.
+  std::string text = R"(
+size 5 2 3
+input IN1 repeater 0 1 0 east
+output OUT1 dust 4 1 0
+horizon 20
+row IN1(ss15) -> OUT1(ss1..15)
+row IN1(ss0) -> OUT1(ss0)
+hint 0 0 0 solid
+hint 4 0 0 solid
+)";
+  for (auto [x, z] :
+       {std::pair{1, 0}, {1, 1}, {1, 2}, {2, 2}, {3, 2}, {3, 1}, {3, 0}})
+    text += std::format("hint {} 1 {} dust\nhint {} 0 {} solid\n", x, z, x, z);
+  Spec spec = parse_spec(text);
+  World layout = spec.base_world();
+  for (const auto &[p, block] : spec.hints)
+    layout.set(p, block);
+  REQUIRE_FALSE(verify_layout(layout, spec, spec.verification_vectors()));
+  const int before = layout_blocks(layout);
+
+  ShrinkOptions options;
+  options.time_limit_seconds = kTimeLimitSeconds;
+  ShrinkResult result = tidy(spec, layout, options);
+  CHECK(result.steps > 0);
+  CHECK(layout_blocks(result.layout) < before);
+  CHECK(result.layout.size() == layout.size());
   CHECK_FALSE(verify_layout(result.layout, result.spec,
                             result.spec.verification_vectors()));
 }

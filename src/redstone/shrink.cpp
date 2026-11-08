@@ -127,6 +127,14 @@ constexpr std::array<Phase, 3> kPhases{{{1, 15.0, "near the cut"},
 
 int cells(Vec3 size) { return size.x * size.y * size.z; }
 
+// Tidying: windows this wide along x and z, this far apart, each solved
+// for at most this long.
+constexpr int kTidyWindow = 3;
+constexpr int kTidyStride = 2;
+constexpr double kTidyWindowSeconds = 10.0;
+// Less time than this left after shrinking is not worth tidying.
+constexpr double kTidyMinSeconds = 5.0;
+
 // How often a dead end may send the search back a step.
 constexpr int kMaxBacktracks = 3;
 
@@ -262,6 +270,133 @@ Spec spec_with_layout(const Spec &spec, const World &layout) {
   return result;
 }
 
+int layout_blocks(const World &layout) {
+  int blocks = 0;
+  for (int i = 0; i < layout.volume(); ++i) {
+    BlockType type = layout.at(layout.position_of(i)).type;
+    blocks += type != BlockType::Air && type != BlockType::Input &&
+                      type != BlockType::Output
+                  ? 1
+                  : 0;
+  }
+  return blocks;
+}
+
+ShrinkResult tidy(const Spec &spec, const World &layout,
+                  const ShrinkOptions &options,
+                  const ProgressCallback &progress) {
+  const Clock::time_point deadline =
+      Clock::now() +
+      std::chrono::duration_cast<Clock::duration>(
+          std::chrono::duration<double>(options.time_limit_seconds));
+  auto say = [&](const std::string &message) {
+    if (progress)
+      progress(message);
+  };
+  auto out_of_time = [&] {
+    return (options.cancel && options.cancel->load()) ||
+           Clock::now() >= deadline;
+  };
+
+  ShrinkResult result{spec_with_layout(spec, layout), layout, 0};
+  int blocks = layout_blocks(layout);
+  const Vec3 size = layout.size();
+  while (!out_of_time()) {
+    // Windows over the whole height, the busiest first.
+    struct Window {
+      Vec3 low;
+      int blocks;
+    };
+    std::vector<Window> windows;
+    const int wx = std::min(kTidyWindow, size.x);
+    const int wz = std::min(kTidyWindow, size.z);
+    for (int x = 0; x + wx <= size.x; x += kTidyStride)
+      for (int z = 0; z + wz <= size.z; z += kTidyStride) {
+        int inside = 0;
+        for (int y = 0; y < size.y; ++y)
+          for (int dx = 0; dx < wx; ++dx)
+            for (int dz = 0; dz < wz; ++dz) {
+              BlockType type = result.layout.at({x + dx, y, z + dz}).type;
+              inside += type != BlockType::Air && type != BlockType::Input &&
+                                type != BlockType::Output
+                            ? 1
+                            : 0;
+            }
+        if (inside > 0)
+          windows.push_back({{x, 0, z}, inside});
+      }
+    std::stable_sort(
+        windows.begin(), windows.end(),
+        [](const Window &a, const Window &b) { return a.blocks > b.blocks; });
+
+    const Spec base = result.spec;
+    std::atomic<std::size_t> next = 0;
+    std::mutex mutex;
+    std::optional<World> better;
+    int better_blocks = blocks;
+    auto worker = [&] {
+      for (std::size_t k = next++; k < windows.size() && !out_of_time();
+           k = next++) {
+        const Vec3 low = windows[k].low;
+        auto inside = [&](Vec3 p) {
+          return p.x >= low.x && p.x < low.x + wx && p.z >= low.z &&
+                 p.z < low.z + wz;
+        };
+        Spec window = base;
+        window.hints.clear();
+        World start = base.base_world();
+        for (int i = 0; i < result.layout.volume(); ++i) {
+          Vec3 p = result.layout.position_of(i);
+          if (start.at(p).type != BlockType::Air)
+            continue; // a port or a kept block
+          const Block &block = result.layout.at(p);
+          if (inside(p)) {
+            if (block.type != BlockType::Air)
+              window.hints.emplace_back(p, block);
+          } else if (block.type != BlockType::Air) {
+            window.fixed.emplace_back(p, block);
+          } else {
+            window.forbidden.push_back(p);
+          }
+        }
+        double left =
+            std::chrono::duration<double>(deadline - Clock::now()).count();
+        if (left <= 0)
+          return;
+        SolverOptions solver = options.solver;
+        solver.time_limit_seconds = std::min(kTidyWindowSeconds, left);
+        solver.stop_at_first = false;
+        solver.cancel = options.cancel;
+        SolveReport report = solve(window, solver);
+        if (!report.solution)
+          continue;
+        int found = layout_blocks(report.solution->layout);
+        std::lock_guard lock(mutex);
+        if (found < better_blocks) {
+          better_blocks = found;
+          better = report.solution->layout;
+        }
+      }
+    };
+    std::vector<std::future<void>> workers;
+    for (int w = 0; w < shrink_workers(options); ++w)
+      workers.push_back(std::async(std::launch::async, worker));
+    for (auto &w : workers)
+      w.wait();
+    if (!better) {
+      say(result.steps == 0 ? "tidy: no window gets by with fewer blocks"
+                            : "tidy: done");
+      break;
+    }
+    say(std::format("tidy: {} blocks instead of {}", better_blocks, blocks));
+    blocks = better_blocks;
+    result.spec = spec_with_layout(spec, *better);
+    result.layout = std::move(*better);
+    ++result.steps;
+  }
+  return result;
+}
+
 int shrink_workers(const ShrinkOptions &options) {
   if (options.parallel > 0)
     return options.parallel;
@@ -385,6 +520,15 @@ ShrinkResult shrink(const Spec &spec, const World &layout,
     path.pop_back();
     if (path.empty() || backtracks >= kMaxBacktracks) {
       say("no cut works");
+      double left =
+          std::chrono::duration<double>(deadline - Clock::now()).count();
+      if (left >= kTidyMinSeconds) {
+        ShrinkOptions rest = options;
+        rest.time_limit_seconds = left;
+        ShrinkResult tidied = tidy(best.spec, best.layout, rest, progress);
+        best.spec = std::move(tidied.spec);
+        best.layout = std::move(tidied.layout);
+      }
       break;
     }
     ++backtracks;
