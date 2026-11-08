@@ -49,6 +49,8 @@ struct NetlistComposeOptions {
   std::atomic<bool> *cancel = nullptr;
   // Flush placement first (compact, see compose_flush); columns if it fails.
   bool flush = true;
+  // Lay out in columns when flush placement fails.
+  bool columns = true;
   // Let flush placement make ORs (and XORs of signals never on together)
   // from two joining dust lines instead of a module.
   bool flush_joins = true;

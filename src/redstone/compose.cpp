@@ -194,6 +194,11 @@ compose_with_palette(const Netlist &netlist, const BoolTable &table,
       return flush;
     if (options.cancel && options.cancel->load())
       return std::nullopt;
+    if (!options.columns) {
+      if (progress)
+        progress("flush placement failed; columns come in a later pass");
+      return std::nullopt;
+    }
     if (progress)
       progress("flush placement failed; laying out in columns");
   }
@@ -766,6 +771,9 @@ std::optional<ComposeResult> compose_spec(const Spec &spec,
     o.max_channel_width = options.max_channel_width + 2 * pass;
     // Different shapes, not only more time: wires get room to go around
     // modules, gates may sit further from their signals.
+    // The first pass is flush placement only: columns are slow and rarely
+    // work where flush does not, so they wait for the next pass.
+    o.columns = options.columns && pass > 0;
     o.flush_margin = options.flush_margin + pass;
     o.flush_spacing = options.flush_spacing + pass;
     o.solver.sat_seed = options.solver.sat_seed + pass;
