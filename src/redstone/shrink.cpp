@@ -440,7 +440,7 @@ ShrinkResult shrink(const Spec &spec, const World &layout,
     std::atomic<bool> stop = false;
     std::atomic<std::size_t> next = 0;
     std::mutex mutex;
-    std::optional<std::pair<std::size_t, World>> found;
+    std::optional<std::pair<Spec, World>> found; // the cut box and its circuit
     auto run_workers = [&](const std::function<void()> &work) {
       std::vector<std::future<void>> workers;
       for (int w = 0; w < shrink_workers(options); ++w)
@@ -452,24 +452,38 @@ ShrinkResult shrink(const Spec &spec, const World &layout,
     };
 
     // First every plain cut exactly as it is: a simulation each, no solve.
+    // Two neighbouring slices at once come first; each such cut gains two.
     if (!node.tried_as_is) {
       node.tried_as_is = true;
-      std::vector<std::size_t> whole;
+      struct AsIs {
+        Spec base;
+        std::string name;
+        std::optional<std::size_t> attempt;
+      };
+      std::vector<AsIs> checks;
+      for (int axis = 0; axis < 3; ++axis)
+        for (int k = 0; k + 1 < component(node.spec.size, axis); ++k)
+          if (std::optional<Spec> once = cut_slice(node.spec, axis, k))
+            if (std::optional<Spec> twice = cut_slice(*once, axis, k))
+              checks.push_back(
+                  {std::move(*twice),
+                   std::format("{} = {} and {}", kAxisNames[axis], k, k + 1),
+                   std::nullopt});
       for (std::size_t i : pending)
         if (node.attempts[i].whole)
-          whole.push_back(i);
+          checks.push_back({node.attempts[i].base, node.attempts[i].name, i});
       run_workers([&] {
-        for (std::size_t k = next++; k < whole.size() && !stop; k = next++) {
-          std::size_t i = whole[k];
+        for (std::size_t k = next++; k < checks.size() && !stop; k = next++) {
           std::optional<World> layout =
-              works_as_is(node.attempts[i].base, options.solver);
+              works_as_is(checks[k].base, options.solver);
           if (!layout)
             continue;
           std::lock_guard lock(mutex);
           if (!found) {
-            found.emplace(i, std::move(*layout));
-            node.finished[i] = true;
-            say("removed " + node.attempts[i].name + ", as it was");
+            found.emplace(checks[k].base, std::move(*layout));
+            if (checks[k].attempt)
+              node.finished[*checks[k].attempt] = true;
+            say("removed " + checks[k].name + ", as it was");
             stop = true;
           }
         }
@@ -498,7 +512,7 @@ ShrinkResult shrink(const Spec &spec, const World &layout,
         }
         node.finished[i] = true;
         if (!found) {
-          found.emplace(i, report.solution->layout);
+          found.emplace(node.attempts[i].base, report.solution->layout);
           say("removed " + node.attempts[i].name);
           stop = true;
         }
@@ -508,8 +522,7 @@ ShrinkResult shrink(const Spec &spec, const World &layout,
       run_workers(worker);
 
     if (found) {
-      Spec base = node.attempts[found->first].base;
-      Spec next_spec = spec_with_layout(base, found->second);
+      Spec next_spec = spec_with_layout(found->first, found->second);
       path.push_back(
           make_node(std::move(next_spec), std::move(found->second), options));
       const ShrinkNode &child = path.back();
