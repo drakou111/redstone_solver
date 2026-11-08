@@ -29,6 +29,10 @@ public final class SolverService implements AutoCloseable {
     public interface Listener {
         void progress(double seconds, String lastLogLine);
 
+        /** The circuit so far (a partial build, a shrink step, the best found yet), as the solver's layout JSON. */
+        default void preview(JsonObject layout) {
+        }
+
         void finished(SolveOutcome outcome);
     }
 
@@ -122,6 +126,7 @@ public final class SolverService implements AutoCloseable {
     }
 
     private SolveOutcome pollUntilDone(SolverClient solver, JsonObject request, Listener listener) {
+        int previewSeen = 0;
         while (true) {
             try {
                 Thread.sleep(POLL_INTERVAL);
@@ -129,7 +134,13 @@ public final class SolverService implements AutoCloseable {
                 Thread.currentThread().interrupt();
                 throw new SolverException("Interrupted while waiting for the solver", e);
             }
-            JsonObject status = solver.call("solve/status", new JsonObject());
+            JsonObject query = new JsonObject();
+            query.addProperty("previewSince", previewSeen);
+            JsonObject status = solver.call("solve/status", query);
+            if (status.has("preview")) {
+                previewSeen = status.get("previewVersion").getAsInt();
+                if (status.get("running").getAsBoolean()) listener.preview(status.getAsJsonObject("preview"));
+            }
             List<String> log = strings(status.getAsJsonArray("log"));
             if (status.get("running").getAsBoolean()) {
                 double seconds = status.has("seconds") ? status.get("seconds").getAsDouble() : 0;

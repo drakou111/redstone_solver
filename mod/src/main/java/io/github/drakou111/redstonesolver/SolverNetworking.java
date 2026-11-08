@@ -160,6 +160,14 @@ public final class SolverNetworking {
             }
 
             @Override
+            public void preview(JsonObject layout) {
+                JsonObject json = new JsonObject();
+                json.add("origin", origin.toJson());
+                json.add("layout", layout);
+                server.execute(() -> sendTo(server, playerId, "preview", json));
+            }
+
+            @Override
             public void finished(SolveOutcome outcome) {
                 server.execute(() -> SolverNetworking.this.finish(server, playerId, route, request, origin, alsoClear,
                         floorAssumed, outcome));

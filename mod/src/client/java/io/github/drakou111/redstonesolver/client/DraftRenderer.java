@@ -3,6 +3,8 @@ package io.github.drakou111.redstonesolver.client;
 import io.github.drakou111.redstonesolver.core.Box;
 import io.github.drakou111.redstonesolver.core.Cell;
 import io.github.drakou111.redstonesolver.core.CircuitDraft;
+import io.github.drakou111.redstonesolver.core.Dir;
+import io.github.drakou111.redstonesolver.core.Layout;
 import io.github.drakou111.redstonesolver.core.Port;
 import java.util.Optional;
 import net.fabricmc.fabric.api.client.rendering.v1.level.LevelRenderEvents;
@@ -30,6 +32,22 @@ public final class DraftRenderer {
     private static final double LABEL_HEIGHT = 1.25;
     private static final double ARROW_LENGTH = 0.8;
     private static final double CELL_INSET = 0.02;
+    // The solver's circuit so far: see-through shapes in each block's form.
+    private static final int PREVIEW_FILL_ALPHA = 0x50000000;
+    private static final float PREVIEW_LINE_WIDTH = 1.0f;
+    private static final int PREVIEW_BLOCK_COLOR = 0xFF40C8FF;
+    private static final int PREVIEW_GLASS_COLOR = 0xFFB0E8FF;
+    private static final int PREVIEW_SPECIAL_COLOR = 0xFFFFC040;
+    private static final int PREVIEW_DUST_COLOR = 0xFFFF2020;
+    private static final int PREVIEW_REPEATER_COLOR = 0xFFC0C0C0;
+    private static final int PREVIEW_COMPARATOR_COLOR = 0xFFF0F0F0;
+    private static final int PREVIEW_TORCH_COLOR = 0xFFFF8020;
+    private static final double DUST_HEIGHT = 1.0 / 16;
+    private static final double DIODE_HEIGHT = 2.0 / 16;
+    private static final double TORCH_HALF_WIDTH = 1.0 / 16;
+    private static final double TORCH_HEIGHT = 10.0 / 16;
+    private static final double WALL_TORCH_SHIFT = 5.0 / 16;
+    private static final double DIODE_ARROW_LENGTH = 0.6;
 
     private final ClientState state;
 
@@ -60,7 +78,48 @@ public final class DraftRenderer {
             for (Port port : draft.getOutputs()) drawPort(port, OUTPUT_COLOR);
             for (Cell cell : draft.getKeptCells()) Gizmos.cuboid(cellBox(cell), GizmoStyle.stroke(KEPT_COLOR, MARK_LINE_WIDTH));
             for (Cell cell : draft.getEmptyCells()) drawEmpty(cell);
+            this.state.getPreview().ifPresent(DraftRenderer::drawPreview);
         }
+    }
+
+    private static void drawPreview(ClientState.Preview preview) {
+        for (Layout.Block block : preview.layout().blocks()) {
+            Cell p = preview.origin().plus(block.position());
+            double x = p.x();
+            double y = p.y();
+            double z = p.z();
+            switch (block.type()) {
+                case "air", "input", "output", "lever", "button", "lamp" -> {
+                }
+                case "dust" -> shape(new AABB(x, y, z, x + 1, y + DUST_HEIGHT, z + 1), PREVIEW_DUST_COLOR);
+                case "repeater", "comparator" -> {
+                    int color = block.type().equals("repeater") ? PREVIEW_REPEATER_COLOR : PREVIEW_COMPARATOR_COLOR;
+                    shape(new AABB(x, y, z, x + 1, y + DIODE_HEIGHT, z + 1), color);
+                    block.facing().ifPresent(facing -> {
+                        Cell step = facing.offset();
+                        Vec3 center = new Vec3(x + 0.5, y + DIODE_HEIGHT, z + 0.5);
+                        Vec3 half = new Vec3(step.x(), step.y(), step.z()).scale(DIODE_ARROW_LENGTH / 2);
+                        Gizmos.arrow(center.subtract(half), center.add(half), PREVIEW_DUST_COLOR);
+                    });
+                }
+                case "torch" -> {
+                    // A wall torch leans towards the block it hangs on.
+                    Cell lean = block.facing().filter(f -> f.offset().y() == 0).map(Dir::offset).orElse(new Cell(0, 0, 0));
+                    double cx = x + 0.5 + lean.x() * WALL_TORCH_SHIFT;
+                    double cz = z + 0.5 + lean.z() * WALL_TORCH_SHIFT;
+                    shape(new AABB(cx - TORCH_HALF_WIDTH, y, cz - TORCH_HALF_WIDTH, cx + TORCH_HALF_WIDTH,
+                            y + TORCH_HEIGHT, cz + TORCH_HALF_WIDTH), PREVIEW_TORCH_COLOR);
+                }
+                case "solid" -> shape(cellBox(p), PREVIEW_BLOCK_COLOR);
+                case "glass" -> shape(cellBox(p), PREVIEW_GLASS_COLOR);
+                default -> shape(cellBox(p), PREVIEW_SPECIAL_COLOR);
+            }
+        }
+    }
+
+    private static void shape(AABB box, int color) {
+        int fill = (color & 0x00FFFFFF) | PREVIEW_FILL_ALPHA;
+        Gizmos.cuboid(box, GizmoStyle.strokeAndFill(color, PREVIEW_LINE_WIDTH, fill));
     }
 
     private static void drawPort(Port port, int color) {

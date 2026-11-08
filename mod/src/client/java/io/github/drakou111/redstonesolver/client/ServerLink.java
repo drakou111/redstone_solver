@@ -8,6 +8,7 @@ import io.github.drakou111.redstonesolver.core.Box;
 import io.github.drakou111.redstonesolver.core.Cell;
 import io.github.drakou111.redstonesolver.core.CircuitDraft;
 import io.github.drakou111.redstonesolver.core.Dir;
+import io.github.drakou111.redstonesolver.core.Layout;
 import io.github.drakou111.redstonesolver.core.ProgressLine;
 import io.github.drakou111.redstonesolver.net.SolverPayloads.ToClient;
 import io.github.drakou111.redstonesolver.net.SolverPayloads.ToServer;
@@ -211,6 +212,8 @@ public final class ServerLink {
                 this.state.setProgress(text);
                 player.sendOverlayMessage(Chat.hint(text));
             }
+            case "preview" -> this.state.setPreview(new ClientState.Preview(Cell.fromJson(json.get("origin")),
+                    Layout.fromJson(json.getAsJsonObject("layout"))));
             case "result" -> this.onResult(player, json);
             case "placed" -> {
                 player.sendSystemMessage(Chat.good("Placed. Drive the inputs with levers to test it."));

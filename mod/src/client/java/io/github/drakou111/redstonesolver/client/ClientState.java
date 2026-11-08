@@ -1,7 +1,9 @@
 package io.github.drakou111.redstonesolver.client;
 
 import com.google.gson.JsonObject;
+import io.github.drakou111.redstonesolver.core.Cell;
 import io.github.drakou111.redstonesolver.core.CircuitDraft;
+import io.github.drakou111.redstonesolver.core.Layout;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
@@ -24,6 +26,11 @@ public final class ClientState {
     private boolean showOutlines = true;
     private boolean solving;
     private String progress = "";
+    private Optional<Preview> preview = Optional.empty();
+
+    /** The solver's circuit so far and the world cell its lowest corner sits at. */
+    public record Preview(Cell origin, Layout layout) {
+    }
     private final List<JsonObject> results = new ArrayList<>(); // newest last
     private int selected = -1;
     private Method method = Method.SOLVE;
@@ -107,7 +114,17 @@ public final class ClientState {
         this.solving = solving;
         this.cancelling = false;
         this.version++;
+        this.preview = Optional.empty();
         if (!solving) this.progress = "";
+    }
+
+    /** What the running job has so far, drawn in the world until it ends. */
+    public Optional<Preview> getPreview() {
+        return this.preview;
+    }
+
+    public void setPreview(Preview preview) {
+        this.preview = this.solving ? Optional.of(preview) : Optional.empty();
     }
 
     public String getProgress() {
