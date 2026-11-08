@@ -16,6 +16,8 @@ constexpr int kKinds = kDustKinds + 4;     // then a repeater per facing
 constexpr int kDustCost = 2;               // dust and its block
 constexpr int kSlopeCost = 1;              // extra for changing level
 constexpr int kRepeaterCost = 3;
+// Extra for rebuilding another wire to cross it on the same level.
+constexpr int kRewireCost = 4;
 constexpr int kNoParent = -1;
 
 int horizontal_index(Dir d) {
@@ -33,6 +35,9 @@ struct Step {
   bool isolated = false; // a repeater lies between the start and here
   bool placed = true;
   std::optional<Vec3> keep_air; // must stay empty (a slope's corner)
+  // A repeater crossing another wire below it: that wire's cells beside the
+  // block become repeaters facing this way (its signal's direction).
+  std::optional<Dir> rewire;
   int parent = kNoParent;
   int cost = 0;
 };
@@ -99,8 +104,8 @@ WireRouter::WireRouter(const Cells &cells, std::function<bool(Vec3)> blocked,
 
 std::optional<std::vector<std::pair<Vec3, Block>>>
 WireRouter::route(const std::vector<WireStart> &starts,
-                  const std::set<std::array<int, 3>> &own,
-                  const WireGoal &goal) const {
+                  const std::set<std::array<int, 3>> &own, const WireGoal &goal,
+                  const std::map<std::array<int, 3>, int> &strengths) const {
   const Vec3 low = this->options_.low;
   const Vec3 high = this->options_.high;
   Area area(this->cells_, low, high);
@@ -160,6 +165,20 @@ WireRouter::route(const std::vector<WireStart> &starts,
   auto on_path = [&](Vec3 p) {
     return area.contains(p) && stamp[area.index(p)] == expansion;
   };
+  // Cells a crossing is about to rebuild: seen as their new blocks.
+  std::vector<std::pair<Vec3, Block>> overlay;
+  auto look = [&](Vec3 p) -> std::optional<Block> {
+    for (const auto &[cell, block] : overlay)
+      if (cell == p)
+        return block;
+    return area.at(p);
+  };
+  auto strength_at = [&](Vec3 p) -> std::optional<int> {
+    auto it = strengths.find({p.x, p.y, p.z});
+    if (it == strengths.end())
+      return std::nullopt;
+    return it->second;
+  };
 
   // Can a wire cell go at `q` (on a new block at q - up), coming from the
   // step `from`, whose cells it may touch? `repeater`: the cell holds a
@@ -185,7 +204,7 @@ WireRouter::route(const std::vector<WireStart> &starts,
         return true; // the start's own block
       if (on_path(n))
         return false;
-      std::optional<Block> b = area.at(n);
+      std::optional<Block> b = look(n);
       if (!b)
         return true;
       if (at_goal && goal.kind == GoalKind::Feed &&
@@ -266,6 +285,11 @@ WireRouter::route(const std::vector<WireStart> &starts,
           stamp[area.index(c)] = expansion;
       if (s.keep_air && area.contains(*s.keep_air))
         stamp[area.index(*s.keep_air)] = expansion;
+      if (s.rewire)
+        for (Vec3 c : {s.cell - kUp - offset(*s.rewire),
+                       s.cell - kUp + offset(*s.rewire)})
+          if (area.contains(c))
+            stamp[area.index(c)] = expansion;
     }
 
     auto push = [&](Vec3 q, int kind, bool isolated, int cost,
@@ -300,6 +324,92 @@ WireRouter::route(const std::vector<WireStart> &starts,
       open.push({cost + estimate(q), static_cast<int>(steps.size()) - 1});
     };
 
+    // Over a straight dust line one level down, heading `h`: dust at a,
+    // a repeater at r on the line's cell c (now a block, the line's
+    // neighbours of c repeaters), dust at b.
+    auto cross_level = [&](Dir h) {
+      const Vec3 a = current.cell + offset(h);
+      const Vec3 r = a + offset(h);
+      const Vec3 b = r + offset(h);
+      const Vec3 c = r - kUp;
+      if (c.y < low.y || at_goal_cell(a) || at_goal_cell(r))
+        return;
+      std::optional<Block> line = area.at(c);
+      if (!line || line->type != BlockType::Dust || area.own(c) || on_path(c))
+        return;
+      const Dir d = rotate_clockwise(h);
+      const Vec3 before = c - offset(d);
+      const Vec3 after = c + offset(d);
+      for (Vec3 p : {before, after, before - offset(d), after + offset(d)}) {
+        std::optional<Block> x = area.at(p);
+        if (!x || x->type != BlockType::Dust || on_path(p))
+          return;
+      }
+      std::optional<int> s_before = strength_at(before);
+      std::optional<int> s_after = strength_at(after);
+      if (!s_before || !s_after || *s_before == *s_after)
+        return;
+      const Dir flow = *s_before > *s_after ? d : opposite(d);
+      // The line runs straight there: nothing else joins it beside c.
+      for (Vec3 p : {before, after})
+        for (Dir side : {h, opposite(h)})
+          for (int dy = -1; dy <= 1; ++dy) {
+            Vec3 n = p + offset(side) + Vec3{0, dy, 0};
+            std::optional<Block> x = area.at(n);
+            if (x && is_dust(*x))
+              return;
+          }
+      if (!in_bounds(r) || area.at(r) || this->blocked_(r) || on_path(r))
+        return;
+      for (Vec3 n : {r - offset(d), r + offset(d), r + kUp})
+        if (on_path(n) ||
+            (area.at(n) && !(area.at(n)->type == BlockType::Solid ||
+                             area.at(n)->type == BlockType::Glass)))
+          return;
+
+      overlay = {{c, Block::solid()}};
+      bool a_fits = fits(a, current, std::nullopt, false, std::nullopt);
+      if (!a_fits) {
+        overlay.clear();
+        return;
+      }
+      Step step_a;
+      step_a.cell = a;
+      step_a.kind = current.kind - 1;
+      step_a.isolated = current.isolated;
+      step_a.parent = index;
+      Step step_r;
+      step_r.cell = r;
+      step_r.kind = kDustKinds + horizontal_index(h);
+      step_r.isolated = true;
+      step_r.rewire = flow;
+      overlay = {{c, Block::solid()},
+                 {before, Block::repeater(flow)},
+                 {after, Block::repeater(flow)}};
+      bool b_fits =
+          fits(b, step_r, std::nullopt, at_goal_cell(b), std::nullopt);
+      overlay.clear();
+      if (!b_fits)
+        return;
+      const int cost =
+          current.cost + 2 * kDustCost + kRepeaterCost + kRewireCost;
+      std::size_t key = state_index(b, kMaxSignal, true);
+      if (best[key] <= cost)
+        return;
+      best[key] = cost;
+      steps.push_back(step_a);
+      step_r.parent = static_cast<int>(steps.size()) - 1;
+      steps.push_back(step_r);
+      Step step_b;
+      step_b.cell = b;
+      step_b.kind = kMaxSignal;
+      step_b.isolated = true;
+      step_b.parent = static_cast<int>(steps.size()) - 1;
+      step_b.cost = cost;
+      steps.push_back(step_b);
+      open.push({cost + estimate(b), static_cast<int>(steps.size()) - 1});
+    };
+
     if (is_repeater_kind(current.kind)) {
       // A repeater's signal leaves straight ahead only.
       Dir h = kHorizontalDirs[current.kind - kDustKinds];
@@ -323,6 +433,8 @@ WireRouter::route(const std::vector<WireStart> &starts,
         if (this->options_.repeaters)
           push(flat, kDustKinds + horizontal_index(h), true,
                current.cost + kRepeaterCost, std::nullopt);
+        if (strength > 1 && this->options_.repeaters && !strengths.empty())
+          cross_level(h);
       }
     }
   }
@@ -339,6 +451,11 @@ WireRouter::route(const std::vector<WireStart> &starts,
                      : Block::dust();
     blocks.emplace_back(s.cell, wire);
     blocks.emplace_back(s.cell - kUp, Block::solid());
+    if (s.rewire) {
+      Vec3 c = s.cell - kUp;
+      blocks.emplace_back(c - offset(*s.rewire), Block::repeater(*s.rewire));
+      blocks.emplace_back(c + offset(*s.rewire), Block::repeater(*s.rewire));
+    }
   }
   std::reverse(blocks.begin(), blocks.end());
   return blocks;

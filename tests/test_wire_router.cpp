@@ -219,3 +219,41 @@ TEST_CASE("the wire router slips a repeater past a wire beside it") {
       CHECK((sim.output(1) > 0) == (b == 1));
     }
 }
+
+TEST_CASE("the wire router crosses another wire in three layers") {
+  // The other signal runs south along x = 5; with its strengths known the
+  // router turns three of its cells into repeater, block, repeater.
+  Board board({12, 3, 9}, 1, 10, 7);
+  board.cells[key({5, 1, 0})] =
+      Block::input(1, InputKind::Repeater, Dir::South);
+  board.cells[key({5, 0, 0})] = Block::solid();
+  std::map<std::array<int, 3>, int> strengths;
+  for (int z = 1; z <= 7; ++z) {
+    board.cells[key({5, 1, z})] = Block::dust();
+    board.cells[key({5, 0, z})] = Block::solid();
+    strengths[key({5, 1, z})] = kMaxSignal + 1 - z;
+  }
+  board.cells[key({5, 1, 8})] = Block::output(1, OutputKind::Dust);
+  board.cells[key({5, 0, 8})] = Block::solid();
+
+  WireRouterOptions options;
+  options.low = {1, 1, 0};
+  options.high = {11, 2, 8};
+  WireRouter router(board.cells, [](Vec3) { return false; }, options);
+  CHECK_FALSE(
+      router.route({{board.port, kMaxSignal, Dir::East}}, {}, board.goal));
+  auto wire = router.route({{board.port, kMaxSignal, Dir::East}}, {},
+                           board.goal, strengths);
+  REQUIRE(wire);
+  board.add(*wire);
+  World world = board.world();
+  Simulator sim(world);
+  for (int a : {0, 1})
+    for (int b : {0, 1}) {
+      sim.set_input(0, a * kMaxSignal);
+      sim.set_input(1, b * kMaxSignal);
+      REQUIRE(sim.run_until_quiet(kSettleTicks));
+      CHECK((sim.output(0) > 0) == (a == 1));
+      CHECK((sim.output(1) > 0) == (b == 1));
+    }
+}

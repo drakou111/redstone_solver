@@ -285,6 +285,12 @@ std::optional<ComposeResult> compose_flush(const Netlist &netlist,
       cells[key(cell)] = Block::repeater(Dir::East);
       cells[key(cell - Vec3{0, 1, 0})] = Block::solid();
     }
+    // Every signal's dust and its strength: wires may cross other wires
+    // on the level below by rebuilding them.
+    std::map<std::array<int, 3>, int> strengths;
+    for (const auto &[node, dust] : signals)
+      for (const auto &[cell, strength] : dust)
+        strengths[key(cell)] = strength;
     // A joined-wire OR: each signal leaves through a repeater (strength 1
     // at the start allows nothing else), so neither flows back into the
     // other's wire; the first wire ends in dust at the meeting cell, the
@@ -322,7 +328,7 @@ std::optional<ComposeResult> compose_flush(const Netlist &netlist,
         goal.kind = first_join ? WireGoal::Kind::Dust : WireGoal::Kind::Join;
         first_join = false;
       }
-      auto wire = router.route(starts, own, goal);
+      auto wire = router.route(starts, own, goal, strengths);
       if (!wire) {
         why = std::format("no path from x {} z {} to x {} z {}", r.from.x,
                           r.from.z, r.to.x, r.to.z);

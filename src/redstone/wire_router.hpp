@@ -59,9 +59,15 @@ public:
   // The blocks of a wire from any start to the goal (wire cells and the
   // blocks they stand on), or nothing. `own`: cells carrying the same
   // signal, which the wire may touch until its first repeater.
+  // `strengths`: the weakest the other signals' dust is when on. With it, a
+  // wire may also cross a straight dust line one level below it: the line
+  // becomes repeater, block, repeater (its signal passes through the
+  // block) and the wire goes over as a repeater on that block. The blocks
+  // returned then also replace those cells of the other line.
   std::optional<std::vector<std::pair<Vec3, Block>>>
   route(const std::vector<WireStart> &starts,
-        const std::set<std::array<int, 3>> &own, const WireGoal &goal) const;
+        const std::set<std::array<int, 3>> &own, const WireGoal &goal,
+        const std::map<std::array<int, 3>, int> &strengths = {}) const;
 
 private:
   const Cells &cells_;
