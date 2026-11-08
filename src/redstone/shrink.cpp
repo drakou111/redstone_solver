@@ -121,6 +121,62 @@ constexpr std::array<Phase, 3> kPhases{{{1, 15.0, "near the cut"},
                                         {2, 40.0, "around the cut"},
                                         {0, 0.0, "whole circuit"}}};
 
+int cells(Vec3 size) { return size.x * size.y * size.z; }
+
+// How often a dead end may send the search back a step.
+constexpr int kMaxBacktracks = 3;
+
+// One verified box on the shrink's path and the cuts tried from it.
+struct ShrinkNode {
+  Spec spec;
+  World layout;
+  std::vector<Attempt> attempts;
+  std::vector<bool> finished; // solved or failed in full
+};
+
+// Cuts with the fewest blocks in the removed slice first, each repaired near
+// the seam first and in the whole circuit last.
+ShrinkNode make_node(Spec spec, World layout, const ShrinkOptions &options) {
+  struct Cut {
+    Spec spec;
+    int axis;
+    int index;
+    int blocks;
+  };
+  std::vector<Cut> cuts;
+  for (int axis = 0; axis < 3; ++axis)
+    for (int k = 0; k < component(spec.size, axis); ++k)
+      if (auto cut = cut_slice(spec, axis, k)) {
+        int blocks = 0;
+        for (const auto &[p, block] : spec.hints)
+          blocks += coordinate(p, axis) == k ? 1 : 0;
+        cuts.push_back({std::move(*cut), axis, k, blocks});
+      }
+  std::stable_sort(cuts.begin(), cuts.end(), [](const Cut &a, const Cut &b) {
+    return a.blocks < b.blocks;
+  });
+  std::vector<Attempt> attempts;
+  for (const Phase &phase : kPhases)
+    for (const Cut &cut : cuts) {
+      std::string name = std::format("{} = {} ({})", kAxisNames[cut.axis],
+                                     cut.index, phase.name);
+      double seconds = phase.half_width == 0
+                           ? options.cut_seconds
+                           : std::min(options.cut_seconds, phase.seconds);
+      if (phase.half_width == 0) {
+        attempts.push_back({cut.spec, cut.spec, std::move(name), seconds});
+        continue;
+      }
+      if (auto local =
+              near_seam(cut.spec, cut.axis, cut.index, phase.half_width))
+        attempts.push_back(
+            {std::move(*local), cut.spec, std::move(name), seconds});
+    }
+  std::vector<bool> finished(attempts.size(), false);
+  return {std::move(spec), std::move(layout), std::move(attempts),
+          std::move(finished)};
+}
+
 } // namespace
 
 std::optional<Spec> cut_slice(const Spec &spec, int axis, int index) {
@@ -203,70 +259,51 @@ ShrinkResult shrink(const Spec &spec, const World &layout,
       progress(message);
   };
   auto cancelled = [&] { return options.cancel && options.cancel->load(); };
+  auto out_of_time = [&] { return cancelled() || Clock::now() >= deadline; };
 
-  ShrinkResult result{spec_with_layout(spec, layout), layout, 0};
-  while (!cancelled() && Clock::now() < deadline) {
-    // Cuts with the fewest blocks in the removed slice first.
-    struct Cut {
-      Spec spec;
-      int axis;
-      int index;
-      int blocks;
-    };
-    std::vector<Cut> cuts;
-    for (int axis = 0; axis < 3; ++axis)
-      for (int k = 0; k < component(result.spec.size, axis); ++k)
-        if (auto cut = cut_slice(result.spec, axis, k)) {
-          int blocks = 0;
-          for (const auto &[p, block] : result.spec.hints)
-            blocks += coordinate(p, axis) == k ? 1 : 0;
-          cuts.push_back({std::move(*cut), axis, k, blocks});
-        }
-    std::stable_sort(cuts.begin(), cuts.end(), [](const Cut &a, const Cut &b) {
-      return a.blocks < b.blocks;
-    });
-    std::vector<Attempt> attempts;
-    for (const Phase &phase : kPhases)
-      for (const Cut &cut : cuts) {
-        std::string name = std::format("{} = {} ({})", kAxisNames[cut.axis],
-                                       cut.index, phase.name);
-        double seconds = phase.half_width == 0
-                             ? options.cut_seconds
-                             : std::min(options.cut_seconds, phase.seconds);
-        if (phase.half_width == 0) {
-          attempts.push_back({cut.spec, cut.spec, std::move(name), seconds});
-          continue;
-        }
-        if (auto local =
-                near_seam(cut.spec, cut.axis, cut.index, phase.half_width))
-          attempts.push_back(
-              {std::move(*local), cut.spec, std::move(name), seconds});
-      }
-    say(std::format("{}x{}x{}: trying {} cuts", result.spec.size.x,
-                    result.spec.size.y, result.spec.size.z, cuts.size()));
+  // A depth-first search: a dead end goes back to the box before it and
+  // tries the cuts there that were not tried or not finished.
+  std::vector<ShrinkNode> path;
+  path.push_back(make_node(spec_with_layout(spec, layout), layout, options));
+  ShrinkResult best{path.back().spec, layout, 0};
+  int backtracks = 0;
+  while (!path.empty() && !out_of_time()) {
+    ShrinkNode &node = path.back();
+    std::vector<std::size_t> pending;
+    for (std::size_t i = 0; i < node.attempts.size(); ++i)
+      if (!node.finished[i])
+        pending.push_back(i);
+    say(std::format("{}x{}x{}: trying {} cuts", node.spec.size.x,
+                    node.spec.size.y, node.spec.size.z, pending.size()));
 
     // Workers take cuts in turn; the first verified one stops the rest.
     std::atomic<bool> stop = false;
     std::atomic<std::size_t> next = 0;
     std::mutex mutex;
-    std::optional<std::pair<Spec, World>> found;
+    std::optional<std::pair<std::size_t, World>> found;
     auto worker = [&] {
-      for (std::size_t i = next++; i < attempts.size() && !stop; i = next++) {
+      for (std::size_t k = next++; k < pending.size() && !stop; k = next++) {
+        std::size_t i = pending[k];
         double left =
             std::chrono::duration<double>(deadline - Clock::now()).count();
         if (left <= 0)
           return;
         SolverOptions solver = options.solver;
-        solver.time_limit_seconds = std::min(attempts[i].seconds, left);
+        solver.time_limit_seconds = std::min(node.attempts[i].seconds, left);
         solver.stop_at_first = true;
         solver.cancel = &stop;
-        SolveReport report = solve(attempts[i].spec, solver);
-        if (!report.solution)
-          continue;
+        SolveReport report = solve(node.attempts[i].spec, solver);
         std::lock_guard lock(mutex);
+        if (!report.solution) {
+          // Stopped early by another success: worth trying again later.
+          if (!stop)
+            node.finished[i] = true;
+          continue;
+        }
+        node.finished[i] = true;
         if (!found) {
-          found.emplace(attempts[i].base, report.solution->layout);
-          say("removed " + attempts[i].name);
+          found.emplace(i, report.solution->layout);
+          say("removed " + node.attempts[i].name);
           stop = true;
         }
       }
@@ -276,20 +313,36 @@ ShrinkResult shrink(const Spec &spec, const World &layout,
       workers.push_back(std::async(std::launch::async, worker));
     for (auto &w : workers)
       while (w.wait_for(kCancelPollInterval) != std::future_status::ready)
-        if (cancelled() || Clock::now() >= deadline)
+        if (out_of_time())
           stop = true;
 
-    if (!found) {
-      say(cancelled()                ? "cancelled"
-          : Clock::now() >= deadline ? "out of time"
-                                     : "no cut works");
+    if (found) {
+      Spec base = node.attempts[found->first].base;
+      Spec next_spec = spec_with_layout(base, found->second);
+      path.push_back(
+          make_node(std::move(next_spec), std::move(found->second), options));
+      const ShrinkNode &child = path.back();
+      if (cells(child.spec.size) < cells(best.spec.size))
+        best = {child.spec, child.layout, static_cast<int>(path.size()) - 1};
+      continue;
+    }
+    if (out_of_time())
+      break;
+    path.pop_back();
+    if (path.empty() || backtracks >= kMaxBacktracks) {
+      say("no cut works");
       break;
     }
-    result.spec = spec_with_layout(found->first, found->second);
-    result.layout = std::move(found->second);
-    ++result.steps;
+    ++backtracks;
+    say(std::format("dead end; back to {}x{}x{} for the other cuts",
+                    path.back().spec.size.x, path.back().spec.size.y,
+                    path.back().spec.size.z));
   }
-  return result;
+  if (cancelled())
+    say("cancelled");
+  else if (Clock::now() >= deadline)
+    say("out of time");
+  return best;
 }
 
 } // namespace rs

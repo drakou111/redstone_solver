@@ -42,8 +42,10 @@ Spec spec_with_layout(const Spec &spec, const World &layout);
 
 // Removes one slice at a time from a verified layout: every cut is tried
 // (several at once) with the layout as a sketch, the first one the solver
-// verifies is kept, and the search starts again from it, until no cut
-// works, the time runs out or `cancel` is set.
+// verifies is kept, and the search starts again from it. At a dead end it
+// goes back a step and tries the other cuts there (a few times at most).
+// Ends when no cut works, the time runs out or `cancel` is set, with the
+// smallest layout found.
 ShrinkResult shrink(const Spec &spec, const World &layout,
                     const ShrinkOptions &options,
                     const ProgressCallback &progress = {});
