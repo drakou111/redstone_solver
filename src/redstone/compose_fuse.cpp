@@ -120,8 +120,11 @@ std::vector<Item> items_for(const Netlist &netlist,
 
 // Items in signal order as groups: 2-input gates of one level that read the
 // same signals share a module (as group_gates does); a fused piece is a
-// module of its own.
-std::vector<Group> groups_of(std::vector<Item> items) {
+// module of its own. `late` places everything as late as its readers allow
+// and fused pieces after the gates of their step: a 3-input module's input
+// rows are often next to each other, which leaves no room to branch off its
+// wires, so it is better placed when its signals are already there.
+std::vector<Group> groups_of(std::vector<Item> items, bool late) {
   std::map<int, int> level;
   std::map<int, const Item *> by_node;
   for (const Item &item : items)
@@ -138,12 +141,37 @@ std::vector<Group> groups_of(std::vector<Item> items) {
     level[node] = deepest + 1;
     return deepest + 1;
   };
+  int top = 0;
   for (const Item &item : items)
-    level_of(item.node);
+    top = std::max(top, level_of(item.node));
+  if (late) {
+    std::map<int, std::vector<int>> readers;
+    for (const Item &item : items)
+      for (int operand : item.operands)
+        readers[operand].push_back(item.node);
+    std::map<int, int> latest;
+    std::function<int(int)> latest_of = [&](int node) {
+      if (auto known = latest.find(node); known != latest.end())
+        return known->second;
+      int step = top;
+      for (int reader : readers[node])
+        step = std::min(step, latest_of(reader) - 1);
+      latest[node] = step;
+      return step;
+    };
+    for (const Item &item : items)
+      latest_of(item.node);
+    level = std::move(latest);
+  }
+  auto fused = [&](const Item &item) {
+    return late && item.operands.size() > 2 ? 1 : 0;
+  };
   std::stable_sort(items.begin(), items.end(),
                    [&](const Item &a, const Item &b) {
                      if (level[a.node] != level[b.node])
                        return level[a.node] < level[b.node];
+                     if (fused(a) != fused(b))
+                       return fused(a) < fused(b);
                      return a.node < b.node;
                    });
   std::vector<Group> groups;
@@ -227,12 +255,23 @@ fused_groupings(const Netlist &netlist,
                    [](const std::vector<Item> &a, const std::vector<Item> &b) {
                      return a.size() < b.size();
                    });
+  // Each grouping in signal order and, when it differs, placed late.
+  auto same = [](const std::vector<Group> &a, const std::vector<Group> &b) {
+    return std::equal(a.begin(), a.end(), b.begin(), b.end(),
+                      [](const Group &x, const Group &y) {
+                        return x.operands == y.operands && x.nodes == y.nodes;
+                      });
+  };
   std::vector<std::vector<Group>> groupings;
-  for (std::vector<Item> &items : ranked) {
-    if (static_cast<int>(groupings.size()) >= max_groupings)
-      break;
-    groupings.push_back(groups_of(std::move(items)));
-  }
+  for (const std::vector<Item> &items : ranked)
+    for (bool late : {false, true}) {
+      if (static_cast<int>(groupings.size()) >= max_groupings)
+        return groupings;
+      std::vector<Group> groups = groups_of(items, late);
+      if (late && same(groups, groupings.back()))
+        continue;
+      groupings.push_back(std::move(groups));
+    }
   return groupings;
 }
 

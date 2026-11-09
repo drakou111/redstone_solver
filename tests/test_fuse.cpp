@@ -54,6 +54,21 @@ TEST_CASE("a full adder fuses into a 3-input XOR and a majority") {
   CHECK(best[0].functions[0] != best[1].functions[0]);
 }
 
+TEST_CASE("a fused piece is also placed after the gates it shares inputs "
+          "with") {
+  // Only the carry fuses: a XOR b, then sum, then the majority.
+  std::vector<std::vector<Group>> groupings = fused_groupings(
+      full_adder(), [](std::uint8_t f) { return f == kMajorityFunction; }, 4);
+  REQUIRE(groupings.size() == 2);
+  // In signal order the majority (one step from the inputs) comes second.
+  REQUIRE(groupings[0].size() == 3);
+  CHECK(groupings[0][1].functions[0] == kMajorityFunction);
+  // Placed late it comes last, after the sum.
+  REQUIRE(groupings[1].size() == 3);
+  CHECK(groupings[1][2].functions[0] == kMajorityFunction);
+  CHECK(groupings[1][1].nodes == std::vector<int>{4});
+}
+
 TEST_CASE("a piece whose gates are needed anyway is not fused") {
   // The sum as one XOR3 still leaves a XOR b for the carry: nothing saved.
   CHECK(fused_groupings(

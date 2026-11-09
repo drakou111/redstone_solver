@@ -201,7 +201,7 @@ bool smaller(const ComposeResult &a, const ComposeResult &b) {
 }
 
 // Fused groupings tried (fewest modules first) and builds of each.
-constexpr int kMaxFusedGroupings = 4;
+constexpr int kMaxFusedGroupings = 6;
 constexpr int kFusedSeeds = 4;
 
 // The plain flush build and, when the router draws the wires (each build
@@ -258,15 +258,21 @@ flush_variants(const Netlist &netlist, const BoolTable &table,
     }));
   }
   const std::size_t plain_builds = variants.size();
-  for (const std::vector<Group> &grouping : fused)
+  // The last word of each grouping's first build: why it found no place.
+  std::vector<std::string> fused_last(fused.size());
+  for (std::size_t g = 0; g < fused.size(); ++g)
     for (int seed = 0; seed < kFusedSeeds; ++seed) {
       NetlistComposeOptions o = first;
       o.flush_seed = seed;
       o.flush_sat = false;
       o.preview = {};
+      ProgressCallback note;
+      if (seed == 0)
+        note = [&last = fused_last[g]](std::string_view m) { last = m; };
       variants.push_back(
-          std::async(std::launch::async, [&netlist, &table, &grouping, o] {
-            return compose_flush_groups(netlist, table, grouping, o, {});
+          std::async(std::launch::async, [&netlist, &table,
+                                          &grouping = fused[g], o, note] {
+            return compose_flush_groups(netlist, table, grouping, o, note);
           }));
     }
   const bool timed = options.timing.earliest || options.timing.latest;
@@ -280,8 +286,15 @@ flush_variants(const Netlist &netlist, const BoolTable &table,
   };
   bool best_meets = best && meets_timing(*best);
   bool best_fused = false;
+  std::vector<std::optional<Vec3>> fused_best(fused.size());
   for (std::size_t v = 0; v < variants.size(); ++v) {
     std::optional<ComposeResult> result = variants[v].get();
+    if (v >= plain_builds && result) {
+      std::optional<Vec3> &kept = fused_best[(v - plain_builds) / kFusedSeeds];
+      const Vec3 size = result->layout.size();
+      if (!kept || size.x * size.z < kept->x * kept->z)
+        kept = size;
+    }
     if (!result)
       continue;
     bool meets = meets_timing(*result);
@@ -292,6 +305,14 @@ flush_variants(const Netlist &netlist, const BoolTable &table,
       best_fused = v >= plain_builds;
     }
   }
+  if (progress)
+    for (std::size_t g = 0; g < fused.size(); ++g)
+      progress(fused_best[g]
+                   ? std::format("flush: with 3-input modules ({}): {}x{}x{}",
+                                 g + 1, fused_best[g]->x, fused_best[g]->y,
+                                 fused_best[g]->z)
+                   : std::format("flush: with 3-input modules ({}): {}", g + 1,
+                                 fused_last[g]));
   if (progress && best) {
     Vec3 size = best->layout.size();
     progress(std::format(
