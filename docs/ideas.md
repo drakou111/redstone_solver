@@ -45,6 +45,31 @@ rest are open.
    compact modules (XOR in 3x2x3 using a comparator subtract, etc.) found by
    long offline searches, stored like the circuit library.
 
+## Why SAT misses circuits of 3+ stages (2026-11-09)
+
+Measured on library circuits in their own boxes and ports (xor3 7x2x4,
+full adder 7x2x6, exactly-one 5x2x5):
+
+- The encoding admits them: with the layout as hints each solves in < 1 s.
+- From scratch none is found: 4 seeds, lazy cases, CP-SAT, an hour per
+  seed (16 runs) all fail.
+- With a random half of the blocks kept fixed most solve in seconds; with a
+  quarter none do. SAT repairs well and searches badly.
+- Signal-loop ranks cost a lot on small specs (loops allowed: candidates in
+  under a second); a loop-watching propagator (option lazy_loops) helps some
+  small specs and hurts others, and does not reach the 3-stage ones.
+
+So: start from a working circuit and repair. Done: shrink diversifies at a
+dead end (other circuits in the same box, half kept). Open:
+
+1. **Cut repair with hard keeps.** The whole-circuit cut phase drops its
+   sketch after a few seconds and then searches from scratch, which is
+   hopeless here; random kept halves would stay in the regime SAT handles.
+   (A first test on FA/xor3 cuts found nothing: 77 of 126 proven impossible
+   in seconds, so smaller circuits are not one cut away.)
+2. **Many starting circuits.** Compose variants, catalog modules and library
+   circuits as starting points for the diversified shrink, not just one.
+
 ## Speed
 
 1. **Done: parallel shrink** (half the threads), both variants side by side,
