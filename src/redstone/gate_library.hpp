@@ -18,10 +18,11 @@ namespace rs {
 // Gates of the same inputs built by the solver as one module, ready to be
 // placed: inputs are repeaters at ins[k] facing into the module (on the
 // west face, or the north or south face, see module_input_facing), output i
-// is dust on the east face at outs[i]. Function i is its truth table: bit
+// is dust at outs[i] (on the east face, or the north or south face, see
+// module_output_facing). Function i is its truth table: bit
 // (v0 << (k - 1)) | ... | v(k-1) for input values v (so for two inputs, bit
-// (a << 1) | b). The west and east faces, and a north or south face with an
-// input, are empty but for the ports, so modules can sit next to each other
+// (a << 1) | b). The west and east faces, and a north or south face with a
+// port, are empty but for the ports, so modules can sit next to each other
 // and wires can run along them; sharing inputs inside one module keeps
 // wires that feed several gates out of the channels.
 struct GateModule {
@@ -40,6 +41,11 @@ std::uint8_t permute_function(std::uint8_t function, int inputs,
 // the west face (x 0), else south on the north face (z 0) or north on the
 // south face.
 Dir module_input_facing(Vec3 size, Vec3 in);
+
+// The way the signal of the output dust at `out` leaves a module of `size`:
+// east from the east face, else north from the north face (z 0) or south
+// from the south face.
+Dir module_output_facing(Vec3 size, Vec3 out);
 
 // Whether the function's value changes with each of its inputs.
 bool depends_on_all(std::uint8_t function, int inputs);
@@ -73,22 +79,23 @@ private:
 std::string gate_cache_key(const std::vector<std::uint8_t> &functions,
                            const GateLibraryOptions &options);
 
-// Where a module's ports sit, all at height 1: input repeaters at these
-// cells (see module_input_facing) and output dust on the east face in these
-// rows (z).
+// Where a module's ports sit, all at height 1: input repeaters and output
+// dust at these cells (see module_input_facing, module_output_facing).
 struct GateArrangement {
   Vec3 size{};
   std::vector<Vec3> ins;
-  std::vector<int> out_rows;
+  std::vector<Vec3> outs;
 };
 
 // Every arrangement in a box of `size` for `inputs` inputs and `outputs`
-// outputs, output rows no two next to each other. Inputs sit on the west
-// face and, with `sides` (boxes 3 deep or more), also on the north and
-// south faces between the corners. Two inputs take any two places in either
-// order; three or more take them in one order only, west rows first (the
-// same gate with its inputs in another order is another truth table, see
-// permute_function).
+// outputs. Inputs sit on the west face, outputs on the east face, no two
+// outputs next to each other; with `sides` (boxes 3 deep or more) both may
+// also sit on the north and south faces between the corners, where no input
+// feeds an output or another input directly. Two inputs take any two places
+// in either order; three or more take them in one order only, west rows
+// first (the same gate with its inputs in another order is another truth
+// table, see permute_function). Outputs take theirs in one order, but in
+// any order with `sides`.
 std::vector<GateArrangement> gate_arrangements(Vec3 size, int inputs,
                                                int outputs, bool sides = false);
 

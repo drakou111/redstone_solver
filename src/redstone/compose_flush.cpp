@@ -105,6 +105,7 @@ struct Spot {
   long score = 0;
   bool join = false;
   std::vector<Vec3> outputs;          // where the gate's signals leave
+  std::vector<Dir> output_ways;       // and the way they go
   const GateModule *module = nullptr; // nothing for a join
 };
 
@@ -113,6 +114,7 @@ struct FlushState {
   Cells placed;
   std::vector<Footprint> footprints;
   std::vector<std::optional<Vec3>> source; // where a signal leaves
+  std::vector<Dir> leaves;                 // the way it goes from there
   std::vector<std::optional<Vec3>> port;   // input port cells
   int next_free_z = 0;
 };
@@ -308,6 +310,7 @@ std::optional<ComposeResult> compose_parts::compose_flush_groups(
   // them, and the smallest few results go on to the next gate.
   std::vector<FlushState> beam(1);
   beam[0].source.resize(nodes);
+  beam[0].leaves.resize(nodes, Dir::East);
   beam[0].port.resize(n);
   beam[0].next_free_z = kMarginZ;
   const int beam_width = std::max(1, options.flush_beam);
@@ -446,14 +449,18 @@ std::optional<ComposeResult> compose_parts::compose_flush_groups(
       if (functions == group.functions && modules->contains(functions) &&
           arity == 2)
         variants.push_back({&modules->at(functions), ops});
-      // Modules fed from the side need the router to reach their inputs.
+      // Modules with ports on the north or south face need the router.
       if (options.catalog)
         for (const GateModule &m :
              catalog_modules.emplace_back(options.catalog->variants(
                  catalog_key(options.palette, options.solver.verification),
                  arity, functions, height)))
-          if (use_router || std::all_of(m.ins.begin(), m.ins.end(),
-                                        [](Vec3 in) { return in.x == 0; }))
+          if (use_router ||
+              (std::all_of(m.ins.begin(), m.ins.end(),
+                           [](Vec3 in) { return in.x == 0; }) &&
+               std::all_of(m.outs.begin(), m.outs.end(), [&](Vec3 out) {
+                 return out.x == m.layout.size().x - 1;
+               })))
             variants.push_back({&m, ops});
     } while (std::next_permutation(order.begin(), order.end()));
     const std::string names = group_name(group);
@@ -499,6 +506,15 @@ std::optional<ComposeResult> compose_parts::compose_flush_groups(
           if (!source[op])
             continue;
           Vec3 s = *source[op];
+          if (state.leaves[op] != Dir::East) {
+            // The signal leaves north or south: around the cell past it.
+            const Vec3 exit = s + offset(state.leaves[op]);
+            for (int dx = -kSideShift; dx <= kSideShift; ++dx)
+              for (int dz = -kSideShift; dz <= kSideShift; ++dz)
+                spots.push_back({exit.x - feeds[k].cell.x + dx,
+                                 exit.z - feeds[k].cell.z + dz, &variant});
+            continue;
+          }
           if (feeds[k].into != Dir::East) {
             // Fed from the side: east of the signal, the input a few rows
             // off its row.
@@ -530,7 +546,7 @@ std::optional<ComposeResult> compose_parts::compose_flush_groups(
 
       std::vector<Spot> candidates;
       for (auto [x0, z, variant] : spots) {
-        if (z < 0)
+        if (z < 0 || x0 < 1)
           continue;
         const GateModule &m = *variant->module;
         const Vec3 msize = m.layout.size();
@@ -626,8 +642,10 @@ std::optional<ComposeResult> compose_parts::compose_flush_groups(
           max_z = std::max(max_z, cell[2]);
         }
         p.score = static_cast<long>(max_x + 1) * (max_z + 1) * 4 + route_length;
-        for (Vec3 out : m.outs)
+        for (Vec3 out : m.outs) {
           p.outputs.push_back({x0 + out.x, 1, z + out.z});
+          p.output_ways.push_back(module_output_facing(msize, out));
+        }
         candidates.push_back(std::move(p));
       }
       // Variants of the build rank spots with a little noise.
@@ -685,6 +703,7 @@ std::optional<ComposeResult> compose_parts::compose_flush_groups(
               if (from != meet)
                 j.routes.push_back({from, meet, node});
             j.outputs = {meet};
+            j.output_ways = {Dir::East};
             int max_x = meet.x;
             int max_z = meet.z;
             for (const auto &[cell, block] : placed) {
@@ -795,9 +814,12 @@ std::optional<ComposeResult> compose_parts::compose_flush_groups(
         for (const auto &[index, cell] : p.new_ports) {
           child.port[index] = cell;
           child.source[index] = cell;
+          child.leaves[index] = Dir::East;
         }
-        for (std::size_t o = 0; o < group.nodes.size(); ++o)
+        for (std::size_t o = 0; o < group.nodes.size(); ++o) {
           child.source[group.nodes[o]] = p.outputs[o];
+          child.leaves[group.nodes[o]] = p.output_ways[o];
+        }
         next.push_back(std::move(child));
         ++children;
       };
