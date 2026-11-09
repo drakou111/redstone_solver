@@ -57,15 +57,17 @@ constexpr std::uint8_t kMajorityFunction = 0xE8;
 std::string group_name(const Group &group);
 
 // Ways to build the network where pieces that read only three signals are
-// one module each: `has_module` says whether a module exists for a piece's
-// truth table (its signals in increasing node order). Each grouping places
-// fewer modules than the plain one; the fewest first, each in signal order
-// and then (when that differs) with the pieces placed as late as they can
-// be; at most `max_groupings`. Nothing when no piece has a module.
-std::vector<std::vector<Group>>
-fused_groupings(const Netlist &netlist,
-                const std::function<bool(std::uint8_t)> &has_module,
-                int max_groupings);
+// one module each, and gates that read only a piece's signals may join it
+// as more outputs: `has_module` says whether a module exists for a list of
+// truth tables over the piece's signals (in increasing node order; the
+// piece's own first). Each grouping places fewer modules than the plain
+// one; the fewest first, each in signal order and then (when that differs)
+// with the pieces placed as late as they can be; at most `max_groupings`.
+// Nothing when no piece has a module.
+std::vector<std::vector<Group>> fused_groupings(
+    const Netlist &netlist,
+    const std::function<bool(const std::vector<std::uint8_t> &)> &has_module,
+    int max_groupings);
 
 // Flush placement (see compose_flush) of these groups, in this order.
 std::optional<ComposeResult>

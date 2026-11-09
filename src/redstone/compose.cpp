@@ -220,13 +220,13 @@ flush_variants(const Netlist &netlist, const BoolTable &table,
   if (options.catalog && options.flush_router) {
     const std::string key =
         catalog_key(options.palette, options.solver.verification);
-    auto has_module = [&](std::uint8_t function) {
+    auto has_module = [&](const std::vector<std::uint8_t> &functions) {
       std::vector<int> order{0, 1, 2};
       do {
-        if (!options.catalog
-                 ->variants(key, 3, {permute_function(function, 3, order)},
-                            options.max_height)
-                 .empty())
+        std::vector<std::uint8_t> permuted;
+        for (std::uint8_t f : functions)
+          permuted.push_back(permute_function(f, 3, order));
+        if (options.catalog->has_any(key, 3, permuted))
           return true;
       } while (std::next_permutation(order.begin(), order.end()));
       return false;

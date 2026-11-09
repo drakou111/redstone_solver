@@ -29,11 +29,12 @@ struct Piece {
   std::uint8_t function = 0; // over the leaves in their order
 };
 
-// One thing to place: a gate of the network or a fused piece.
+// One thing to place: a gate of the network or a fused piece (with the
+// gates that joined it as more outputs).
 struct Item {
   std::vector<int> operands;
-  std::uint8_t function = 0;
-  int node = 0;
+  std::vector<std::uint8_t> functions;
+  std::vector<int> nodes;
 };
 
 // The root's truth table over the leaves (first leaf the highest bit).
@@ -105,15 +106,75 @@ std::vector<Item> items_for(const Netlist &netlist,
     if (node < n || !seen.insert(node).second)
       continue;
     if (auto it = chosen.find(node); it != chosen.end()) {
-      items.push_back({it->second->leaves, it->second->function, node});
+      items.push_back({it->second->leaves, {it->second->function}, {node}});
       todo.insert(todo.end(), it->second->leaves.begin(),
                   it->second->leaves.end());
       continue;
     }
     const Gate &gate = netlist.gates[node - n];
-    items.push_back({{gate.a, gate.b}, gate.function, node});
+    items.push_back({{gate.a, gate.b}, {gate.function}, {node}});
     todo.push_back(gate.a);
     todo.push_back(gate.b);
+  }
+  return items;
+}
+
+// Whether `node` is `target` or is computed from it.
+bool depends_on(const Netlist &netlist, int node, int target) {
+  if (node == target)
+    return true;
+  if (node < netlist.inputs)
+    return false;
+  const Gate &gate = netlist.gates[node - netlist.inputs];
+  return depends_on(netlist, gate.a, target) ||
+         depends_on(netlist, gate.b, target);
+}
+
+// Gates that read only a fused piece's signals become more outputs of it,
+// when a module computes them all.
+std::vector<Item> join_pieces(
+    const Netlist &netlist, std::vector<Item> items,
+    const std::function<bool(const std::vector<std::uint8_t> &)> &has_module) {
+  for (std::size_t p = 0; p < items.size(); ++p) {
+    if (items[p].operands.size() != kFuseLeaves)
+      continue;
+    for (std::size_t q = 0; q < items.size();) {
+      const Item &gate = items[q];
+      const Leaves &leaves = items[p].operands;
+      const bool reads_only_leaves =
+          q != p && gate.nodes.size() == 1 &&
+          gate.operands.size() < leaves.size() &&
+          std::find(leaves.begin(), leaves.end(), gate.nodes[0]) ==
+              leaves.end() &&
+          std::all_of(
+              gate.operands.begin(), gate.operands.end(),
+              [&](int op) {
+                return std::find(leaves.begin(), leaves.end(), op) !=
+                       leaves.end();
+              });
+      if (!reads_only_leaves) {
+        ++q;
+        continue;
+      }
+      // A piece cannot read a signal it makes.
+      if (std::any_of(leaves.begin(), leaves.end(), [&](int leaf) {
+            return depends_on(netlist, leaf, gate.nodes[0]);
+          })) {
+        ++q;
+        continue;
+      }
+      std::vector<std::uint8_t> functions = items[p].functions;
+      functions.push_back(cone_function(netlist, gate.nodes[0], leaves));
+      if (!has_module(functions)) {
+        ++q;
+        continue;
+      }
+      items[p].functions = std::move(functions);
+      items[p].nodes.push_back(gate.nodes[0]);
+      items.erase(items.begin() + static_cast<std::ptrdiff_t>(q));
+      if (q < p)
+        --p;
+    }
   }
   return items;
 }
@@ -124,78 +185,88 @@ std::vector<Item> items_for(const Netlist &netlist,
 // and fused pieces after the gates of their step: a 3-input module's input
 // rows are often next to each other, which leaves no room to branch off its
 // wires, so it is better placed when its signals are already there.
-std::vector<Group> groups_of(std::vector<Item> items, bool late) {
-  std::map<int, int> level;
-  std::map<int, const Item *> by_node;
-  for (const Item &item : items)
-    by_node[item.node] = &item;
-  std::function<int(int)> level_of = [&](int node) {
-    auto it = by_node.find(node);
-    if (it == by_node.end())
-      return 0; // an input
-    if (auto known = level.find(node); known != level.end())
-      return known->second;
-    int deepest = 0;
-    for (int operand : it->second->operands)
-      deepest = std::max(deepest, level_of(operand));
-    level[node] = deepest + 1;
-    return deepest + 1;
+std::vector<Group> groups_of(const std::vector<Item> &items, bool late) {
+  std::map<int, std::size_t> item_of; // node -> item
+  for (std::size_t i = 0; i < items.size(); ++i)
+    for (int node : items[i].nodes)
+      item_of[node] = i;
+  std::vector<int> level(items.size(), -1);
+  std::function<int(std::size_t)> level_of = [&](std::size_t i) {
+    if (level[i] >= 0)
+      return level[i];
+    int deepest = 0; // inputs are level 0
+    for (int operand : items[i].operands)
+      if (auto it = item_of.find(operand); it != item_of.end())
+        deepest = std::max(deepest, level_of(it->second));
+    level[i] = deepest + 1;
+    return level[i];
   };
   int top = 0;
-  for (const Item &item : items)
-    top = std::max(top, level_of(item.node));
+  for (std::size_t i = 0; i < items.size(); ++i)
+    top = std::max(top, level_of(i));
   if (late) {
-    std::map<int, std::vector<int>> readers;
-    for (const Item &item : items)
-      for (int operand : item.operands)
-        readers[operand].push_back(item.node);
-    std::map<int, int> latest;
-    std::function<int(int)> latest_of = [&](int node) {
-      if (auto known = latest.find(node); known != latest.end())
-        return known->second;
+    std::vector<std::vector<std::size_t>> readers(items.size());
+    for (std::size_t i = 0; i < items.size(); ++i)
+      for (int operand : items[i].operands)
+        if (auto it = item_of.find(operand); it != item_of.end())
+          readers[it->second].push_back(i);
+    std::vector<int> latest(items.size(), -1);
+    std::vector<bool> known(items.size(), false);
+    std::function<int(std::size_t)> latest_of = [&](std::size_t i) {
+      if (known[i])
+        return latest[i];
       int step = top;
-      for (int reader : readers[node])
+      for (std::size_t reader : readers[i])
         step = std::min(step, latest_of(reader) - 1);
-      latest[node] = step;
+      latest[i] = step;
+      known[i] = true;
       return step;
     };
-    for (const Item &item : items)
-      latest_of(item.node);
+    for (std::size_t i = 0; i < items.size(); ++i)
+      latest_of(i);
     level = std::move(latest);
   }
-  auto fused = [&](const Item &item) {
-    return late && item.operands.size() > 2 ? 1 : 0;
+  auto fused = [&](std::size_t i) {
+    return late && items[i].operands.size() > 2 ? 1 : 0;
   };
-  std::stable_sort(items.begin(), items.end(),
-                   [&](const Item &a, const Item &b) {
-                     if (level[a.node] != level[b.node])
-                       return level[a.node] < level[b.node];
+  std::vector<std::size_t> order(items.size());
+  for (std::size_t i = 0; i < order.size(); ++i)
+    order[i] = i;
+  std::stable_sort(order.begin(), order.end(),
+                   [&](std::size_t a, std::size_t b) {
+                     if (level[a] != level[b])
+                       return level[a] < level[b];
                      if (fused(a) != fused(b))
                        return fused(a) < fused(b);
-                     return a.node < b.node;
+                     return items[a].nodes[0] < items[b].nodes[0];
                    });
   std::vector<Group> groups;
-  for (const Item &item : items) {
-    auto same = std::find_if(groups.begin(), groups.end(), [&](const Group &g) {
-      return item.operands.size() == 2 && g.operands == item.operands &&
-             level[g.nodes[0]] == level[item.node];
-    });
-    if (same == groups.end()) {
+  std::vector<int> group_level;
+  for (std::size_t i : order) {
+    const Item &item = items[i];
+    std::size_t g = groups.size();
+    if (item.operands.size() == 2)
+      for (std::size_t k = 0; k < groups.size(); ++k)
+        if (groups[k].operands == item.operands && group_level[k] == level[i])
+          g = k;
+    if (g == groups.size()) {
       groups.push_back({item.operands, {}, {}});
-      same = groups.end() - 1;
+      group_level.push_back(level[i]);
     }
-    same->nodes.push_back(item.node);
-    same->functions.push_back(item.function);
+    groups[g].nodes.insert(groups[g].nodes.end(), item.nodes.begin(),
+                           item.nodes.end());
+    groups[g].functions.insert(groups[g].functions.end(),
+                               item.functions.begin(), item.functions.end());
   }
   return groups;
 }
 
 } // namespace
 
-std::vector<std::vector<Group>>
-fused_groupings(const Netlist &netlist,
-                const std::function<bool(std::uint8_t)> &has_module,
-                int max_groupings) {
+std::vector<std::vector<Group>> fused_groupings(
+    const Netlist &netlist,
+    const std::function<bool(const std::vector<std::uint8_t> &)> &has_module,
+    int max_groupings) {
   const int n = netlist.inputs;
   const std::vector<std::vector<Leaves>> cuts = enumerate_cuts(netlist);
   std::map<int, std::vector<Piece>> pieces; // by root
@@ -205,7 +276,7 @@ fused_groupings(const Netlist &netlist,
       if (static_cast<int>(leaves.size()) != kFuseLeaves)
         continue;
       const std::uint8_t function = cone_function(netlist, root, leaves);
-      if (depends_on_all(function, kFuseLeaves) && has_module(function))
+      if (depends_on_all(function, kFuseLeaves) && has_module({function}))
         pieces[root].push_back({root, leaves, function});
     }
   }
@@ -218,7 +289,8 @@ fused_groupings(const Netlist &netlist,
   for (const auto &[root, list] : pieces)
     roots.push_back(root);
   const std::size_t plain_items = items_for(netlist, {}).size();
-  std::map<std::vector<std::pair<int, std::vector<int>>>, std::vector<Item>>
+  std::map<std::vector<std::pair<std::vector<int>, std::vector<int>>>,
+           std::vector<Item>>
       found; // by what is placed, so equal groupings count once
   std::map<int, const Piece *> chosen;
   int looked = 0;
@@ -229,14 +301,17 @@ fused_groupings(const Netlist &netlist,
       ++looked;
       if (chosen.empty())
         return;
-      std::vector<Item> items = items_for(netlist, chosen);
-      if (items.size() >= plain_items)
-        return; // the pieces' gates are needed anyway
-      std::vector<std::pair<int, std::vector<int>>> signature;
-      for (const Item &item : items)
-        signature.push_back({item.node, item.operands});
-      std::sort(signature.begin(), signature.end());
-      found.emplace(std::move(signature), std::move(items));
+      std::vector<Item> plain = items_for(netlist, chosen);
+      std::vector<Item> joined = join_pieces(netlist, plain, has_module);
+      for (std::vector<Item> *items : {&plain, &joined}) {
+        if (items->size() >= plain_items)
+          continue; // the pieces' gates are needed anyway
+        std::vector<std::pair<std::vector<int>, std::vector<int>>> signature;
+        for (const Item &item : *items)
+          signature.push_back({item.nodes, item.operands});
+        std::sort(signature.begin(), signature.end());
+        found.emplace(std::move(signature), std::move(*items));
+      }
       return;
     }
     choose(r + 1);
