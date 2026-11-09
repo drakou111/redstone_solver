@@ -6,6 +6,7 @@
 #include <vector>
 
 #include "ortools/sat/cp_model.h"
+#include "redstone/sat_engine.hpp"
 #include "redstone/spec.hpp"
 #include "redstone/world.hpp"
 
@@ -39,6 +40,10 @@ struct EncoderOptions {
   std::optional<int> max_blocks;        // upper bound on placed blocks
   // Off: only the clauses are kept (for a SAT solver), not the CP-SAT model.
   bool build_cp_model = true;
+  // No rank variables against signal loops through components; the solver
+  // adds a clause for each such loop a candidate has (add_loop_clauses).
+  // Needs build_cp_model off.
+  bool lazy_loops = false;
 };
 
 struct TransitionTrace {
@@ -95,6 +100,11 @@ public:
   void forbid_layout(const World &layout);
   void limit_blocks(int max_blocks);
   void add_steady(const SteadyCase &steady);
+  // With lazy_loops: for signal loops through a component in the layout of
+  // `values` (variable i + 1 is values[i]), clauses that each forbid one
+  // such loop, at most `max_clauses`. Returns how many were added (0: the
+  // layout has none).
+  int add_loop_clauses(const std::vector<bool> &values, int max_clauses);
   // `steady` lists every steady case added so far, in order.
   void add_transition(TransitionCase transition,
                       const std::vector<SteadyCase> &steady);
@@ -105,6 +115,9 @@ public:
   // Literals a SAT solver should try first: "this cell is air" for every
   // cell the solver fills, so first circuits come out sparse.
   std::vector<int> preferred_literals() const;
+  // With lazy_loops: every signal dependency between cells, active when all
+  // its literals hold (for a loop-watching SAT propagator).
+  std::vector<GraphEdge> loop_edges() const;
   // One literal per free cell for the sketch: the hint lines, empty
   // elsewhere. Adds the clauses that define them.
   std::vector<SketchCell> sketch_cells();

@@ -49,6 +49,7 @@ constexpr std::string_view kUsage =
     "  --no-quick-palette     skip the simultaneous basic-block search\n"
     "  --initial-cases <n>    settled states encoded from the start (0: all)\n"
     "  --extra-searches <n>   more complete searches per solve, other seeds\n"
+    "  --lazy-loops           forbid signal loops as the search makes them\n"
     "  --jobs <n>             solves run in parallel (default 1); compare\n"
     "                         conflicts, since times then depend on load\n"
     "  --profile <spec>       print the model size per part (settled states\n"
@@ -67,6 +68,7 @@ struct Options {
   bool quick_palette_search = true;
   int initial_cases = 0;
   int extra_searches = 0;
+  bool lazy_loops = false;
   int max_height = 0;
   int extra_layers = 1;
   int channel_width = 1;
@@ -145,6 +147,8 @@ Options parse(int argc, char **argv) {
       o.quick_palette_search = false;
     } else if (arg == "--initial-cases") {
       o.initial_cases = positive_int(value(), arg);
+    } else if (arg == "--lazy-loops") {
+      o.lazy_loops = true;
     } else if (arg == "--extra-searches") {
       o.extra_searches = positive_int(value(), arg);
     } else if (arg == "--max-height") {
@@ -266,6 +270,7 @@ Row run(const std::filesystem::path &path, bool first, int seed,
   options.quick_palette_search = o.quick_palette_search;
   options.initial_cases = o.initial_cases;
   options.extra_searches = o.extra_searches;
+  options.lazy_loops = o.lazy_loops;
   if (o.one_placement)
     options.verification.placements = {rs::Placement{}};
   auto say = [&](std::string_view message) {

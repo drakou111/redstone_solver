@@ -4,6 +4,7 @@
 #include <array>
 #include <format>
 #include <map>
+#include <set>
 #include <stdexcept>
 #include <string>
 
@@ -729,7 +730,8 @@ struct CircuitEncoder::Impl {
   void add_dependency_constraints() {
     Measure measure(*this, "no loops (ranks)");
     const int n = static_cast<int>(this->cells.size());
-    const bool ranked = !this->spec.allow_feedback;
+    const bool lazy = !this->spec.allow_feedback && this->options.lazy_loops;
+    const bool ranked = !this->spec.allow_feedback && !lazy;
     // Only components raise the rank, so it never exceeds the number of
     // cells that could hold one.
     int max_rank = 0;
@@ -753,6 +755,11 @@ struct CircuitEncoder::Impl {
       }
       if (ranked)
         this->b.require_gap(rank[p], rank[q], gap, when);
+      if (lazy && std::none_of(when.begin(), when.end(),
+                               [](const Lit &l) { return l.is_false(); })) {
+        std::erase_if(when, [](const Lit &l) { return l.is_true(); });
+        this->loop_edges.push_back({q, p, gap, std::move(when)});
+      }
     };
 
     for (int p = 0; p < n; ++p) {
@@ -807,6 +814,114 @@ struct CircuitEncoder::Impl {
         }
       }
     }
+  }
+
+  // With lazy loops: q's signal reaches p when every `when` literal holds;
+  // a gap of 1 means p is a component.
+  struct LoopEdge {
+    int from = 0; // q
+    int to = 0;   // p
+    int gap = 0;
+    std::vector<Lit> when;
+  };
+  std::vector<LoopEdge> loop_edges;
+
+  int add_loop_clauses(const std::vector<bool> &values, int max_clauses) {
+    auto holds = [&](const Lit &lit) {
+      if (lit.is_constant())
+        return lit.is_true();
+      const int d = lit.dimacs();
+      const bool v = values[std::abs(d) - 1];
+      return d > 0 ? v : !v;
+    };
+    const int n = static_cast<int>(this->cells.size());
+    std::vector<std::vector<int>> out(n); // active edge indices by `from`
+    for (std::size_t e = 0; e < this->loop_edges.size(); ++e) {
+      const LoopEdge &edge = this->loop_edges[e];
+      if (std::all_of(edge.when.begin(), edge.when.end(), holds))
+        out[edge.from].push_back(static_cast<int>(e));
+    }
+    // Strongly connected parts (Tarjan, iterative).
+    std::vector<int> index(n, -1), low(n, 0), part(n, -1), stack;
+    std::vector<bool> on_stack(n, false);
+    int counter = 0, parts = 0;
+    for (int root = 0; root < n; ++root) {
+      if (index[root] >= 0)
+        continue;
+      std::vector<std::pair<int, std::size_t>> work{{root, 0}};
+      index[root] = low[root] = counter++;
+      stack.push_back(root);
+      on_stack[root] = true;
+      while (!work.empty()) {
+        auto &[v, next] = work.back();
+        if (next < out[v].size()) {
+          const int w = this->loop_edges[out[v][next++]].to;
+          if (index[w] < 0) {
+            index[w] = low[w] = counter++;
+            stack.push_back(w);
+            on_stack[w] = true;
+            work.push_back({w, 0});
+          } else if (on_stack[w]) {
+            low[v] = std::min(low[v], index[w]);
+          }
+          continue;
+        }
+        if (low[v] == index[v]) {
+          int w = -1;
+          while (w != v) {
+            w = stack.back();
+            stack.pop_back();
+            on_stack[w] = false;
+            part[w] = parts;
+          }
+          ++parts;
+        }
+        const int done = v;
+        work.pop_back();
+        if (!work.empty())
+          low[work.back().first] = std::min(low[work.back().first], low[done]);
+      }
+    }
+    // Each active component edge inside a part closes a loop: the shortest
+    // way back from its reader to its source, plus the edge itself.
+    int added = 0;
+    std::set<std::vector<int>> seen;
+    for (int v = 0; v < n && added < max_clauses; ++v)
+      for (int e : out[v]) {
+        const LoopEdge &closing = this->loop_edges[e];
+        if (closing.gap == 0 || part[closing.from] != part[closing.to])
+          continue;
+        std::vector<int> via(n, -1); // edge that first reached a cell
+        std::vector<int> queue{closing.to};
+        via[closing.to] = e;
+        for (std::size_t i = 0; i < queue.size() && via[closing.from] < 0; ++i)
+          for (int f : out[queue[i]]) {
+            const int w = this->loop_edges[f].to;
+            if (via[w] >= 0 || part[w] != part[closing.from])
+              continue;
+            via[w] = f;
+            queue.push_back(w);
+          }
+        if (via[closing.from] < 0 && closing.from != closing.to)
+          continue;
+        std::vector<int> loop{e};
+        for (int w = closing.from; w != closing.to;) {
+          const int f = via[w];
+          loop.push_back(f);
+          w = this->loop_edges[f].from;
+        }
+        std::sort(loop.begin(), loop.end());
+        if (!seen.insert(loop).second)
+          continue;
+        std::vector<Lit> clause;
+        for (int f : loop)
+          for (const Lit &lit : this->loop_edges[f].when)
+            clause.push_back(!lit);
+        this->b.require_any(clause);
+        if (++added >= max_clauses)
+          break;
+      }
+    return added;
   }
 
   // --------------------------------------------------------------- slices
@@ -1837,6 +1952,11 @@ void CircuitEncoder::forbid_layout(const World &layout) {
   this->impl_->require_layout(layout, false);
 }
 
+int CircuitEncoder::add_loop_clauses(const std::vector<bool> &values,
+                                     int max_clauses) {
+  return this->impl_->add_loop_clauses(values, max_clauses);
+}
+
 void CircuitEncoder::add_steady(const SteadyCase &steady) {
   this->impl_->add_steady_case(steady);
 }
@@ -1883,6 +2003,17 @@ std::vector<int> CircuitEncoder::preferred_literals() const {
       prefer(c.subtract, block.comparator_mode() == ComparatorMode::Subtract);
   }
   return lits;
+}
+
+std::vector<GraphEdge> CircuitEncoder::loop_edges() const {
+  std::vector<GraphEdge> edges;
+  for (const Impl::LoopEdge &edge : this->impl_->loop_edges) {
+    GraphEdge e{edge.from, edge.to, edge.gap, {}};
+    for (const Lit &lit : edge.when)
+      e.lits.push_back(lit.dimacs());
+    edges.push_back(std::move(e));
+  }
+  return edges;
 }
 
 std::optional<std::vector<int>>

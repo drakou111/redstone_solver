@@ -1,5 +1,6 @@
 #include "redstone/simulator.hpp"
 #include "redstone/solver.hpp"
+#include "redstone/verifier.hpp"
 #include <string>
 #include <vector>
 
@@ -236,4 +237,48 @@ row IN1(ss0..15) -> OUT1(ss1..15)
   CHECK(layout.at({1, 1, 0}).type == BlockType::Barrel);
   CHECK(layout.at({1, 1, 0}).stored_signal() == 5);
   CHECK_FALSE(verify_layout(layout, spec, vectors));
+}
+
+TEST_CASE("signal loops forbidden lazily still give the smallest NOT gate") {
+  Spec spec = parse_spec(R"(
+size 4 2 1
+input IN1 strong 0 1 0 east
+output OUT1 dust 3 1 0
+horizon 8
+palette solid glass dust torch repeater comparator
+row IN1(ss1..15) -> OUT1(ss0)
+row IN1(ss0) -> OUT1(ss1..15)
+)");
+  SolverOptions options = test_options();
+  options.lazy_loops = true;
+  SolveReport report = solve(spec, options);
+  REQUIRE(report.status == SolveStatus::Optimal);
+  REQUIRE(report.solution);
+  CHECK(report.solution->block_count == 4);
+}
+
+TEST_CASE("signal loops forbidden lazily: a half adder verifies") {
+  Spec spec = parse_spec(R"(
+size 6 2 3
+input IN1 repeater 0 1 0 east
+input IN2 repeater 0 1 2 east
+output OUT1 dust 5 1 2
+output OUT2 dust 5 1 0
+timing none
+settle 4
+horizon 80
+palette solid dust torch repeater comparator target barrel
+row IN1(ss0),IN2(ss0) -> OUT1(ss0),OUT2(ss0)
+row IN1(ss15),IN2(ss0) -> OUT1(ss1..15),OUT2(ss0)
+row IN1(ss0),IN2(ss15) -> OUT1(ss1..15),OUT2(ss0)
+row IN1(ss15),IN2(ss15) -> OUT1(ss0),OUT2(ss1..15)
+)");
+  SolverOptions options = test_options();
+  options.lazy_loops = true;
+  options.stop_at_first = true;
+  options.verification.placements = {Placement{}};
+  SolveReport report = solve(spec, options);
+  REQUIRE(report.solution);
+  CHECK_FALSE(verify_layout(report.solution->layout, spec,
+                            spec.verification_vectors(), options.verification));
 }

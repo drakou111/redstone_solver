@@ -448,6 +448,9 @@ SolveReport solve_cp_sat(const Spec &spec, const SolverOptions &options,
 // start from.
 constexpr int kExtraSeedStride = 1000;
 constexpr int kLazyCases = 2;
+// Loops forbidden per candidate that has some (lazy loops).
+constexpr int kLoopClausesPerModel = 64;
+constexpr int kLoopRoundsPerMessage = 500;
 
 // Blocks the quick search may place (those the spec's palette allows).
 constexpr std::array<BlockType, 4> kQuickPalette{
@@ -513,6 +516,7 @@ enum class SearchEnd {
 struct SearchResult {
   SearchEnd end = SearchEnd::Stopped;
   int refinements = 0;
+  int loop_rounds = 0; // models sent back for a loop (lazy loops)
   std::int64_t conflicts = 0;
 };
 
@@ -538,9 +542,10 @@ SearchResult run_sat_search(SatSearch &search,
           : static_cast<int>(std::max(1u, std::thread::hardware_concurrency()));
   int workers = std::max(1, std::min(threads, options.max_sat_workers));
 
-  CircuitEncoder encoder(
-      spec, plan,
-      EncoderOptions{.minimize_blocks = false, .build_cp_model = false});
+  CircuitEncoder encoder(spec, plan,
+                         EncoderOptions{.minimize_blocks = false,
+                                        .build_cp_model = false,
+                                        .lazy_loops = options.lazy_loops});
   SatPortfolio portfolio(workers, options.sat_seed + search.seed_offset);
   std::size_t clauses_sent = 0;
   int applied_bound = std::numeric_limits<int>::max();
@@ -580,8 +585,13 @@ SearchResult run_sat_search(SatSearch &search,
       applied_bound = bound;
     }
     portfolio.add(encoder.clauses(), clauses_sent);
-    if (clauses_sent == 0)
+    if (clauses_sent == 0) {
       portfolio.prefer(encoder.preferred_literals());
+      if (options.lazy_loops)
+        portfolio.forbid_loops(
+            static_cast<int>(spec.size.x * spec.size.y * spec.size.z),
+            encoder.loop_edges());
+    }
     clauses_sent = encoder.clauses().size();
 
     std::vector<int> assumptions;
@@ -644,9 +654,16 @@ SearchResult run_sat_search(SatSearch &search,
       return end(SearchEnd::Proven);
     }
 
+    std::vector<bool> values = portfolio.model(encoder.variable_count());
+    if (options.lazy_loops &&
+        encoder.add_loop_clauses(values, kLoopClausesPerModel) > 0) {
+      if (++result.loop_rounds % kLoopRoundsPerMessage == 0)
+        say(std::format("{} layouts with signal loops forbidden so far",
+                        result.loop_rounds));
+      continue; // a loop through a component: forbidden, solve again
+    }
     ++result.refinements;
-    EncodedSolution candidate =
-        encoder.decode(portfolio.model(encoder.variable_count()));
+    EncodedSolution candidate = encoder.decode(values);
     say(std::format("candidate with {} blocks, verifying",
                     candidate.block_count));
     std::optional<VerificationFailure> failure = verify_layout(

@@ -49,6 +49,9 @@ struct SolverOptions {
   // past it the sketch only guides. Large boxes need more.
   double sketch_step_seconds = 3.0;
   bool show_rejected = false; // include rejected layouts in progress messages
+  // SAT engine: signal loops through components are forbidden one loop at a
+  // time, as candidates show them, instead of by rank variables up front.
+  bool lazy_loops = false;
   VerificationOptions verification;
   // Set to true from another thread to stop early.
   std::atomic<bool> *cancel = nullptr;

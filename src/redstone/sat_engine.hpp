@@ -9,6 +9,15 @@
 
 namespace rs {
 
+// A directed edge of a graph over SAT literals: active while every literal
+// holds (DIMACS literals).
+struct GraphEdge {
+  int from = 0;
+  int to = 0;
+  int gap = 0; // 1: a loop through this edge is forbidden
+  std::vector<int> lits;
+};
+
 // Several CaDiCaL instances with different seeds race on the same clauses;
 // the first to answer wins and stops the others. Clauses are added
 // incrementally, so each solver keeps what it learned between calls.
@@ -23,6 +32,10 @@ public:
 
   // Makes every solver try these literals true first.
   void prefer(const std::vector<int> &lits);
+  // Every solver rejects, as soon as its partial assignment has one, a loop
+  // of active edges through an edge with a gap of 1 (with a clause made of
+  // the loop's literals). Nodes are 0..nodes-1.
+  void forbid_loops(int nodes, const std::vector<GraphEdge> &edges);
   // Adds clauses[from..] (DIMACS literals) to every solver.
   void add(const std::vector<std::vector<int>> &clauses, std::size_t from);
   // Stopped when the deadline passes or `cancel` or `interrupt` is set.
