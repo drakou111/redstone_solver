@@ -184,6 +184,7 @@ add_executable(redstone_solver WIN32
         src/host/api.cpp
         src/host/json_io.cpp
         src/host/library.cpp
+        src/host/catalog_file.cpp
         src/host/minecraft_assets.cpp
         ${EMBEDDED_CPP})
 target_link_libraries(redstone_solver PRIVATE redstone_core miniz httplib::httplib

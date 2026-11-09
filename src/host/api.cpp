@@ -1,13 +1,16 @@
 #include "host/api.hpp"
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <format>
 #include <fstream>
+#include <future>
 #include <sstream>
 #include <stdexcept>
 #include <thread>
 
+#include "host/catalog_file.hpp"
 #include "host/minecraft_assets.hpp"
 #include "redstone/compose.hpp"
 #include "redstone/layout_check.hpp"
@@ -20,6 +23,8 @@ namespace {
 
 // Gate modules are 2 high and a wire crosses another 2 layers up.
 constexpr int kCrossingHeight = 4;
+constexpr const char *kCatalogFileName = "gate_catalog.json";
+
 // Search the box: extra searches, each with its seed (they need memory and
 // a core or two each).
 constexpr int kThreadsPerExtraSearch = 3;
@@ -64,8 +69,11 @@ int count_ports(const World &world, bool inputs) {
 Api::Api(std::filesystem::path examples_dir,
          std::optional<std::filesystem::path> library_dir)
     : examples_dir_(std::move(examples_dir)) {
-  if (library_dir)
+  if (library_dir) {
     this->library_ = std::make_unique<CircuitLibrary>(*library_dir);
+    this->catalog_file_ = *library_dir / kCatalogFileName;
+    load_catalog(*this->catalog_file_, this->catalog_);
+  }
 }
 
 namespace {
@@ -167,6 +175,8 @@ Json Api::handle(std::string_view route, const Json &body) {
     return this->start_shrink(body);
   if (route == "solve/start")
     return this->start_solve(body);
+  if (route == "catalog/build")
+    return this->start_catalog(body);
   if (route == "solve/status")
     return this->solve_status(body);
   if (route == "solve/cancel") {
@@ -398,6 +408,104 @@ Json Api::start_shrink(const Json &body) {
   return Json::object();
 }
 
+// Builds catalog modules: for each function list and box size, every
+// arrangement of the ports not in the catalog yet, solved for the fewest
+// blocks (several at once). The catalog file is saved after each function
+// list, so a stopped build resumes where it was.
+Json Api::start_catalog(const Json &body) {
+  if (this->job_ && !this->job_->is_done())
+    throw std::invalid_argument("a solve is already running");
+  if (!this->catalog_file_)
+    throw std::invalid_argument("the gate catalog needs --library");
+  std::vector<std::vector<std::uint8_t>> function_lists;
+  for (const Json &list : body.at("functions")) {
+    std::vector<std::uint8_t> functions;
+    for (const Json &f : list)
+      functions.push_back(f.get<std::uint8_t>());
+    if (functions.empty())
+      throw std::invalid_argument("a function list is empty");
+    function_lists.push_back(std::move(functions));
+  }
+  std::vector<Vec3> sizes;
+  for (const Json &size : body.at("sizes"))
+    sizes.push_back(
+        {size.at(0).get<int>(), size.at(1).get<int>(), size.at(2).get<int>()});
+  GateLibraryOptions gates;
+  gates.time_limit_seconds = body.value("seconds", 20.0);
+  if (gates.time_limit_seconds <= 0)
+    throw std::invalid_argument("the time per arrangement must be positive");
+  gates.solver.verification = verification_from(body);
+  std::vector<BlockType> palette;
+  for (const Json &name : body.at("palette")) {
+    std::optional<BlockType> type =
+        parse_palette_block(name.get<std::string>());
+    if (!type)
+      throw std::invalid_argument("unknown block " + name.get<std::string>());
+    palette.push_back(*type);
+  }
+  gates.palette = palette;
+  const std::string key = catalog_key(gates.palette, gates.solver.verification);
+  GateCatalog *catalog = &this->catalog_;
+  const std::filesystem::path file = *this->catalog_file_;
+  Spec spec;
+  this->job_ = std::make_unique<SolveJob>(spec, [function_lists, sizes, gates,
+                                                 key, catalog,
+                                                 file](const JobContext &job) {
+    auto start = std::chrono::steady_clock::now();
+    const int workers =
+        std::max(1, static_cast<int>(std::thread::hardware_concurrency()) / 2);
+    for (const std::vector<std::uint8_t> &functions : function_lists) {
+      std::string names;
+      for (std::uint8_t f : functions)
+        names += (names.empty() ? "" : "+") + function_name(f);
+      for (Vec3 size : sizes) {
+        std::vector<GateArrangement> todo;
+        for (const GateArrangement &a :
+             gate_arrangements(size, static_cast<int>(functions.size())))
+          if (!catalog->has(key, functions, a))
+            todo.push_back(a);
+        std::atomic<std::size_t> next = 0;
+        std::atomic<int> built = 0;
+        auto worker = [&] {
+          for (std::size_t i = next++; i < todo.size() && !job.cancel->load();
+               i = next++) {
+            GateLibraryOptions o = gates;
+            o.cancel = job.cancel;
+            if (std::optional<GateModule> module =
+                    build_gate_in(functions, todo[i], o)) {
+              catalog->add(key, *module);
+              ++built;
+            }
+          }
+        };
+        std::vector<std::future<void>> threads;
+        for (int w = 0; w < workers; ++w)
+          threads.push_back(std::async(std::launch::async, worker));
+        for (auto &thread : threads)
+          thread.wait();
+        if (job.progress)
+          job.progress(std::format("{} in {}x{}x{}: {} of {} new "
+                                   "arrangements built",
+                                   names, size.x, size.y, size.z, built.load(),
+                                   todo.size()));
+        if (job.cancel->load())
+          break;
+      }
+      save_catalog(file, *catalog);
+      if (job.cancel->load())
+        break;
+    }
+    SolveReport report;
+    report.status =
+        job.cancel->load() ? SolveStatus::Cancelled : SolveStatus::Feasible;
+    report.seconds =
+        std::chrono::duration<double>(std::chrono::steady_clock::now() - start)
+            .count();
+    return JobResult{std::move(report), std::nullopt};
+  });
+  return Json::object();
+}
+
 // Composes the spec's on/off table from gate modules; the job ends with the
 // composed spec (its own box and ports, the table's rows, the circuit as a
 // sketch).
@@ -412,6 +520,7 @@ Json Api::start_compose(const Json &body) {
   options.flush_beam = settings.value("flushBeam", options.flush_beam);
   options.flush_router = settings.value("router", options.flush_router);
   options.gate_cache = &this->gate_cache_;
+  options.catalog = &this->catalog_;
   // With a shrink time, every variant is built and shrunk; the best is kept.
   // totalTime: one budget for everything (build passes, then the shrink when
   // "shrink" is set); the step limits only shape the first pass.

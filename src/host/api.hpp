@@ -29,6 +29,9 @@ public:
 
 private:
   GateCache gate_cache_; // gate modules shared by every compose job
+  // Modules built ahead in many arrangements, kept next to the library.
+  GateCatalog catalog_;
+  std::optional<std::filesystem::path> catalog_file_;
   Json session() const;
   Json load_spec(const Json &body) const;
   Json save_spec(const Json &body) const;
@@ -37,6 +40,7 @@ private:
   Json start_solve(const Json &body);
   Json start_shrink(const Json &body);
   Json start_compose(const Json &body);
+  Json start_catalog(const Json &body);
   Json solve_status(const Json &body) const;
   Json reset_simulator(const Json &body);
   Json simulator_input(const Json &body);

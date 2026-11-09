@@ -82,7 +82,8 @@ struct Spot {
   std::vector<std::pair<int, Vec3>> new_ports; // input index, port cell
   long score = 0;
   bool join = false;
-  std::vector<Vec3> outputs; // where the gate's signals leave
+  std::vector<Vec3> outputs;          // where the gate's signals leave
+  const GateModule *module = nullptr; // nothing for a join
 };
 
 // A partial circuit: every gate so far placed and wired.
@@ -394,10 +395,17 @@ std::optional<ComposeResult> compose_flush(const Netlist &netlist,
     if (cancelled())
       return std::nullopt;
     const Group &group = groups[gi];
-    const GateModule &m = modules->at(group.functions);
-    const Vec3 msize = m.layout.size();
+    // The module built for this gate and, from the catalog, the same gate
+    // in other shapes and port rows: each is tried at every spot.
+    std::vector<GateModule> catalog_variants;
+    if (options.catalog)
+      catalog_variants = options.catalog->variants(
+          catalog_key(options.palette, options.solver.verification),
+          group.functions, height);
+    std::vector<const GateModule *> variants{&modules->at(group.functions)};
+    for (const GateModule &variant : catalog_variants)
+      variants.push_back(&variant);
     const std::array<int, 2> operands{group.a, group.b};
-    const std::array<int, 2> input_z{m.in1.z, m.in2.z};
     std::string names;
     for (std::uint8_t f : group.functions)
       names += (names.empty() ? "" : "+") + function_name(f);
@@ -435,42 +443,52 @@ std::optional<ComposeResult> compose_flush(const Netlist &netlist,
         int x0 = 0;
         int z = 0;
         bool swapped = false;
+        const GateModule *module = nullptr;
       };
       std::vector<Choice> spots;
-      for (bool swapped : {false, true}) {
-        if (swapped && !symmetric)
-          continue;
-        for (int k = 0; k < 2; ++k) {
-          const int op = swapped ? operands[1 - k] : operands[k];
-          if (!source[op])
+      for (const GateModule *variant : variants) {
+        const std::array<int, 2> input_z{variant->in1.z, variant->in2.z};
+        std::size_t first_spot = spots.size();
+        for (bool swapped : {false, true}) {
+          if (swapped && !symmetric)
             continue;
-          Vec3 s = *source[op];
-          spots.push_back({s.x + 1, s.z - input_z[k], swapped});
-          for (int gap = 1; gap <= 1 + options.flush_spacing; ++gap)
-            spots.push_back({s.x + 1 + gap, s.z - input_z[k], swapped});
-          // Routed wires are cheap: also try spots a little off the line.
-          if (use_router)
-            for (int gap = 0; gap <= kRoutedGap; ++gap)
-              for (int dz = -kRoutedShift; dz <= kRoutedShift; ++dz)
-                if (dz != 0)
-                  spots.push_back(
-                      {s.x + 1 + gap, s.z - input_z[k] + dz, swapped});
+          for (int k = 0; k < 2; ++k) {
+            const int op = swapped ? operands[1 - k] : operands[k];
+            if (!source[op])
+              continue;
+            Vec3 s = *source[op];
+            spots.push_back({s.x + 1, s.z - input_z[k], swapped, variant});
+            for (int gap = 1; gap <= 1 + options.flush_spacing; ++gap)
+              spots.push_back(
+                  {s.x + 1 + gap, s.z - input_z[k], swapped, variant});
+            // Routed wires are cheap: also try spots a little off the line.
+            if (use_router)
+              for (int gap = 0; gap <= kRoutedGap; ++gap)
+                for (int dz = -kRoutedShift; dz <= kRoutedShift; ++dz)
+                  if (dz != 0)
+                    spots.push_back({s.x + 1 + gap, s.z - input_z[k] + dz,
+                                     swapped, variant});
+          }
         }
-      }
-      // A gate of new inputs only: start a fresh row, or a few further off
-      // when the ports already there leave its inputs no room.
-      if (spots.empty())
-        for (int dz = 0; dz <= (use_router ? kFreshRowShift : 0); ++dz)
-          for (int x0 = 1; x0 <= 2 + options.flush_spacing; ++x0)
-            spots.push_back({x0, next_free_z + dz, false});
+        // A gate of new inputs only: start a fresh row, or a few further off
+        // when the ports already there leave its inputs no room.
+        if (spots.size() == first_spot)
+          for (int dz = 0; dz <= (use_router ? kFreshRowShift : 0); ++dz)
+            for (int x0 = 1; x0 <= 2 + options.flush_spacing; ++x0)
+              spots.push_back({x0, next_free_z + dz, false, variant});
+      } // each module variant
 
       std::vector<Spot> candidates;
-      for (auto [x0, z, swapped] : spots) {
+      for (auto [x0, z, swapped, module] : spots) {
         if (z < 0)
           continue;
+        const GateModule &m = *module;
+        const Vec3 msize = m.layout.size();
+        const std::array<int, 2> input_z{m.in1.z, m.in2.z};
         const std::array<int, 2> ops =
             swapped ? std::array<int, 2>{operands[1], operands[0]} : operands;
         Spot p{x0, z, {x0, x0 + msize.x - 1, z, z + msize.z - 1}, {}, {}, 0};
+        p.module = module;
         bool ok = std::none_of(
             footprints.begin(), footprints.end(),
             [&](const Footprint &f) { return clashes(f, p.footprint); });
@@ -631,7 +649,7 @@ std::optional<ComposeResult> compose_flush(const Netlist &netlist,
       for (const Spot &p : candidates) {
         Cells cells = placed;
         if (!p.join)
-          add_layout(cells, m.layout, {p.x0, 0, p.z});
+          add_layout(cells, p.module->layout, {p.x0, 0, p.z});
         std::set<std::array<int, 3>> free_cells;
         for (const Route &r : p.routes)
           for (int x = std::min(r.from.x, r.to.x);

@@ -56,6 +56,9 @@ struct NetlistComposeOptions {
   bool flush_joins = true;
   // Modules built before are taken from here (and new ones stored).
   GateCache *gate_cache = nullptr;
+  // Modules built ahead in many arrangements (flush placement tries them
+  // all next to the one it builds itself).
+  const GateCatalog *catalog = nullptr;
   int flush_candidates = 6; // positions tried per gate, best first
   // Exact synthesis of the smallest gate network gives up after this.
   double synthesis_seconds = 60.0;

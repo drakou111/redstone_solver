@@ -6,6 +6,7 @@
 #include <mutex>
 #include <optional>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "redstone/solver.hpp"
@@ -54,6 +55,53 @@ private:
 // tried, the horizon and how many placements the module is checked in.
 std::string gate_cache_key(const std::vector<std::uint8_t> &functions,
                            const GateLibraryOptions &options);
+
+// Where a module's ports sit: input repeaters on the west face (x 0) and
+// output dust on the east face, all at height 1, in these rows (z).
+struct GateArrangement {
+  Vec3 size{};
+  int in1_z = 0;
+  int in2_z = 0;
+  std::vector<int> out_rows;
+};
+
+// Every arrangement in a box of `size` for `outputs` outputs: two different
+// input rows (either order) and output rows no two next to each other.
+std::vector<GateArrangement> gate_arrangements(Vec3 size, int outputs);
+
+// A module for `functions` in exactly this arrangement: the fewest blocks
+// found within options.time_limit_seconds, or nothing.
+std::optional<GateModule>
+build_gate_in(const std::vector<std::uint8_t> &functions,
+              const GateArrangement &arrangement,
+              const GateLibraryOptions &options);
+
+// What makes catalog modules usable for a request: the blocks allowed and
+// how they were checked.
+std::string catalog_key(const std::optional<std::vector<BlockType>> &palette,
+                        const VerificationOptions &verification);
+
+// Modules in many arrangements and sizes, built ahead of time (each with the
+// fewest blocks for its arrangement), for Build from gates to choose from.
+// Safe to use from several threads.
+class GateCatalog {
+public:
+  // Keeps the module unless one with the same arrangement and no more
+  // blocks is there already. Returns whether it was kept.
+  bool add(const std::string &key, const GateModule &module);
+  std::vector<GateModule> variants(const std::string &key,
+                                   const std::vector<std::uint8_t> &functions,
+                                   int max_height) const;
+  bool has(const std::string &key, const std::vector<std::uint8_t> &functions,
+           const GateArrangement &arrangement) const;
+  std::vector<std::pair<std::string, GateModule>> all() const;
+
+private:
+  mutable std::mutex mutex_;
+  std::map<std::pair<std::string, std::vector<std::uint8_t>>,
+           std::vector<GateModule>>
+      modules_;
+};
 
 // Builds a module with one output per function (bit (a << 1) | b of the
 // 2-input truth table). Nothing if no size works in time.
