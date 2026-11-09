@@ -17,13 +17,15 @@ namespace {
 constexpr std::size_t kMaxModuleInputs = 3;
 
 std::string gate_spec_text(const std::vector<std::uint8_t> &functions,
-                           Vec3 size, const std::vector<int> &in_rows,
+                           Vec3 size, const std::vector<Vec3> &ins,
                            const std::vector<int> &out_rows, int horizon) {
   const auto [mx, my, mz] = size;
-  const int inputs = static_cast<int>(in_rows.size());
+  const int inputs = static_cast<int>(ins.size());
   std::string text = std::format("size {} {} {}\n", mx, my, mz);
   for (int k = 0; k < inputs; ++k)
-    text += std::format("input IN{} repeater 0 1 {} east\n", k + 1, in_rows[k]);
+    text += std::format("input IN{} repeater {} {} {} {}\n", k + 1, ins[k].x,
+                        ins[k].y, ins[k].z,
+                        to_string(module_input_facing(size, ins[k])));
   for (std::size_t o = 0; o < out_rows.size(); ++o)
     text +=
         std::format("output OUT{} dust {} 1 {}\n", o + 1, mx - 1, out_rows[o]);
@@ -42,18 +44,30 @@ std::string gate_spec_text(const std::vector<std::uint8_t> &functions,
     }
     text += "\n";
   }
-  // Clean faces: above the floor, only the ports on the west and east faces.
+  // Clean faces: above the floor, only the ports on the west and east faces
+  // and on a north or south face with an input.
+  auto is_input = [&](Vec3 p) {
+    return std::find(ins.begin(), ins.end(), p) != ins.end();
+  };
   for (int y = 1; y < my; ++y)
     for (int z = 0; z < mz; ++z) {
-      const bool in = y == 1 && std::find(in_rows.begin(), in_rows.end(), z) !=
-                                    in_rows.end();
-      if (!in)
+      if (!is_input({0, y, z}))
         text += std::format("empty 0 {} {}\n", y, z);
       bool out = y == 1 && std::find(out_rows.begin(), out_rows.end(), z) !=
                                out_rows.end();
       if (!out)
         text += std::format("empty {} {} {}\n", mx - 1, y, z);
     }
+  for (int face : {0, mz - 1}) {
+    const bool used = std::any_of(
+        ins.begin(), ins.end(), [&](Vec3 p) { return p.x > 0 && p.z == face; });
+    if (!used)
+      continue;
+    for (int y = 1; y < my; ++y)
+      for (int x = 1; x < mx - 1; ++x)
+        if (!is_input({x, y, face}))
+          text += std::format("empty {} {} {}\n", x, y, face);
+  }
   return text;
 }
 
@@ -86,6 +100,17 @@ std::vector<std::vector<int>> output_row_choices(int outputs, int rows) {
 
 } // namespace
 
+Dir module_input_facing(Vec3 size, Vec3 in) {
+  if (in.x == 0)
+    return Dir::East;
+  if (in.z == 0)
+    return Dir::South;
+  if (in.z == size.z - 1)
+    return Dir::North;
+  throw std::invalid_argument("a module input is not on the west, north or "
+                              "south face");
+}
+
 std::uint8_t permute_function(std::uint8_t function, int inputs,
                               const std::vector<int> &order) {
   std::uint8_t result = 0;
@@ -114,24 +139,47 @@ bool depends_on_all(std::uint8_t function, int inputs) {
 }
 
 std::vector<GateArrangement> gate_arrangements(Vec3 size, int inputs,
-                                               int outputs) {
+                                               int outputs, bool sides) {
   if (inputs < 2)
     throw std::invalid_argument("a gate module has at least two inputs");
+  std::vector<Vec3> places;
+  for (int z = 0; z < size.z; ++z)
+    places.push_back({0, 1, z});
+  // Two deep, a north input would feed the south one.
+  if (sides && size.z >= 3)
+    for (int face : {0, size.z - 1})
+      for (int x = 1; x < size.x - 1; ++x)
+        places.push_back({x, 1, face});
+  // A west input in a corner row feeds the side input next to it.
+  auto feeds = [&](Vec3 a, Vec3 b) {
+    if (a.x == 0 && b.x > 0)
+      return a + offset(Dir::East) == b;
+    if (b.x == 0 && a.x > 0)
+      return b + offset(Dir::East) == a;
+    return false;
+  };
   std::vector<GateArrangement> arrangements;
-  std::vector<int> rows;
+  std::vector<std::size_t> picked;
   std::function<void()> pick = [&] {
-    if (static_cast<int>(rows.size()) == inputs) {
+    if (static_cast<int>(picked.size()) == inputs) {
+      std::vector<Vec3> ins;
+      for (std::size_t i : picked)
+        ins.push_back(places[i]);
       for (const std::vector<int> &out : output_row_choices(outputs, size.z))
-        arrangements.push_back({size, rows, out});
+        arrangements.push_back({size, ins, out});
       return;
     }
-    const int from = inputs > 2 && !rows.empty() ? rows.back() + 1 : 0;
-    for (int z = from; z < size.z; ++z) {
-      if (std::find(rows.begin(), rows.end(), z) != rows.end())
+    const std::size_t from =
+        inputs > 2 && !picked.empty() ? picked.back() + 1 : 0;
+    for (std::size_t i = from; i < places.size(); ++i) {
+      if (std::find(picked.begin(), picked.end(), i) != picked.end() ||
+          std::any_of(picked.begin(), picked.end(), [&](std::size_t j) {
+            return feeds(places[i], places[j]);
+          }))
         continue;
-      rows.push_back(z);
+      picked.push_back(i);
       pick();
-      rows.pop_back();
+      picked.pop_back();
     }
   };
   pick();
@@ -145,9 +193,9 @@ build_gate_in(const std::vector<std::uint8_t> &functions,
   if (arrangement.out_rows.size() != functions.size())
     throw std::invalid_argument("one output row per function");
   const Vec3 size = arrangement.size;
-  if (arrangement.in_rows.size() > kMaxModuleInputs)
+  if (arrangement.ins.size() > kMaxModuleInputs)
     throw std::invalid_argument("a module has at most three inputs");
-  Spec spec = parse_spec(gate_spec_text(functions, size, arrangement.in_rows,
+  Spec spec = parse_spec(gate_spec_text(functions, size, arrangement.ins,
                                         arrangement.out_rows, options.horizon));
   if (options.palette)
     spec.palette = *options.palette;
@@ -158,9 +206,7 @@ build_gate_in(const std::vector<std::uint8_t> &functions,
   SolveReport report = solve(spec, solver);
   if (!report.solution)
     return std::nullopt;
-  GateModule module{functions, report.solution->layout, {}, {}};
-  for (int row : arrangement.in_rows)
-    module.ins.push_back({0, 1, row});
+  GateModule module{functions, report.solution->layout, arrangement.ins, {}};
   for (int row : arrangement.out_rows)
     module.outs.push_back({size.x - 1, 1, row});
   return module;
@@ -192,12 +238,9 @@ int module_blocks(const GateModule &module) {
 bool same_arrangement(const GateModule &module,
                       const GateArrangement &arrangement) {
   if (module.layout.size() != arrangement.size ||
-      module.ins.size() != arrangement.in_rows.size() ||
+      module.ins != arrangement.ins ||
       module.outs.size() != arrangement.out_rows.size())
     return false;
-  for (std::size_t k = 0; k < module.ins.size(); ++k)
-    if (module.ins[k].z != arrangement.in_rows[k])
-      return false;
   for (std::size_t o = 0; o < module.outs.size(); ++o)
     if (module.outs[o].z != arrangement.out_rows[o])
       return false;
@@ -205,9 +248,7 @@ bool same_arrangement(const GateModule &module,
 }
 
 GateArrangement arrangement_of(const GateModule &module) {
-  GateArrangement arrangement{module.layout.size(), {}, {}};
-  for (Vec3 in : module.ins)
-    arrangement.in_rows.push_back(in.z);
+  GateArrangement arrangement{module.layout.size(), module.ins, {}};
   for (Vec3 out : module.outs)
     arrangement.out_rows.push_back(out.z);
   return arrangement;
@@ -258,7 +299,7 @@ bool GateCatalog::has(const std::string &key,
                       const GateArrangement &arrangement) const {
   std::lock_guard lock(this->mutex_);
   auto it = this->modules_.find(
-      {key, static_cast<int>(arrangement.in_rows.size()), functions});
+      {key, static_cast<int>(arrangement.ins.size()), functions});
   if (it == this->modules_.end())
     return false;
   return std::any_of(
@@ -343,7 +384,8 @@ std::optional<GateModule> build_gate(const std::vector<std::uint8_t> &functions,
                              .count();
       if (remaining <= 0)
         return std::nullopt;
-      Spec spec = parse_spec(gate_spec_text(functions, size, {0, size.z - 1},
+      Spec spec = parse_spec(gate_spec_text(functions, size,
+                                            {{0, 1, 0}, {0, 1, size.z - 1}},
                                             rows, options.horizon));
       if (options.palette)
         spec.palette = *options.palette;

@@ -79,7 +79,8 @@ TEST_CASE("a piece whose gates are needed anyway is not fused") {
 TEST_CASE("flush placement builds a fused piece from a catalog module") {
   GateLibraryOptions gates;
   gates.time_limit_seconds = 30.0;
-  GateArrangement arrangement{{4, 2, 5}, {0, 2, 4}, {2}};
+  GateArrangement arrangement{
+      {4, 2, 5}, {{0, 1, 0}, {0, 1, 2}, {0, 1, 4}}, {2}};
   std::optional<GateModule> module = build_gate_in({kOr3}, arrangement, gates);
   REQUIRE(module);
   GateCatalog catalog;
@@ -110,6 +111,44 @@ TEST_CASE("flush placement builds a fused piece from a catalog module") {
   CHECK(text.find("OR3") == std::string::npos); // named as a 3-input piece
   CHECK(text.find("3-input 254") != std::string::npos);
   CHECK(result->layout.size().y <= 2);
+  CHECK_FALSE(verify_layout(result->layout, result->spec,
+                            result->spec.verification_vectors()));
+}
+
+TEST_CASE("flush placement wires a module input on its north face") {
+  GateLibraryOptions gates;
+  gates.time_limit_seconds = 30.0;
+  // OR3 with its third input on the north face.
+  GateArrangement arrangement{
+      {4, 2, 5}, {{0, 1, 2}, {0, 1, 4}, {2, 1, 0}}, {2}};
+  std::optional<GateModule> module = build_gate_in({kOr3}, arrangement, gates);
+  REQUIRE(module);
+  GateCatalog catalog;
+  NetlistComposeOptions options;
+  options.max_height = 3;
+  catalog.add(catalog_key(options.palette, options.solver.verification),
+              *module);
+  options.catalog = &catalog;
+
+  Netlist or3{3, {{0, 1, kOr}, {3, 2, kOr}}, {4}};
+  std::vector<std::vector<Group>> groupings =
+      fused_groupings(or3, [](std::uint8_t f) { return f == kOr3; }, 4);
+  REQUIRE(groupings.size() == 1);
+  BoolTable table;
+  table.inputs = 3;
+  table.values.resize(1);
+  for (int t = 0; t < 8; ++t)
+    table.values[0].push_back(t != 0);
+  std::vector<std::string> log;
+  std::optional<ComposeResult> result =
+      compose_flush_groups(or3, table, groupings[0], options,
+                           [&](std::string_view m) { log.emplace_back(m); });
+  std::string text;
+  for (const auto &line : log)
+    text += line + "\n";
+  INFO(text);
+  REQUIRE(result);
+  CHECK(text.find("3-input 254") != std::string::npos);
   CHECK_FALSE(verify_layout(result->layout, result->spec,
                             result->spec.verification_vectors()));
 }

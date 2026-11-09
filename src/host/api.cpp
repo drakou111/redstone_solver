@@ -414,8 +414,9 @@ Json Api::start_shrink(const Json &body) {
 // blocks (several at once). A list is 2-input truth tables, or
 // {"inputs": 3, "functions": [...]}: 3-input modules take their input rows
 // in increasing order, so every other order of the inputs (another truth
-// table) is built too. The catalog file is saved after each function list,
-// so a stopped build resumes where it was.
+// table) is built too. With "sides": true, inputs may also sit on the
+// north and south faces. The catalog file is saved after each function
+// list, so a stopped build resumes where it was.
 Json Api::start_catalog(const Json &body) {
   if (this->job_ && !this->job_->is_done())
     throw std::invalid_argument("a solve is already running");
@@ -477,9 +478,10 @@ Json Api::start_catalog(const Json &body) {
   GateCatalog *catalog = &this->catalog_;
   const std::filesystem::path file = *this->catalog_file_;
   Spec spec;
+  const bool sides = body.value("sides", false);
   this->job_ = std::make_unique<SolveJob>(spec, [function_lists, sizes, gates,
-                                                 key, catalog,
-                                                 file](const JobContext &job) {
+                                                 key, catalog, file,
+                                                 sides](const JobContext &job) {
     auto start = std::chrono::steady_clock::now();
     const int workers =
         std::max(1, static_cast<int>(std::thread::hardware_concurrency()) / 2);
@@ -493,8 +495,9 @@ Json Api::start_catalog(const Json &body) {
         if (size.z < inputs)
           continue;
         std::vector<GateArrangement> todo;
-        for (const GateArrangement &a : gate_arrangements(
-                 size, inputs, static_cast<int>(functions.size())))
+        for (const GateArrangement &a :
+             gate_arrangements(size, inputs,
+                               static_cast<int>(functions.size()), sides))
           if (!catalog->has(key, functions, a))
             todo.push_back(a);
         std::atomic<std::size_t> next = 0;

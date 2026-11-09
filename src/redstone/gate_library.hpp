@@ -16,11 +16,13 @@
 namespace rs {
 
 // Gates of the same inputs built by the solver as one module, ready to be
-// placed: inputs are repeaters facing east on the west face at ins[k],
-// output i is dust on the east face at outs[i]. Function i is its truth
-// table: bit (v0 << (k - 1)) | ... | v(k-1) for input values v (so for two
-// inputs, bit (a << 1) | b). Both faces are empty but for the ports, so
-// modules can sit next to each other; sharing inputs inside one module keeps
+// placed: inputs are repeaters at ins[k] facing into the module (on the
+// west face, or the north or south face, see module_input_facing), output i
+// is dust on the east face at outs[i]. Function i is its truth table: bit
+// (v0 << (k - 1)) | ... | v(k-1) for input values v (so for two inputs, bit
+// (a << 1) | b). The west and east faces, and a north or south face with an
+// input, are empty but for the ports, so modules can sit next to each other
+// and wires can run along them; sharing inputs inside one module keeps
 // wires that feed several gates out of the channels.
 struct GateModule {
   std::vector<std::uint8_t> functions;
@@ -33,6 +35,11 @@ struct GateModule {
 // new order: input k of the result is input order[k] of `function`.
 std::uint8_t permute_function(std::uint8_t function, int inputs,
                               const std::vector<int> &order);
+
+// The way the input repeater at `in` of a module of `size` faces: east on
+// the west face (x 0), else south on the north face (z 0) or north on the
+// south face.
+Dir module_input_facing(Vec3 size, Vec3 in);
 
 // Whether the function's value changes with each of its inputs.
 bool depends_on_all(std::uint8_t function, int inputs);
@@ -66,21 +73,24 @@ private:
 std::string gate_cache_key(const std::vector<std::uint8_t> &functions,
                            const GateLibraryOptions &options);
 
-// Where a module's ports sit: input repeaters on the west face (x 0) and
-// output dust on the east face, all at height 1, in these rows (z).
+// Where a module's ports sit, all at height 1: input repeaters at these
+// cells (see module_input_facing) and output dust on the east face in these
+// rows (z).
 struct GateArrangement {
   Vec3 size{};
-  std::vector<int> in_rows;
+  std::vector<Vec3> ins;
   std::vector<int> out_rows;
 };
 
 // Every arrangement in a box of `size` for `inputs` inputs and `outputs`
-// outputs, output rows no two next to each other. Two inputs take any two
-// different rows in either order; three or more take rows in increasing
-// order only (the same gate with its inputs in another order is another
-// truth table, see permute_function).
+// outputs, output rows no two next to each other. Inputs sit on the west
+// face and, with `sides` (boxes 3 deep or more), also on the north and
+// south faces between the corners. Two inputs take any two places in either
+// order; three or more take them in one order only, west rows first (the
+// same gate with its inputs in another order is another truth table, see
+// permute_function).
 std::vector<GateArrangement> gate_arrangements(Vec3 size, int inputs,
-                                               int outputs);
+                                               int outputs, bool sides = false);
 
 // A module for `functions` in exactly this arrangement: the fewest blocks
 // found within options.time_limit_seconds, or nothing.

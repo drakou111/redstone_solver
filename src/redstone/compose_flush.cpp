@@ -50,6 +50,9 @@ constexpr long kNoiseShare = 3;
 constexpr int kMaxBacktracks = 24;
 // Rows a gate of new inputs may start below the free rows.
 constexpr int kFreshRowShift = 6;
+// A module fed from its north or south face: rows its input may sit off
+// the signal's row (either way).
+constexpr int kSideShift = 3;
 
 // A placed module's cells, both ends included.
 struct Footprint {
@@ -67,12 +70,29 @@ bool inside(const Footprint &f, Vec3 p) {
 }
 
 // A wire to solve: from the cell a signal is at to the cell in front of a
-// module input.
+// module input (whose repeater faces `into`).
 struct Route {
   Vec3 from;
   Vec3 to;
   int node = 0; // the signal it carries
+  Dir into = Dir::East;
 };
+
+// Where a module's input k is fed from, relative to the module: the cell
+// behind its repeater, and the way the repeater faces.
+struct Feed {
+  Vec3 cell;
+  Dir into = Dir::East;
+};
+
+std::vector<Feed> feeds_of(const GateModule &module) {
+  std::vector<Feed> feeds;
+  for (Vec3 in : module.ins) {
+    const Dir into = module_input_facing(module.layout.size(), in);
+    feeds.push_back({in - offset(into), into});
+  }
+  return feeds;
+}
 
 // Where a gate goes: a module at (x0, z), or (join) no module at all, its
 // two signals wired into one dust cell.
@@ -353,7 +373,7 @@ std::optional<ComposeResult> compose_parts::compose_flush_groups(
       }
       o.repeaters = allowed(BlockType::Repeater);
       WireRouter router(cells, blocked, o);
-      WireGoal goal{r.to, Dir::East};
+      WireGoal goal{r.to, r.into};
       if (p.join) {
         goal.kind = first_join ? WireGoal::Kind::Dust : WireGoal::Kind::Join;
         first_join = false;
@@ -426,12 +446,15 @@ std::optional<ComposeResult> compose_parts::compose_flush_groups(
       if (functions == group.functions && modules->contains(functions) &&
           arity == 2)
         variants.push_back({&modules->at(functions), ops});
+      // Modules fed from the side need the router to reach their inputs.
       if (options.catalog)
         for (const GateModule &m :
              catalog_modules.emplace_back(options.catalog->variants(
                  catalog_key(options.palette, options.solver.verification),
                  arity, functions, height)))
-          variants.push_back({&m, ops});
+          if (use_router || std::all_of(m.ins.begin(), m.ins.end(),
+                                        [](Vec3 in) { return in.x == 0; }))
+            variants.push_back({&m, ops});
     } while (std::next_permutation(order.begin(), order.end()));
     const std::string names = group_name(group);
     if (variants.empty()) {
@@ -470,12 +493,22 @@ std::optional<ComposeResult> compose_parts::compose_flush_groups(
       std::vector<Choice> spots;
       for (const Variant &variant : variants) {
         std::size_t first_spot = spots.size();
+        const std::vector<Feed> feeds = feeds_of(*variant.module);
         for (int k = 0; k < arity; ++k) {
           const int op = variant.ops[k];
           if (!source[op])
             continue;
-          const int input_z = variant.module->ins[k].z;
           Vec3 s = *source[op];
+          if (feeds[k].into != Dir::East) {
+            // Fed from the side: east of the signal, the input a few rows
+            // off its row.
+            for (int gap = 0; gap <= kRoutedGap; ++gap)
+              for (int dz = -kSideShift; dz <= kSideShift; ++dz)
+                spots.push_back(
+                    {s.x + 1 + gap, s.z - feeds[k].cell.z + dz, &variant});
+            continue;
+          }
+          const int input_z = feeds[k].cell.z;
           spots.push_back({s.x + 1, s.z - input_z, &variant});
           for (int gap = 1; gap <= 1 + options.flush_spacing; ++gap)
             spots.push_back({s.x + 1 + gap, s.z - input_z, &variant});
@@ -501,9 +534,10 @@ std::optional<ComposeResult> compose_parts::compose_flush_groups(
           continue;
         const GateModule &m = *variant->module;
         const Vec3 msize = m.layout.size();
-        std::vector<int> input_z;
-        for (Vec3 in : m.ins)
-          input_z.push_back(in.z);
+        const std::vector<Feed> feeds = feeds_of(m);
+        std::vector<Vec3> targets;
+        for (const Feed &feed : feeds)
+          targets.push_back(Vec3{x0, 0, z} + feed.cell);
         const std::vector<int> &ops = variant->ops;
         Spot p{x0, z, {x0, x0 + msize.x - 1, z, z + msize.z - 1}, {}, {}, 0};
         p.module = &m;
@@ -516,7 +550,7 @@ std::optional<ComposeResult> compose_parts::compose_flush_groups(
               ok = !placed.contains(key({x, y, zz}));
         long route_length = 0;
         for (int k = 0; ok && k < arity; ++k) {
-          const Vec3 target{x0 - 1, 1, z + input_z[k]};
+          const Vec3 target = targets[k];
           Vec3 from;
           if (source[ops[k]]) {
             from = *source[ops[k]];
@@ -531,8 +565,7 @@ std::optional<ComposeResult> compose_parts::compose_flush_groups(
               // Its wire starts east of it: not where another one ends.
               const Vec3 first = cell + Vec3{1, 0, 0};
               for (int j = 0; j < arity; ++j)
-                if (j != k && first == Vec3{x0 - 1, 1, z + input_z[j]} &&
-                    first != target)
+                if (j != k && first == targets[j] && first != target)
                   return false;
               auto crowds = [&](int input, Vec3 other) {
                 int need =
@@ -552,8 +585,8 @@ std::optional<ComposeResult> compose_parts::compose_flush_groups(
             // Away from the module's other inputs first, so the wires do
             // not cross at the module.
             const bool lowest =
-                std::all_of(input_z.begin(), input_z.end(),
-                            [&](int other) { return input_z[k] <= other; });
+                std::all_of(targets.begin(), targets.end(),
+                            [&](Vec3 other) { return target.z <= other.z; });
             const int away = lowest ? -1 : 1;
             for (int sign : {away, -away})
               for (int shift = 0; shift <= reach && !chosen; ++shift) {
@@ -580,7 +613,7 @@ std::optional<ComposeResult> compose_parts::compose_flush_groups(
             ok = false;
             continue;
           }
-          p.routes.push_back({from, target, ops[k]});
+          p.routes.push_back({from, target, ops[k], feeds[k].into});
           route_length +=
               std::abs(from.x - target.x) + std::abs(from.z - target.z);
         }

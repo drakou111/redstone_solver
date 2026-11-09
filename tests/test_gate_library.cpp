@@ -48,8 +48,9 @@ TEST_CASE("gate arrangements put inputs in two rows and outputs apart") {
   std::vector<GateArrangement> one = gate_arrangements({4, 2, 3}, 2, 1);
   CHECK(one.size() == 6 * 3); // ordered input pairs, then any output row
   for (const GateArrangement &a : one) {
-    REQUIRE(a.in_rows.size() == 2);
-    CHECK(a.in_rows[0] != a.in_rows[1]);
+    REQUIRE(a.ins.size() == 2);
+    CHECK(a.ins[0] != a.ins[1]);
+    CHECK(a.ins[0].x == 0);
   }
   for (const GateArrangement &a : gate_arrangements({4, 2, 3}, 2, 2)) {
     REQUIRE(a.out_rows.size() == 2);
@@ -61,7 +62,7 @@ TEST_CASE("a catalog keeps each arrangement's module with the fewest blocks") {
   GateLibraryOptions options;
   options.time_limit_seconds = 30.0;
   const std::uint8_t kAnd = 0b1000;
-  GateArrangement arrangement{{5, 2, 3}, {0, 2}, {1}};
+  GateArrangement arrangement{{5, 2, 3}, {{0, 1, 0}, {0, 1, 2}}, {1}};
   std::optional<GateModule> module =
       build_gate_in({kAnd}, arrangement, options);
   REQUIRE(module);
@@ -102,17 +103,66 @@ TEST_CASE("3-input arrangements keep the input rows in order") {
   std::vector<GateArrangement> three = gate_arrangements({5, 2, 4}, 3, 1);
   CHECK(three.size() == 4 * 4); // rows {0,1,2} {0,1,3} {0,2,3} {1,2,3}
   for (const GateArrangement &a : three) {
-    REQUIRE(a.in_rows.size() == 3);
-    CHECK(a.in_rows[0] < a.in_rows[1]);
-    CHECK(a.in_rows[1] < a.in_rows[2]);
+    REQUIRE(a.ins.size() == 3);
+    CHECK(a.ins[0].z < a.ins[1].z);
+    CHECK(a.ins[1].z < a.ins[2].z);
   }
+}
+
+TEST_CASE("side inputs sit on the north and south faces between corners") {
+  // 4x2x3: west rows 0..2, north x 1..2, south x 1..2.
+  std::vector<GateArrangement> sides = gate_arrangements({4, 2, 3}, 2, 1, true);
+  bool north = false;
+  bool south = false;
+  for (const GateArrangement &a : sides)
+    for (Vec3 in : a.ins) {
+      CHECK(in.y == 1);
+      if (in.x > 0) {
+        CHECK(in.x < 3);
+        CHECK((in.z == 0 || in.z == 2));
+        north |= in.z == 0;
+        south |= in.z == 2;
+        CHECK(module_input_facing({4, 2, 3}, in) ==
+              (in.z == 0 ? Dir::South : Dir::North));
+      }
+    }
+  CHECK(north);
+  CHECK(south);
+  // 7 places, ordered pairs, less the 4 where a corner west input feeds the
+  // side input beside it; 3 output rows.
+  CHECK(sides.size() == (7 * 6 - 4) * 3);
+  // Two deep: no side inputs.
+  CHECK(gate_arrangements({4, 2, 2}, 2, 1, true).size() ==
+        gate_arrangements({4, 2, 2}, 2, 1).size());
+}
+
+TEST_CASE("a module takes an input on its north face") {
+  GateLibraryOptions options;
+  options.time_limit_seconds = 30.0;
+  const std::uint8_t kAnd = 0b1000;
+  GateArrangement arrangement{{5, 2, 4}, {{0, 1, 2}, {2, 1, 0}}, {2}};
+  std::optional<GateModule> module =
+      build_gate_in({kAnd}, arrangement, options);
+  REQUIRE(module);
+  CHECK(module->ins == arrangement.ins);
+  const World &w = module->layout;
+  CHECK(w.at({2, 1, 0}).type == BlockType::Input);
+  // The north face is clean but for the input.
+  CHECK(w.at({1, 1, 0}).type == BlockType::Air);
+  GateCatalog catalog;
+  const std::string key = catalog_key(std::nullopt, {});
+  CHECK(catalog.add(key, *module));
+  CHECK(catalog.has(key, {kAnd}, arrangement));
+  GateArrangement west{{5, 2, 4}, {{0, 1, 2}, {0, 1, 0}}, {2}};
+  CHECK_FALSE(catalog.has(key, {kAnd}, west));
 }
 
 TEST_CASE("a 3-input module is built in a given arrangement") {
   GateLibraryOptions options;
   options.time_limit_seconds = 30.0;
   const std::uint8_t kOr3 = 0xFE;
-  GateArrangement arrangement{{4, 2, 5}, {0, 2, 4}, {2}};
+  GateArrangement arrangement{
+      {4, 2, 5}, {{0, 1, 0}, {0, 1, 2}, {0, 1, 4}}, {2}};
   std::optional<GateModule> module =
       build_gate_in({kOr3}, arrangement, options);
   REQUIRE(module);
