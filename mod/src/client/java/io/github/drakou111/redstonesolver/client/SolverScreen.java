@@ -6,7 +6,6 @@ import com.google.gson.JsonObject;
 import io.github.drakou111.redstonesolver.core.Box;
 import io.github.drakou111.redstonesolver.core.Cell;
 import io.github.drakou111.redstonesolver.core.CircuitDraft;
-import io.github.drakou111.redstonesolver.core.Dir;
 import io.github.drakou111.redstonesolver.core.Durations;
 import io.github.drakou111.redstonesolver.core.Formula;
 import io.github.drakou111.redstonesolver.core.Port;
@@ -20,16 +19,19 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.function.Consumer;
 import java.util.function.DoubleConsumer;
+import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.GuiGraphicsExtractor;
-import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.client.gui.components.Button;
 import net.minecraft.client.gui.components.EditBox;
 import net.minecraft.client.gui.components.Tooltip;
 import net.minecraft.client.gui.screens.Screen;
+import net.minecraft.client.player.LocalPlayer;
+import net.minecraft.core.BlockPos;
+import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.network.chat.Component;
 import net.minecraft.resources.Identifier;
-import net.minecraft.world.item.ItemStack;
 import net.minecraft.util.FormattedCharSequence;
+import net.minecraft.world.item.ItemStack;
 
 /**
  * The Solver panel (R): box, ports, truth table, solve settings and the last result. Left column:
@@ -47,9 +49,10 @@ public final class SolverScreen extends Screen {
     private static final int SMALL_BUTTON = 16;
     private static final int MAX_LOG_LINES = 12;
     private static final int RESULT_CARD_HEIGHT = 112;
+    // Buttons beside a heading: short enough to stay inside the card.
+    private static final int HEADER_BUTTON_HEIGHT = 14;
+    private static final int HEADER_BUTTON_RISE = 3;
     private static final int MAX_FORMULA_LENGTH = 200;
-    // Place in box, Discard, Shrink, Export and the gaps between them.
-    private static final int RESULT_BUTTONS_WIDTH = 64 + 50 + 46 + 46 + 3 * GAP;
     private static final int MANY_ROWS = 64;
     private static final Map<String, String> PALETTE_LABELS = Map.ofEntries(Map.entry("solid", "Solid block (wool)"),
             Map.entry("glass", "Glass (does not conduct)"), Map.entry("dust", "Redstone dust"),
@@ -88,8 +91,6 @@ public final class SolverScreen extends Screen {
     private final ClientState state;
     private final ServerLink server;
     private final DraftFiles files;
-    private final Optional<Cell> lookTarget;
-    private final Dir lookFacing;
     private final List<Label> labels = new ArrayList<>();
     private final List<Card> cards = new ArrayList<>();
     private int seenVersion;
@@ -116,18 +117,11 @@ public final class SolverScreen extends Screen {
     private int formulaStatusWidth;
     private int progressY;
 
-    /**
-     * @param lookTarget the cell in front of the block the player looked at when opening the panel
-     * @param lookFacing the way the player faced then
-     */
-    public SolverScreen(ClientState state, ServerLink server, DraftFiles files, Optional<Cell> lookTarget,
-            Dir lookFacing) {
+    public SolverScreen(ClientState state, ServerLink server, DraftFiles files) {
         super(Component.literal("Redstone Solver"));
         this.state = state;
         this.server = server;
         this.files = files;
-        this.lookTarget = lookTarget;
-        this.lookFacing = lookFacing;
     }
 
     @Override
@@ -369,7 +363,7 @@ public final class SolverScreen extends Screen {
             return;
         }
         boolean formulas = draft.isFormulaMode();
-        this.button(x + this.font.width("Truth table") + 2 * GAP, y - 5, 96, formulas ? "Using: formulas" : "Using: rows",
+        this.headerButton(x + this.font.width("Truth table") + 2 * GAP, y, 96, formulas ? "Using: formulas" : "Using: rows",
                 "Rows: type the output range for each input case. Formulas: one formula per output, such as "
                         + "(A + B) % 16, expanded into every case for you",
                 () -> {
@@ -630,36 +624,41 @@ public final class SolverScreen extends Screen {
         if (count > 1) {
             // Older and newer results: each can be placed, shrunk or exported.
             int navX = x + this.font.width("Result") + 2 * GAP;
-            this.button(navX, y - 5, SMALL_BUTTON, "<", "Older result", () -> this.state.step(-1));
+            this.headerButton(navX, y, SMALL_BUTTON, "<", "Older result", () -> this.state.step(-1));
             this.label("%d/%d".formatted(this.state.getSelectedIndex() + 1, count), navX + SMALL_BUTTON + GAP, y,
                     HINT_COLOR);
-            this.button(navX + SMALL_BUTTON + 2 * GAP + this.font.width(count + "/" + count), y - 5, SMALL_BUTTON, ">",
+            this.headerButton(navX + SMALL_BUTTON + 2 * GAP + this.font.width(count + "/" + count), y, SMALL_BUTTON, ">",
                     "Newer result", () -> this.state.step(1));
         }
         if (result.isPresent() && result.get().has("log")) {
-            this.button(x + width - 40, y - 5, 40, this.logOpen ? "Log -" : "Log +", "The solver's log", () -> {
+            this.headerButton(x + width - 40, y, 40, this.logOpen ? "Log -" : "Log +", "The solver's log", () -> {
                 this.logOpen = !this.logOpen;
                 this.rebuildWidgets();
             });
         }
-        boolean hasCircuit = result.isPresent() && result.get().has("id");
         // Enough rows for the buttons below the text: measured, then built.
-        int buttonsWidth = RESULT_BUTTONS_WIDTH + (this.lookTarget.isPresent() ? 100 + GAP : 0);
-        int buttonRows = Math.max(1, (buttonsWidth + width - 1) / Math.max(1, width));
+        boolean wasDryRun = this.dryRun;
+        this.dryRun = true;
+        this.flowStart(x, 0, x + width);
+        this.resultButtons(result);
+        int buttonRows = this.flowY / (ROW + GAP) + 1;
+        this.dryRun = wasDryRun;
         this.resultButtonsTop = y + RESULT_CARD_HEIGHT - buttonRows * (ROW + GAP) + GAP - 2;
         this.flowStart(x, this.resultButtonsTop, x + width);
+        this.resultButtons(result);
+    }
+
+    private void resultButtons(Optional<JsonObject> result) {
+        boolean hasCircuit = result.isPresent() && result.get().has("id");
         if (hasCircuit) {
             boolean occupied = result.get().has("boxOccupied") && result.get().get("boxOccupied").getAsBoolean();
             this.flowButton(Component.literal(occupied ? "Replace box" : "Place in box"), occupied ? 70 : 64,
                     occupied ? "Clears the box (blocks in it are lost) and builds the circuit"
                             : "Builds the circuit where it was solved; can be done again",
                     () -> this.run(this.server::place));
-            if (this.lookTarget.isPresent()) {
-                this.flowButton(Component.literal("Place where I look"), 100,
-                        "Builds a copy at the block you looked at when you opened this panel, turned to face the way "
-                                + "you looked (blocks there are replaced)",
-                        () -> this.run(() -> this.server.placeAt(this.lookTarget.get(), this.lookFacing)));
-            }
+            this.flowButton(Component.literal("Place here"), 64,
+                    "Builds a copy where you stand, turned to face the way you look (blocks there are replaced)",
+                    () -> this.run(this::placeHere));
             this.flowButton(Component.literal("Discard"), 50, "Forget this circuit", () -> this.run(this.server::discard));
             if (result.get().has("fromLibrary") && result.get().get("fromLibrary").getAsBoolean() && !this.state.isSolving()) {
                 this.flowButton(Component.literal("Search again"), 76,
@@ -902,6 +901,22 @@ public final class SolverScreen extends Screen {
         box.setValue(value);
         box.setTooltip(Tooltip.create(Component.literal(tooltip)));
         return box;
+    }
+
+    // A copy of the shown result where the player stands, facing their way.
+    private void placeHere() {
+        LocalPlayer player = Minecraft.getInstance().player;
+        if (player == null) throw new IllegalStateException("Not in a world.");
+        BlockPos pos = player.blockPosition();
+        this.server.placeAt(new Cell(pos.getX(), pos.getY(), pos.getZ()), ClientRsCommands.toDir(player.getDirection()));
+    }
+
+    // A button beside a heading at y, kept inside the heading's card.
+    private void headerButton(int x, int y, int width, String text, String tooltip, Runnable action) {
+        this.addRenderableWidget(Button.builder(Component.literal(text), b -> action.run())
+                .bounds(x, y - HEADER_BUTTON_RISE, width, HEADER_BUTTON_HEIGHT)
+                .tooltip(Tooltip.create(Component.literal(tooltip)))
+                .build());
     }
 
     private int button(int x, int y, int width, String text, String tooltip, Runnable action) {

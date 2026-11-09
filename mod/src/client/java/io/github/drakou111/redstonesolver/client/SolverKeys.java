@@ -63,8 +63,7 @@ public final class SolverKeys {
         while (this.cellMenu.consumeClick()) this.openCellMenu(client);
         while (this.panel.consumeClick()) {
             if (client.player != null) {
-                client.setScreenAndShow(new SolverScreen(this.state, this.server, this.files, lookedAtPlacement(client),
-                        ClientRsCommands.toDir(client.player.getDirection())));
+                client.setScreenAndShow(new SolverScreen(this.state, this.server, this.files));
             }
         }
     }

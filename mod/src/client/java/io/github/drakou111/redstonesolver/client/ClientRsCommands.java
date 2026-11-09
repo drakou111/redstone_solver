@@ -147,9 +147,9 @@ public final class ClientRsCommands {
     // The shown result at the looked-at cell, turned the way the player faces.
     private int placeHere(CommandContext<FabricClientCommandSource> context) {
         FabricClientCommandSource source = context.getSource();
-        Optional<Cell> target = SolverKeys.lookedAtPlacement(source.getClient());
-        if (target.isEmpty()) return fail(context, "Look at the block to build on.");
-        return this.run(context, () -> this.server.placeAt(target.get(), toDir(source.getPlayer().getDirection())), "");
+        BlockPos pos = source.getPlayer().blockPosition();
+        Cell here = new Cell(pos.getX(), pos.getY(), pos.getZ());
+        return this.run(context, () -> this.server.placeAt(here, toDir(source.getPlayer().getDirection())), "");
     }
 
     private int save(CommandContext<FabricClientCommandSource> context, boolean overwrite) {
