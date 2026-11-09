@@ -120,3 +120,24 @@ hint 4 0 0 solid
   CHECK_FALSE(verify_layout(result.layout, result.spec,
                             result.spec.verification_vectors()));
 }
+
+TEST_CASE("another circuit in the same box keeps the ports where they are") {
+  Spec spec = parse_spec(kWideNot);
+  SolverOptions solver;
+  solver.time_limit_seconds = kTimeLimitSeconds;
+  solver.stop_at_first = true;
+  SolveReport first = solve(spec, solver);
+  REQUIRE(first.solution);
+  const World &layout = first.solution->layout;
+  // A NOT gate in 7 cells has room for other wirings; some seed finds one.
+  std::optional<World> variant;
+  for (unsigned seed = 1; seed <= 10 && !variant; ++seed)
+    variant = layout_variant(spec_with_layout(spec, layout), layout, 0.5, seed,
+                             kTimeLimitSeconds, solver);
+  REQUIRE(variant);
+  CHECK(variant->find_input(0) == layout.find_input(0));
+  CHECK(variant->find_output(0) == layout.find_output(0));
+  Spec again = spec_with_layout(spec, *variant);
+  CHECK_FALSE(verify_layout(*variant, again, again.verification_vectors(),
+                            solver.verification));
+}

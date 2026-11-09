@@ -9,6 +9,7 @@
 #include <functional>
 #include <future>
 #include <mutex>
+#include <random>
 #include <stdexcept>
 #include <thread>
 #include <vector>
@@ -137,6 +138,11 @@ constexpr double kTidyMinSeconds = 5.0;
 
 // How often a dead end may send the search back a step.
 constexpr int kMaxBacktracks = 3;
+// Diversifying: time to build one other circuit, tries per dead end, and
+// the share of the whole time kept for tidying at the end.
+constexpr double kVariantSeconds = 20.0;
+constexpr int kVariantTries = 4;
+constexpr double kTidyShare = 0.1;
 
 // One verified box on the shrink's path and the cuts tried from it.
 struct ShrinkNode {
@@ -399,6 +405,33 @@ ShrinkResult tidy(const Spec &spec, const World &layout,
   return result;
 }
 
+std::optional<World> layout_variant(const Spec &spec, const World &layout,
+                                    double keep, unsigned seed, double seconds,
+                                    const SolverOptions &solver) {
+  Spec variant = spec_with_layout(spec, layout);
+  std::vector<std::pair<Vec3, Block>> blocks = std::move(variant.hints);
+  variant.hints.clear();
+  std::mt19937 rng(seed);
+  std::shuffle(blocks.begin(), blocks.end(), rng);
+  const auto kept = static_cast<std::size_t>(keep * blocks.size());
+  for (std::size_t i = 0; i < kept; ++i)
+    variant.fixed.push_back(blocks[i]);
+  SolverOptions o = solver;
+  o.time_limit_seconds = seconds;
+  o.stop_at_first = true;
+  o.sat_seed = static_cast<int>(seed % 1000);
+  SolveReport report = solve(variant, o);
+  if (!report.solution)
+    return std::nullopt;
+  const World &found = report.solution->layout;
+  for (int i = 0; i < found.volume(); ++i) {
+    const Vec3 p = found.position_of(i);
+    if (!(found.at(p) == layout.at(p)))
+      return found;
+  }
+  return std::nullopt;
+}
+
 int shrink_workers(const ShrinkOptions &options) {
   if (options.parallel > 0)
     return options.parallel;
@@ -420,6 +453,11 @@ ShrinkResult shrink(const Spec &spec, const World &layout,
   };
   auto cancelled = [&] { return options.cancel && options.cancel->load(); };
   auto out_of_time = [&] { return cancelled() || Clock::now() >= deadline; };
+  // Diversifying stops here, so tidying gets the rest.
+  const Clock::time_point diversify_until =
+      deadline -
+      std::chrono::duration_cast<Clock::duration>(std::chrono::duration<double>(
+          options.time_limit_seconds * kTidyShare));
 
   // A depth-first search: a dead end goes back to the box before it and
   // tries the cuts there that were not tried or not finished.
@@ -427,6 +465,43 @@ ShrinkResult shrink(const Spec &spec, const World &layout,
   path.push_back(make_node(spec_with_layout(spec, layout), layout, options));
   ShrinkResult best{path.back().spec, layout, 0};
   int backtracks = 0;
+  int variants = 0;
+  unsigned variant_seed = options.seed;
+  // Another circuit in the smallest box so far, to cut instead.
+  auto diversify = [&]() -> bool {
+    if (!options.diversify)
+      return false;
+    for (int t = 0; t < kVariantTries && Clock::now() < diversify_until; ++t) {
+      const double left =
+          std::chrono::duration<double>(diversify_until - Clock::now()).count();
+      SolverOptions solver = options.solver;
+      solver.cancel = options.cancel;
+      std::optional<World> variant = layout_variant(
+          best.spec, best.layout, options.diversify_keep, ++variant_seed,
+          std::min(kVariantSeconds, left), solver);
+      if (!variant)
+        continue;
+      ++variants;
+      say(std::format("no cut works; trying another {}x{}x{} circuit ({})",
+                      best.spec.size.x, best.spec.size.y, best.spec.size.z,
+                      variants));
+      path.clear();
+      // Built first: the move below must not happen before it reads.
+      Spec variant_spec = spec_with_layout(best.spec, *variant);
+      // Same box, fewer blocks: the better answer even if no cut works.
+      if (layout_blocks(*variant) < layout_blocks(best.layout)) {
+        best.spec = variant_spec;
+        best.layout = *variant;
+        if (options.preview)
+          options.preview(best.layout);
+      }
+      path.push_back(
+          make_node(std::move(variant_spec), std::move(*variant), options));
+      backtracks = 0;
+      return true;
+    }
+    return false;
+  };
   while (!path.empty() && !out_of_time()) {
     ShrinkNode &node = path.back();
     std::vector<std::size_t> pending;
@@ -535,6 +610,8 @@ ShrinkResult shrink(const Spec &spec, const World &layout,
     if (out_of_time())
       break;
     path.pop_back();
+    if ((path.empty() || backtracks >= kMaxBacktracks) && diversify())
+      continue;
     if (path.empty() || backtracks >= kMaxBacktracks) {
       say("no cut works");
       double left =

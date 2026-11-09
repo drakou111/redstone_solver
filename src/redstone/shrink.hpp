@@ -21,6 +21,12 @@ struct ShrinkOptions {
   std::atomic<bool> *cancel = nullptr;
   // Each smaller (or, tidying, leaner) circuit as it is found.
   PreviewCallback preview;
+  // When no cut works: build another circuit in the same box (a random
+  // share of the blocks kept, the rest solved anew) and try the cuts on it,
+  // until the time is nearly up.
+  bool diversify = true;
+  double diversify_keep = 0.5; // share of the blocks kept
+  unsigned seed = 0;           // varies which blocks are kept
 };
 
 struct ShrinkResult {
@@ -58,8 +64,19 @@ Spec spec_with_layout(const Spec &spec, const World &layout);
 // (several at once) with the layout as a sketch, the first one the solver
 // verifies is kept, and the search starts again from it. At a dead end it
 // goes back a step and tries the other cuts there (a few times at most).
-// Ends when no cut works, the time runs out or `cancel` is set, with the
-// smallest layout found; time left when no cut works goes to tidy().
+// When no cut works, other circuits in the smallest box are built
+// (options.diversify) and cut in turn. Ends when the time runs out or
+// `cancel` is set, with the smallest layout found; the last part of the
+// time goes to tidy().
+
+// Another verified circuit in the box of `spec` (its ports fixed): a
+// random share `keep` of the blocks of `layout` kept, everything else
+// solved anew, within `seconds`. Nothing if none was found or it came out
+// the same.
+std::optional<World> layout_variant(const Spec &spec, const World &layout,
+                                    double keep, unsigned seed, double seconds,
+                                    const SolverOptions &solver);
+
 ShrinkResult shrink(const Spec &spec, const World &layout,
                     const ShrinkOptions &options,
                     const ProgressCallback &progress = {});
