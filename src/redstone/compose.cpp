@@ -92,10 +92,11 @@ std::vector<Group> group_gates(const Netlist &netlist,
     const Gate &gate = netlist.gates[g];
     int node = n + static_cast<int>(g);
     auto same = std::find_if(groups.begin(), groups.end(), [&](const Group &x) {
-      return x.a == gate.a && x.b == gate.b && level[x.nodes[0]] == level[node];
+      return x.operands == std::vector<int>{gate.a, gate.b} &&
+             level[x.nodes[0]] == level[node];
     });
     if (same == groups.end()) {
-      groups.push_back({gate.a, gate.b, {}, {}});
+      groups.push_back({{gate.a, gate.b}, {}, {}});
       same = groups.end() - 1;
     }
     same->nodes.push_back(node);
@@ -116,7 +117,7 @@ build_modules(const std::vector<Group> &groups,
   std::map<std::vector<std::uint8_t>, GateModule> modules;
   module_height = 2;
   for (const Group &group : groups) {
-    if (modules.contains(group.functions))
+    if (group.operands.size() != 2 || modules.contains(group.functions))
       continue;
     const std::string cache_key = gate_cache_key(group.functions, gate_options);
     std::optional<GateModule> m;
@@ -199,8 +200,13 @@ bool smaller(const ComposeResult &a, const ComposeResult &b) {
   return a.spec.hints.size() < b.spec.hints.size();
 }
 
+// Fused groupings tried (fewest modules first) and builds of each.
+constexpr int kMaxFusedGroupings = 4;
+constexpr int kFusedSeeds = 4;
+
 // The plain flush build and, when the router draws the wires (each build
-// takes moments), more with shuffled spot rankings side by side; the
+// takes moments), more with shuffled spot rankings side by side, and builds
+// where catalog modules of three inputs stand in for several gates; the
 // smallest is kept. The first build fills the module cache for the rest.
 std::optional<ComposeResult>
 flush_variants(const Netlist &netlist, const BoolTable &table,
@@ -210,12 +216,39 @@ flush_variants(const Netlist &netlist, const BoolTable &table,
   NetlistComposeOptions first = options;
   if (!first.gate_cache)
     first.gate_cache = &local_cache;
+  std::vector<std::vector<Group>> fused;
+  if (options.catalog && options.flush_router) {
+    const std::string key =
+        catalog_key(options.palette, options.solver.verification);
+    auto has_module = [&](std::uint8_t function) {
+      std::vector<int> order{0, 1, 2};
+      do {
+        if (!options.catalog
+                 ->variants(key, 3, {permute_function(function, 3, order)},
+                            options.max_height)
+                 .empty())
+          return true;
+      } while (std::next_permutation(order.begin(), order.end()));
+      return false;
+    };
+    fused = fused_groupings(netlist, has_module, kMaxFusedGroupings);
+    if (progress)
+      for (const std::vector<Group> &grouping : fused) {
+        std::string pieces;
+        for (const Group &group : grouping)
+          if (group.operands.size() > 2)
+            pieces += (pieces.empty() ? "" : ", ") + group_name(group);
+        progress(std::format("flush: also building with {} ({} modules)",
+                             pieces, grouping.size()));
+      }
+  }
   std::optional<ComposeResult> best =
       compose_flush(netlist, table, first, progress);
-  if (!best || !options.flush_router || options.flush_variants <= 1)
+  if (!options.flush_router || (!best && fused.empty()) ||
+      (options.flush_variants <= 1 && fused.empty()))
     return best;
   std::vector<std::future<std::optional<ComposeResult>>> variants;
-  for (int seed = 1; seed < options.flush_variants; ++seed) {
+  for (int seed = 1; best && seed < options.flush_variants; ++seed) {
     NetlistComposeOptions o = first;
     o.flush_seed = seed;
     o.flush_sat = false; // variants are quick or nothing
@@ -224,6 +257,18 @@ flush_variants(const Netlist &netlist, const BoolTable &table,
       return compose_flush(netlist, table, o, {});
     }));
   }
+  const std::size_t plain_builds = variants.size();
+  for (const std::vector<Group> &grouping : fused)
+    for (int seed = 0; seed < kFusedSeeds; ++seed) {
+      NetlistComposeOptions o = first;
+      o.flush_seed = seed;
+      o.flush_sat = false;
+      o.preview = {};
+      variants.push_back(
+          std::async(std::launch::async, [&netlist, &table, &grouping, o] {
+            return compose_flush_groups(netlist, table, grouping, o, {});
+          }));
+    }
   const bool timed = options.timing.earliest || options.timing.latest;
   auto meets_timing = [&](const ComposeResult &r) {
     if (!timed)
@@ -233,24 +278,26 @@ flush_variants(const Netlist &netlist, const BoolTable &table,
     return !verify_layout(r.layout, spec, spec.verification_vectors(),
                           options.solver.verification);
   };
-  bool best_meets = meets_timing(*best);
-  for (auto &variant : variants) {
-    std::optional<ComposeResult> result = variant.get();
+  bool best_meets = best && meets_timing(*best);
+  bool best_fused = false;
+  for (std::size_t v = 0; v < variants.size(); ++v) {
+    std::optional<ComposeResult> result = variants[v].get();
     if (!result)
       continue;
     bool meets = meets_timing(*result);
-    if ((meets && !best_meets) ||
+    if (!best || (meets && !best_meets) ||
         (meets == best_meets && smaller(*result, *best))) {
       best = std::move(result);
       best_meets = meets;
+      best_fused = v >= plain_builds;
     }
   }
-  if (progress) {
+  if (progress && best) {
     Vec3 size = best->layout.size();
-    progress(std::format("flush: {} builds; the {} is {}x{}x{}",
-                         options.flush_variants,
-                         timed && best_meets ? "smallest in time" : "smallest",
-                         size.x, size.y, size.z));
+    progress(std::format(
+        "flush: {} builds; the {} is {}x{}x{}{}", variants.size() + 1,
+        timed && best_meets ? "smallest in time" : "smallest", size.x, size.y,
+        size.z, best_fused ? " (with 3-input modules)" : ""));
   }
   return best;
 }
@@ -353,8 +400,9 @@ compose_netlist(const Netlist &netlist, const BoolTable &table,
     std::vector<Item> items;
     for (std::size_t gi = 0; gi < groups.size(); ++gi)
       if (level[groups[gi].nodes[0]] == c)
-        items.push_back({(at[groups[gi].a] + at[groups[gi].b]) / 2,
-                         {static_cast<int>(gi), 0, 0}});
+        items.push_back(
+            {(at[groups[gi].operands[0]] + at[groups[gi].operands[1]]) / 2,
+             {static_cast<int>(gi), 0, 0}});
     for (int node = 0; node < static_cast<int>(level.size()); ++node)
       if (level[node] < c && needed_after(node, c))
         items.push_back({at[node], {-1, node, 0}});
@@ -444,10 +492,10 @@ compose_netlist(const Netlist &netlist, const BoolTable &table,
             probe_nodes.push_back(s.node);
           } else if (s.group >= 0) {
             const GateModule &m = module_of(s.group);
-            probes.push_back({x0 - 1, 1, s.z + m.in1.z});
-            probe_nodes.push_back(groups[s.group].a);
-            probes.push_back({x0 - 1, 1, s.z + m.in2.z});
-            probe_nodes.push_back(groups[s.group].b);
+            for (std::size_t input = 0; input < m.ins.size(); ++input) {
+              probes.push_back({x0 - 1, 1, s.z + m.ins[input].z});
+              probe_nodes.push_back(groups[s.group].operands[input]);
+            }
             add_layout(cells, m.layout, {x0, 0, s.z});
           } else {
             probes.push_back({x0 + next.width - 1, 1, s.z});

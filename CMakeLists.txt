@@ -70,6 +70,7 @@ add_library(redstone_core STATIC
         src/redstone/shrink.cpp
         src/redstone/compose.cpp
         src/redstone/compose_flush.cpp
+        src/redstone/compose_fuse.cpp
         src/redstone/wire_router.cpp
         src/redstone/size_search.cpp
         src/redstone/netlist.cpp
@@ -227,7 +228,11 @@ if (REDSTONE_BUILD_TESTS)
             tests/test_library.cpp
             tests/test_wire_router.cpp
             tests/test_size_search.cpp
-            src/host/library.cpp)
+            tests/test_fuse.cpp
+            tests/test_catalog_file.cpp
+            src/host/library.cpp
+            src/host/catalog_file.cpp
+            src/host/json_io.cpp)
     target_link_libraries(redstone_tests PRIVATE redstone_core Catch2::Catch2WithMain
             nlohmann_json::nlohmann_json)
     target_include_directories(redstone_tests PRIVATE ${CMAKE_SOURCE_DIR}/src)

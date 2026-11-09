@@ -6,6 +6,7 @@
 #include <format>
 #include <fstream>
 #include <future>
+#include <set>
 #include <sstream>
 #include <stdexcept>
 #include <thread>
@@ -410,21 +411,49 @@ Json Api::start_shrink(const Json &body) {
 
 // Builds catalog modules: for each function list and box size, every
 // arrangement of the ports not in the catalog yet, solved for the fewest
-// blocks (several at once). The catalog file is saved after each function
-// list, so a stopped build resumes where it was.
+// blocks (several at once). A list is 2-input truth tables, or
+// {"inputs": 3, "functions": [...]}: 3-input modules take their input rows
+// in increasing order, so every other order of the inputs (another truth
+// table) is built too. The catalog file is saved after each function list,
+// so a stopped build resumes where it was.
 Json Api::start_catalog(const Json &body) {
   if (this->job_ && !this->job_->is_done())
     throw std::invalid_argument("a solve is already running");
   if (!this->catalog_file_)
     throw std::invalid_argument("the gate catalog needs --library");
-  std::vector<std::vector<std::uint8_t>> function_lists;
-  for (const Json &list : body.at("functions")) {
+  struct FunctionList {
+    int inputs = 2;
     std::vector<std::uint8_t> functions;
-    for (const Json &f : list)
-      functions.push_back(f.get<std::uint8_t>());
+  };
+  std::vector<FunctionList> function_lists;
+  for (const Json &entry : body.at("functions")) {
+    const bool plain = entry.is_array();
+    const int inputs = plain ? 2 : entry.at("inputs").get<int>();
+    if (inputs != 2 && inputs != 3)
+      throw std::invalid_argument("a catalog module has 2 or 3 inputs");
+    std::vector<std::uint8_t> functions;
+    for (const Json &f : plain ? entry : entry.at("functions")) {
+      const int value = f.get<int>();
+      if (value < 0 || value >= (1 << (1 << inputs)))
+        throw std::invalid_argument(
+            std::format("{} is no {}-input truth table", value, inputs));
+      functions.push_back(static_cast<std::uint8_t>(value));
+    }
     if (functions.empty())
       throw std::invalid_argument("a function list is empty");
-    function_lists.push_back(std::move(functions));
+    if (inputs == 2) {
+      function_lists.push_back({inputs, std::move(functions)});
+      continue;
+    }
+    std::vector<int> order{0, 1, 2};
+    std::set<std::vector<std::uint8_t>> orders;
+    do {
+      std::vector<std::uint8_t> permuted;
+      for (std::uint8_t f : functions)
+        permuted.push_back(permute_function(f, inputs, order));
+      if (orders.insert(permuted).second)
+        function_lists.push_back({inputs, std::move(permuted)});
+    } while (std::next_permutation(order.begin(), order.end()));
   }
   std::vector<Vec3> sizes;
   for (const Json &size : body.at("sizes"))
@@ -454,14 +483,18 @@ Json Api::start_catalog(const Json &body) {
     auto start = std::chrono::steady_clock::now();
     const int workers =
         std::max(1, static_cast<int>(std::thread::hardware_concurrency()) / 2);
-    for (const std::vector<std::uint8_t> &functions : function_lists) {
+    for (const auto &[inputs, functions] : function_lists) {
       std::string names;
       for (std::uint8_t f : functions)
-        names += (names.empty() ? "" : "+") + function_name(f);
+        names +=
+            (names.empty() ? "" : "+") +
+            (inputs == 2 ? function_name(f) : std::format("3-input {}", f));
       for (Vec3 size : sizes) {
+        if (size.z < inputs)
+          continue;
         std::vector<GateArrangement> todo;
-        for (const GateArrangement &a :
-             gate_arrangements(size, static_cast<int>(functions.size())))
+        for (const GateArrangement &a : gate_arrangements(
+                 size, inputs, static_cast<int>(functions.size())))
           if (!catalog->has(key, functions, a))
             todo.push_back(a);
         std::atomic<std::size_t> next = 0;

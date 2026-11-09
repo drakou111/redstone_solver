@@ -6,6 +6,7 @@
 #include <mutex>
 #include <optional>
 #include <string>
+#include <tuple>
 #include <utility>
 #include <vector>
 
@@ -14,18 +15,27 @@
 
 namespace rs {
 
-// Gates of the same two inputs built by the solver as one module, ready to
-// be placed: inputs are repeaters facing east on the west face at in1 (top
-// row) and in2 (bottom row), output i (function i) is dust on the east
-// face at outs[i]. Both faces are empty but for the ports, so modules can
-// sit next to each other; sharing inputs inside one module keeps wires
-// that feed several gates out of the channels.
+// Gates of the same inputs built by the solver as one module, ready to be
+// placed: inputs are repeaters facing east on the west face at ins[k],
+// output i is dust on the east face at outs[i]. Function i is its truth
+// table: bit (v0 << (k - 1)) | ... | v(k-1) for input values v (so for two
+// inputs, bit (a << 1) | b). Both faces are empty but for the ports, so
+// modules can sit next to each other; sharing inputs inside one module keeps
+// wires that feed several gates out of the channels.
 struct GateModule {
   std::vector<std::uint8_t> functions;
   World layout{{1, 1, 1}};
-  Vec3 in1{}, in2{};
+  std::vector<Vec3> ins;
   std::vector<Vec3> outs;
 };
+
+// The truth table of `function` (of `inputs` inputs) with its inputs in a
+// new order: input k of the result is input order[k] of `function`.
+std::uint8_t permute_function(std::uint8_t function, int inputs,
+                              const std::vector<int> &order);
+
+// Whether the function's value changes with each of its inputs.
+bool depends_on_all(std::uint8_t function, int inputs);
 
 struct GateLibraryOptions {
   // nullopt uses the spec parser's default palette.
@@ -60,14 +70,17 @@ std::string gate_cache_key(const std::vector<std::uint8_t> &functions,
 // output dust on the east face, all at height 1, in these rows (z).
 struct GateArrangement {
   Vec3 size{};
-  int in1_z = 0;
-  int in2_z = 0;
+  std::vector<int> in_rows;
   std::vector<int> out_rows;
 };
 
-// Every arrangement in a box of `size` for `outputs` outputs: two different
-// input rows (either order) and output rows no two next to each other.
-std::vector<GateArrangement> gate_arrangements(Vec3 size, int outputs);
+// Every arrangement in a box of `size` for `inputs` inputs and `outputs`
+// outputs, output rows no two next to each other. Two inputs take any two
+// different rows in either order; three or more take rows in increasing
+// order only (the same gate with its inputs in another order is another
+// truth table, see permute_function).
+std::vector<GateArrangement> gate_arrangements(Vec3 size, int inputs,
+                                               int outputs);
 
 // A module for `functions` in exactly this arrangement: the fewest blocks
 // found within options.time_limit_seconds, or nothing.
@@ -89,16 +102,20 @@ public:
   // Keeps the module unless one with the same arrangement and no more
   // blocks is there already. Returns whether it was kept.
   bool add(const std::string &key, const GateModule &module);
-  std::vector<GateModule> variants(const std::string &key,
+  std::vector<GateModule> variants(const std::string &key, int inputs,
                                    const std::vector<std::uint8_t> &functions,
                                    int max_height) const;
+  // Whether any module of `inputs` inputs computes exactly `functions`.
+  bool has_any(const std::string &key, int inputs,
+               const std::vector<std::uint8_t> &functions) const;
   bool has(const std::string &key, const std::vector<std::uint8_t> &functions,
            const GateArrangement &arrangement) const;
   std::vector<std::pair<std::string, GateModule>> all() const;
 
 private:
   mutable std::mutex mutex_;
-  std::map<std::pair<std::string, std::vector<std::uint8_t>>,
+  // By catalog key, input count and functions.
+  std::map<std::tuple<std::string, int, std::vector<std::uint8_t>>,
            std::vector<GateModule>>
       modules_;
 };

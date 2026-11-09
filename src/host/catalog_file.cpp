@@ -33,8 +33,13 @@ void load_catalog(const std::filesystem::path &file, GateCatalog &catalog) {
     for (const Json &f : entry.at("functions"))
       module.functions.push_back(f.get<std::uint8_t>());
     module.layout = world_from_json(entry.at("layout"));
-    module.in1 = cell_from(entry.at("in1"));
-    module.in2 = cell_from(entry.at("in2"));
+    if (entry.contains("ins")) {
+      for (const Json &port : entry.at("ins"))
+        module.ins.push_back(cell_from(port));
+    } else {
+      // Written before modules had more than two inputs.
+      module.ins = {cell_from(entry.at("in1")), cell_from(entry.at("in2"))};
+    }
     for (const Json &out : entry.at("outs"))
       module.outs.push_back(cell_from(out));
     catalog.add(entry.at("key").get<std::string>(), module);
@@ -45,14 +50,16 @@ void save_catalog(const std::filesystem::path &file,
                   const GateCatalog &catalog) {
   Json json = Json::array();
   for (const auto &[key, module] : catalog.all()) {
+    Json ins = Json::array();
+    for (Vec3 in : module.ins)
+      ins.push_back(cell_json(in));
     Json outs = Json::array();
     for (Vec3 out : module.outs)
       outs.push_back(cell_json(out));
     json.push_back({{"key", key},
                     {"functions", module.functions},
                     {"layout", to_json(module.layout)},
-                    {"in1", cell_json(module.in1)},
-                    {"in2", cell_json(module.in2)},
+                    {"ins", ins},
                     {"outs", outs}});
   }
   std::filesystem::path temporary = file;

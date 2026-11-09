@@ -8,6 +8,7 @@
 #include <functional>
 #include <map>
 #include <optional>
+#include <string>
 #include <vector>
 
 #include "redstone/compose.hpp"
@@ -40,18 +41,44 @@ void add_layout(Cells &cells, const World &layout, Vec3 offset);
 // the solver may use it. Port cells are left to the spec.
 void pin(Spec &spec, const Cells &cells, const std::function<bool(Vec3)> &free);
 
-// Gates of one level that read the same two signals: one module.
+// Gates of one level that read the same signals: one module. Two operands
+// for a gate of the network, three for a fused piece (see fused_groupings).
 struct Group {
-  int a = 0, b = 0;       // operand nodes
-  std::vector<int> nodes; // gate nodes, in module output order
-  std::vector<std::uint8_t> functions;
+  std::vector<int> operands;           // in module input order
+  std::vector<int> nodes;              // gate nodes, in module output order
+  std::vector<std::uint8_t> functions; // truth tables over the operands
 };
+
+// 3-input truth tables (first operand the highest bit) worth a name.
+constexpr std::uint8_t kXor3Function = 0x96;
+constexpr std::uint8_t kMajorityFunction = 0xE8;
+
+// The group's functions by name ("XOR+AND", "XOR3").
+std::string group_name(const Group &group);
+
+// Ways to build the network where pieces that read only three signals are
+// one module each: `has_module` says whether a module exists for a piece's
+// truth table (its signals in increasing node order). Each grouping places
+// fewer modules than the plain one; the fewest first, at most
+// `max_groupings`. Nothing when no piece has a module.
+std::vector<std::vector<Group>>
+fused_groupings(const Netlist &netlist,
+                const std::function<bool(std::uint8_t)> &has_module,
+                int max_groupings);
+
+// Flush placement (see compose_flush) of these groups, in this order.
+std::optional<ComposeResult>
+compose_flush_groups(const Netlist &netlist, const BoolTable &table,
+                     const std::vector<Group> &groups,
+                     const NetlistComposeOptions &options,
+                     const ProgressCallback &progress);
 
 std::vector<Group> group_gates(const Netlist &netlist,
                                const std::vector<int> &level);
 
-// One module per distinct group function list, or nothing if one cannot be
-// built. `module_height` is the tallest module's height (at least 2).
+// One module per distinct function list of the 2-operand groups, or
+// nothing if one cannot be built (fused groups take catalog modules).
+// `module_height` is the tallest module's height (at least 2).
 std::optional<std::map<std::vector<std::uint8_t>, GateModule>>
 build_modules(const std::vector<Group> &groups,
               const NetlistComposeOptions &options, int &module_height,

@@ -11,6 +11,8 @@
 #include <format>
 #include <future>
 #include <limits>
+#include <list>
+#include <numeric>
 #include <set>
 #include <string>
 
@@ -233,14 +235,21 @@ std::optional<ComposeResult> compose_flush(const Netlist &netlist,
                                            const BoolTable &table,
                                            const NetlistComposeOptions &options,
                                            const ProgressCallback &progress) {
+  return compose_parts::compose_flush_groups(
+      netlist, table, compose_parts::group_gates(netlist, netlist.levels()),
+      options, progress);
+}
+
+std::optional<ComposeResult> compose_parts::compose_flush_groups(
+    const Netlist &netlist, const BoolTable &table,
+    const std::vector<Group> &groups, const NetlistComposeOptions &options,
+    const ProgressCallback &progress) {
   auto say = [&](const std::string &message) {
     if (progress)
       progress(message);
   };
   auto cancelled = [&] { return options.cancel && options.cancel->load(); };
   const int n = netlist.inputs;
-  const std::vector<int> level = netlist.levels();
-  const std::vector<Group> groups = group_gates(netlist, level);
   int module_height = 2;
   std::optional<std::map<std::vector<std::uint8_t>, GateModule>> modules =
       build_modules(groups, options, module_height, progress);
@@ -269,10 +278,9 @@ std::optional<ComposeResult> compose_flush(const Netlist &netlist,
   const int nodes = n + static_cast<int>(netlist.gates.size());
   const int forever = static_cast<int>(groups.size());
   std::vector<int> last_use(nodes, -1);
-  for (int gi = 0; gi < static_cast<int>(groups.size()); ++gi) {
-    last_use[groups[gi].a] = std::max(last_use[groups[gi].a], gi);
-    last_use[groups[gi].b] = std::max(last_use[groups[gi].b], gi);
-  }
+  for (int gi = 0; gi < static_cast<int>(groups.size()); ++gi)
+    for (int operand : groups[gi].operands)
+      last_use[operand] = std::max(last_use[operand], gi);
   for (int out : netlist.outputs)
     last_use[out] = forever;
 
@@ -395,26 +403,41 @@ std::optional<ComposeResult> compose_flush(const Netlist &netlist,
     if (cancelled())
       return std::nullopt;
     const Group &group = groups[gi];
-    // The module built for this gate and, from the catalog, the same gate
-    // in other shapes and port rows: each is tried at every spot.
-    std::vector<GateModule> catalog_variants;
-    if (options.catalog)
-      catalog_variants = options.catalog->variants(
-          catalog_key(options.palette, options.solver.verification),
-          group.functions, height);
-    std::vector<const GateModule *> variants{&modules->at(group.functions)};
-    for (const GateModule &variant : catalog_variants)
-      variants.push_back(&variant);
-    const std::array<int, 2> operands{group.a, group.b};
-    std::string names;
-    for (std::uint8_t f : group.functions)
-      names += (names.empty() ? "" : "+") + function_name(f);
-
-    // When no function cares about input order, the operands may swap
-    // inputs: twice the ways to line a signal up.
-    const bool symmetric = std::all_of(
-        group.functions.begin(), group.functions.end(),
-        [](std::uint8_t f) { return ((f >> 1) & 1) == ((f >> 2) & 1); });
+    const int arity = static_cast<int>(group.operands.size());
+    // Modules for this gate with its operands in some order: the one built
+    // for it and, from the catalog, the same gate in other shapes and port
+    // rows (another order of the operands is another truth table). Each is
+    // tried at every spot.
+    struct Variant {
+      const GateModule *module = nullptr;
+      std::vector<int> ops; // operand node of each module input
+    };
+    std::list<std::vector<GateModule>> catalog_modules;
+    std::vector<Variant> variants;
+    std::vector<int> order(arity);
+    std::iota(order.begin(), order.end(), 0);
+    do {
+      std::vector<std::uint8_t> functions;
+      for (std::uint8_t f : group.functions)
+        functions.push_back(permute_function(f, arity, order));
+      std::vector<int> ops;
+      for (int k : order)
+        ops.push_back(group.operands[k]);
+      if (functions == group.functions && modules->contains(functions) &&
+          arity == 2)
+        variants.push_back({&modules->at(functions), ops});
+      if (options.catalog)
+        for (const GateModule &m :
+             catalog_modules.emplace_back(options.catalog->variants(
+                 catalog_key(options.palette, options.solver.verification),
+                 arity, functions, height)))
+          variants.push_back({&m, ops});
+    } while (std::next_permutation(order.begin(), order.end()));
+    const std::string names = group_name(group);
+    if (variants.empty()) {
+      say(std::format("flush: no module for gate {} ({})", gi + 1, names));
+      return std::nullopt;
+    }
 
     const bool can_backtrack =
         use_router && backtracks < kMaxBacktracks &&
@@ -442,53 +465,48 @@ std::optional<ComposeResult> compose_flush(const Netlist &netlist,
       struct Choice {
         int x0 = 0;
         int z = 0;
-        bool swapped = false;
-        const GateModule *module = nullptr;
+        const Variant *variant = nullptr;
       };
       std::vector<Choice> spots;
-      for (const GateModule *variant : variants) {
-        const std::array<int, 2> input_z{variant->in1.z, variant->in2.z};
+      for (const Variant &variant : variants) {
         std::size_t first_spot = spots.size();
-        for (bool swapped : {false, true}) {
-          if (swapped && !symmetric)
+        for (int k = 0; k < arity; ++k) {
+          const int op = variant.ops[k];
+          if (!source[op])
             continue;
-          for (int k = 0; k < 2; ++k) {
-            const int op = swapped ? operands[1 - k] : operands[k];
-            if (!source[op])
-              continue;
-            Vec3 s = *source[op];
-            spots.push_back({s.x + 1, s.z - input_z[k], swapped, variant});
-            for (int gap = 1; gap <= 1 + options.flush_spacing; ++gap)
-              spots.push_back(
-                  {s.x + 1 + gap, s.z - input_z[k], swapped, variant});
-            // Routed wires are cheap: also try spots a little off the line.
-            if (use_router)
-              for (int gap = 0; gap <= kRoutedGap; ++gap)
-                for (int dz = -kRoutedShift; dz <= kRoutedShift; ++dz)
-                  if (dz != 0)
-                    spots.push_back({s.x + 1 + gap, s.z - input_z[k] + dz,
-                                     swapped, variant});
-          }
+          const int input_z = variant.module->ins[k].z;
+          Vec3 s = *source[op];
+          spots.push_back({s.x + 1, s.z - input_z, &variant});
+          for (int gap = 1; gap <= 1 + options.flush_spacing; ++gap)
+            spots.push_back({s.x + 1 + gap, s.z - input_z, &variant});
+          // Routed wires are cheap: also try spots a little off the line.
+          if (use_router)
+            for (int gap = 0; gap <= kRoutedGap; ++gap)
+              for (int dz = -kRoutedShift; dz <= kRoutedShift; ++dz)
+                if (dz != 0)
+                  spots.push_back(
+                      {s.x + 1 + gap, s.z - input_z + dz, &variant});
         }
         // A gate of new inputs only: start a fresh row, or a few further off
         // when the ports already there leave its inputs no room.
         if (spots.size() == first_spot)
           for (int dz = 0; dz <= (use_router ? kFreshRowShift : 0); ++dz)
             for (int x0 = 1; x0 <= 2 + options.flush_spacing; ++x0)
-              spots.push_back({x0, next_free_z + dz, false, variant});
+              spots.push_back({x0, next_free_z + dz, &variant});
       } // each module variant
 
       std::vector<Spot> candidates;
-      for (auto [x0, z, swapped, module] : spots) {
+      for (auto [x0, z, variant] : spots) {
         if (z < 0)
           continue;
-        const GateModule &m = *module;
+        const GateModule &m = *variant->module;
         const Vec3 msize = m.layout.size();
-        const std::array<int, 2> input_z{m.in1.z, m.in2.z};
-        const std::array<int, 2> ops =
-            swapped ? std::array<int, 2>{operands[1], operands[0]} : operands;
+        std::vector<int> input_z;
+        for (Vec3 in : m.ins)
+          input_z.push_back(in.z);
+        const std::vector<int> &ops = variant->ops;
         Spot p{x0, z, {x0, x0 + msize.x - 1, z, z + msize.z - 1}, {}, {}, 0};
-        p.module = module;
+        p.module = &m;
         bool ok = std::none_of(
             footprints.begin(), footprints.end(),
             [&](const Footprint &f) { return clashes(f, p.footprint); });
@@ -497,7 +515,7 @@ std::optional<ComposeResult> compose_flush(const Netlist &netlist,
             for (int zz = p.footprint.z0; ok && zz <= p.footprint.z1; ++zz)
               ok = !placed.contains(key({x, y, zz}));
         long route_length = 0;
-        for (int k = 0; ok && k < 2; ++k) {
+        for (int k = 0; ok && k < arity; ++k) {
           const Vec3 target{x0 - 1, 1, z + input_z[k]};
           Vec3 from;
           if (source[ops[k]]) {
@@ -507,14 +525,15 @@ std::optional<ComposeResult> compose_flush(const Netlist &netlist,
             // or (with the router drawing the wire) a few rows off it.
             // Wires leaving neighbouring ports need a row between them, and
             // one more for a wire that other gates still branch off.
-            const Vec3 other_target{x0 - 1, 1, z + input_z[1 - k]};
             auto free_port = [&](Vec3 cell) {
               if (cell.z < 0 || occupied(cell))
                 return false;
-              // Its wire starts east of it: not where the other one ends.
+              // Its wire starts east of it: not where another one ends.
               const Vec3 first = cell + Vec3{1, 0, 0};
-              if (first == other_target && first != target)
-                return false;
+              for (int j = 0; j < arity; ++j)
+                if (j != k && first == Vec3{x0 - 1, 1, z + input_z[j]} &&
+                    first != target)
+                  return false;
               auto crowds = [&](int input, Vec3 other) {
                 int need =
                     last_use[input] > gi || last_use[ops[k]] > gi ? 2 : 1;
@@ -530,9 +549,12 @@ std::optional<ComposeResult> compose_flush(const Netlist &netlist,
             };
             std::optional<Vec3> chosen;
             const int reach = use_router ? kPortShift : 0;
-            // Away from the module's other input first, so the two wires
-            // do not cross at the module.
-            const int away = input_z[k] <= input_z[1 - k] ? -1 : 1;
+            // Away from the module's other inputs first, so the wires do
+            // not cross at the module.
+            const bool lowest =
+                std::all_of(input_z.begin(), input_z.end(),
+                            [&](int other) { return input_z[k] <= other; });
+            const int away = lowest ? -1 : 1;
             for (int sign : {away, -away})
               for (int shift = 0; shift <= reach && !chosen; ++shift) {
                 Vec3 cell{0, 1, target.z + sign * shift};
@@ -596,19 +618,21 @@ std::optional<ComposeResult> compose_flush(const Netlist &netlist,
       // An OR of on/off signals is two dust lines meeting (dust carries the
       // stronger signal); so is an XOR whose inputs are never on together.
       // Tried first: it needs no module at all.
-      if (options.flush_joins && group.functions.size() == 1 &&
-          source[group.a] && source[group.b]) {
+      if (options.flush_joins && arity == 2 && group.functions.size() == 1 &&
+          source[group.operands[0]] && source[group.operands[1]]) {
+        const int ga = group.operands[0];
+        const int gb = group.operands[1];
         const std::uint8_t f = group.functions[0];
         bool joinable = f == kOr;
         if (f == kXor) {
           joinable = true;
           for (int t = 0; t < (1 << n) && joinable; ++t) {
             std::vector<bool> v = netlist.evaluate(t);
-            joinable = !(v[group.a] && v[group.b]);
+            joinable = !(v[ga] && v[gb]);
           }
         }
-        const Vec3 sa = *source[group.a];
-        const Vec3 sb = *source[group.b];
+        const Vec3 sa = *source[ga];
+        const Vec3 sb = *source[gb];
         std::vector<Spot> joins;
         // Routed joins start with repeaters: they need room to meet.
         const int reach = use_router ? 3 : 1;
@@ -624,8 +648,7 @@ std::optional<ComposeResult> compose_flush(const Netlist &netlist,
             j.x0 = meet.x;
             j.z = meet.z;
             j.footprint = {meet.x, meet.x, meet.z, meet.z};
-            for (auto [from, node] :
-                 {std::pair{sa, group.a}, std::pair{sb, group.b}})
+            for (auto [from, node] : {std::pair{sa, ga}, std::pair{sb, gb}})
               if (from != meet)
                 j.routes.push_back({from, meet, node});
             j.outputs = {meet};
