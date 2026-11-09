@@ -43,7 +43,10 @@ constexpr int kPortShift = 6;
 // them are tried per gate (best first).
 constexpr int kRoutedGap = 3;
 constexpr int kRoutedShift = 2;
-constexpr int kRoutedCandidates = 24;
+// Many: the best-ranked spots are the tightest, and with many module
+// variants the first few may all leave a wire no room. Routing stops once
+// the beam is full, so the rest cost only their ranking.
+constexpr int kRoutedCandidates = 192;
 // A shuffled ranking moves a spot's score by up to 1 / this of it.
 constexpr long kNoiseShare = 3;
 // Dead ends the router's search may go back from before SAT wires.
@@ -721,6 +724,7 @@ std::optional<ComposeResult> compose_parts::compose_flush_groups(
       std::vector<Spec> stages;
       std::vector<std::optional<Cells>> routed;
       std::vector<std::string> why_not_routed;
+      int routed_count = 0;
       for (const Spot &p : candidates) {
         Cells cells = placed;
         if (!p.join)
@@ -786,11 +790,15 @@ std::optional<ComposeResult> compose_parts::compose_flush_groups(
             row.outputs.push_back(values[node]);
           rows.push_back(std::move(row));
         }
-        if (use_router)
+        if (use_router && routed_count >= beam_width) {
+          routed.push_back(std::nullopt);
+          why_not_routed.emplace_back();
+        } else if (use_router) {
           routed.push_back(route_stage(cells, footprints, p, signals, size,
                                        input_cells, output_cells, rows,
                                        why_not_routed.emplace_back()));
-        else {
+          routed_count += routed.back() ? 1 : 0;
+        } else {
           routed.push_back(std::nullopt);
           why_not_routed.emplace_back();
         }
@@ -837,14 +845,38 @@ std::optional<ComposeResult> compose_parts::compose_flush_groups(
       // best-ranked first: solving them side by side made every one run out
       // of time (the multiplexer's third gate).
       const bool any_routed = children > 0;
-      if (use_router && !any_routed)
-        for (std::size_t i = 0; i < routed.size(); ++i)
-          if (!why_not_routed[i].empty()) {
-            say(std::format("router: gate {} at x {} z {}: {}", gi + 1,
-                            candidates[i].x0, candidates[i].z,
-                            why_not_routed[i]));
-            break;
-          }
+      if (use_router && !any_routed) {
+        // How the spots failed: the first of each kind, and how often.
+        std::map<std::string, std::pair<int, std::size_t>> kinds;
+        int side_spots = 0;
+        for (std::size_t i = 0; i < routed.size(); ++i) {
+          const Spot &p = candidates[i];
+          if (p.module &&
+              (std::any_of(p.module->ins.begin(), p.module->ins.end(),
+                           [](Vec3 in) { return in.x != 0; }) ||
+               std::any_of(p.output_ways.begin(), p.output_ways.end(),
+                           [](Dir d) { return d != Dir::East; })))
+            ++side_spots;
+          if (why_not_routed[i].empty())
+            continue;
+          const std::string &why = why_not_routed[i];
+          auto &[count, first] =
+              kinds
+                  .try_emplace(why.substr(0, why.find_first_of(":0123456789")),
+                               0, i)
+                  .first->second;
+          ++count;
+        }
+        std::string summary;
+        for (const auto &[kind, seen] : kinds)
+          summary +=
+              std::format("; {} x{} (first at x {} z {}: {})", kind, seen.first,
+                          candidates[seen.second].x0, candidates[seen.second].z,
+                          why_not_routed[seen.second]);
+        say(std::format("router: gate {}: none of {} spots wired ({} with "
+                        "side ports){}",
+                        gi + 1, routed.size(), side_spots, summary));
+      }
       for (std::size_t i = 0;
            i < stages.size() && options.flush_sat && !any_routed &&
            !can_backtrack && children < beam_width;

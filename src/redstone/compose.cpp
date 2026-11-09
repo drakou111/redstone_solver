@@ -267,8 +267,15 @@ flush_variants(const Netlist &netlist, const BoolTable &table,
       o.flush_sat = false;
       o.preview = {};
       ProgressCallback note;
+      // With the router's last complaint, which says what blocked it.
       if (seed == 0)
-        note = [&last = fused_last[g]](std::string_view m) { last = m; };
+        note = [&last = fused_last[g],
+                router = std::string()](std::string_view m) mutable {
+          if (m.starts_with("router: "))
+            router = m;
+          last = router.empty() ? std::string(m)
+                                : std::format("{} ({})", m, router);
+        };
       variants.push_back(
           std::async(std::launch::async, [&netlist, &table,
                                           &grouping = fused[g], o, note] {
