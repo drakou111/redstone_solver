@@ -138,10 +138,13 @@ constexpr double kTidyMinSeconds = 5.0;
 
 // How often a dead end may send the search back a step.
 constexpr int kMaxBacktracks = 3;
-// Diversifying: time to build one other circuit, tries per dead end, and
-// the share of the whole time kept for tidying at the end.
+// Diversifying: time to build one other circuit, failures in a row before
+// walking back to the best circuit, and the share of the whole time kept
+// for tidying at the end.
 constexpr double kVariantSeconds = 20.0;
 constexpr int kVariantTries = 4;
+// Changes to the kept share, in turn: a failure is not just repeated.
+constexpr std::array<double, 4> kKeepSteps{0.0, -0.1, 0.1, -0.2};
 constexpr double kTidyShare = 0.1;
 
 // One verified box on the shrink's path and the cuts tried from it.
@@ -468,23 +471,42 @@ ShrinkResult shrink(const Spec &spec, const World &layout,
   int variants = 0;
   unsigned variant_seed = options.seed;
   // Another circuit in the smallest box so far, to cut instead.
+  // The circuit the last variant was built from: a random walk among the
+  // circuits of the smallest box, back to the best one when it stalls.
+  std::optional<std::pair<Spec, World>> walk;
+  int stalled = 0;
   auto diversify = [&]() -> bool {
     if (!options.diversify)
       return false;
-    for (int t = 0; t < kVariantTries && Clock::now() < diversify_until; ++t) {
+    while (Clock::now() < diversify_until && !cancelled()) {
+      if (walk &&
+          (walk->first.size != best.spec.size || stalled >= kVariantTries)) {
+        walk.reset();
+        stalled = 0;
+      }
+      const Spec &from_spec = walk ? walk->first : best.spec;
+      const World &from_layout = walk ? walk->second : best.layout;
       const double left =
           std::chrono::duration<double>(diversify_until - Clock::now()).count();
       SolverOptions solver = options.solver;
       solver.cancel = options.cancel;
-      std::optional<World> variant = layout_variant(
-          best.spec, best.layout, options.diversify_keep, ++variant_seed,
-          std::min(kVariantSeconds, left), solver);
-      if (!variant)
+      ++variant_seed;
+      const double keep = std::clamp(
+          options.diversify_keep + kKeepSteps[variant_seed % kKeepSteps.size()],
+          0.0, 1.0);
+      std::optional<World> variant =
+          layout_variant(from_spec, from_layout, keep, variant_seed,
+                         std::min(kVariantSeconds, left), solver);
+      if (!variant) {
+        ++stalled;
         continue;
+      }
+      stalled = 0;
       ++variants;
-      say(std::format("no cut works; trying another {}x{}x{} circuit ({})",
+      say(std::format("no cut works; trying another {}x{}x{} circuit ({}, "
+                      "{} blocks)",
                       best.spec.size.x, best.spec.size.y, best.spec.size.z,
-                      variants));
+                      variants, layout_blocks(*variant)));
       path.clear();
       // Built first: the move below must not happen before it reads.
       Spec variant_spec = spec_with_layout(best.spec, *variant);
@@ -495,6 +517,7 @@ ShrinkResult shrink(const Spec &spec, const World &layout,
         if (options.preview)
           options.preview(best.layout);
       }
+      walk.emplace(variant_spec, *variant);
       path.push_back(
           make_node(std::move(variant_spec), std::move(*variant), options));
       backtracks = 0;
