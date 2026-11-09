@@ -877,10 +877,14 @@ std::optional<ComposeResult> compose_parts::compose_flush_groups(
                         "side ports){}",
                         gi + 1, routed.size(), side_spots, summary));
       }
+      // The router looks at many spots; SAT takes seconds per spot, so only
+      // the best few: all of them kept one gate busy for a whole run.
+      int sat_tries = 0;
       for (std::size_t i = 0;
            i < stages.size() && options.flush_sat && !any_routed &&
-           !can_backtrack && children < beam_width;
-           ++i) {
+           !can_backtrack && children < beam_width &&
+           sat_tries < options.flush_candidates;
+           ++i, ++sat_tries) {
         if (cancelled())
           return std::nullopt;
         SolverOptions solver = options.solver;
