@@ -1,7 +1,10 @@
+#include <algorithm>
+#include <filesystem>
 #include <format>
 #include <functional>
 #include <string>
 
+#include "host/catalog_file.hpp"
 #include "redstone/compose_parts.hpp"
 #include "redstone/verifier.hpp"
 
@@ -234,4 +237,75 @@ TEST_CASE("a gate that reads a piece's signals joins it as an output") {
       adder, single([&](std::uint8_t f) { return f == kCarry; }), 4);
   REQUIRE_FALSE(alone.empty());
   CHECK(alone[0].size() == 3);
+}
+
+TEST_CASE("flush placement builds a 4-to-1 multiplexer flat from three "
+          "2-to-1 selectors") {
+  // Three selector modules from a real catalog, each with inputs on next
+  // rows: a wire that turns into one must be drawn before the straight one
+  // beside it, and the shared select must enter each selector from below.
+  NetlistComposeOptions options;
+  options.max_height = 2;
+  options.flush_sat = false; // the router alone
+  options.palette.emplace();
+  for (std::string_view name :
+       {"solid", "dust", "torch", "repeater", "comparator", "target", "barrel"})
+    options.palette->push_back(*parse_palette_block(name));
+  options.solver.verification.placements = {Placement{}};
+  GateCatalog catalog;
+  rs::host::load_catalog(
+      std::filesystem::path(RS_TEST_DATA_DIR) / "mux_selectors.json", catalog);
+  options.catalog = &catalog;
+  const std::string key =
+      catalog_key(options.palette, options.solver.verification);
+  const std::uint8_t kSelector = 202; // a ? b : c
+  REQUIRE(catalog.has_any(key, 3, {kSelector}));
+
+  // IN1 and IN2 select one of IN3..IN6; each selector is d0 ^ (s & (d0 ^ d1)).
+  Netlist mux{6,
+              {{2, 3, kXor},
+               {1, 6, kAnd},
+               {2, 7, kXor},
+               {4, 5, kXor},
+               {1, 9, kAnd},
+               {4, 10, kXor},
+               {8, 11, kXor},
+               {0, 12, kAnd},
+               {8, 13, kXor}},
+              {14}};
+  auto is_selector = [&](std::uint8_t f) {
+    std::vector<int> order{0, 1, 2};
+    do {
+      if (permute_function(f, 3, order) == kSelector)
+        return true;
+    } while (std::next_permutation(order.begin(), order.end()));
+    return false;
+  };
+  std::vector<std::vector<Group>> groupings =
+      fused_groupings(mux, single(is_selector), 6);
+  auto three =
+      std::find_if(groupings.begin(), groupings.end(),
+                   [](const std::vector<Group> &g) { return g.size() == 3; });
+  REQUIRE(three != groupings.end());
+  BoolTable table;
+  table.inputs = 6;
+  table.values.resize(1);
+  for (int t = 0; t < 64; ++t) {
+    const int select = (t & 1) * 2 + ((t >> 1) & 1); // IN1 IN2
+    table.values[0].push_back(((t >> (2 + select)) & 1) != 0);
+  }
+  // The solver builds each grouping with four rankings of its spots.
+  std::optional<ComposeResult> result;
+  std::string text;
+  for (int seed = 0; seed < 4 && !result; ++seed) {
+    options.flush_seed = seed;
+    result = compose_flush_groups(
+        mux, table, *three, options,
+        [&](std::string_view m) { text += std::string(m) + "\n"; });
+  }
+  INFO(text);
+  REQUIRE(result);
+  CHECK(result->layout.size().y <= 2);
+  CHECK_FALSE(verify_layout(result->layout, result->spec,
+                            result->spec.verification_vectors()));
 }

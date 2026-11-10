@@ -236,6 +236,8 @@ if (REDSTONE_BUILD_TESTS)
     target_link_libraries(redstone_tests PRIVATE redstone_core Catch2::Catch2WithMain
             nlohmann_json::nlohmann_json)
     target_include_directories(redstone_tests PRIVATE ${CMAKE_SOURCE_DIR}/src)
+    target_compile_definitions(redstone_tests PRIVATE
+            RS_TEST_DATA_DIR="${CMAKE_SOURCE_DIR}/tests/data")
     target_compile_options(redstone_tests PRIVATE ${REDSTONE_WARNINGS})
     redstone_copy_runtime_dlls(redstone_tests)
 

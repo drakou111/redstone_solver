@@ -49,6 +49,13 @@ constexpr int kBetweenGap = 6;
 // variants the first few may all leave a wire no room. Routing stops once
 // the beam is full, so the rest cost only their ranking.
 constexpr int kRoutedCandidates = 192;
+// Rank cost of a shared new port above one of its gate's inputs.
+constexpr long kSharedPortAbove = 2000;
+// Rank cost of a spot below the rows in use, for a gate that also reads
+// signals already there: only when the spots by them fail.
+constexpr long kBelowSpotCost = 4000;
+// Spots kept for a gate with new inputs.
+constexpr int kFreshCandidates = 4096;
 // A shuffled ranking moves a spot's score by up to 1 / this of it.
 constexpr long kNoiseShare = 3;
 // Dead ends the router's search may go back from before SAT wires.
@@ -402,6 +409,8 @@ std::optional<ComposeResult> compose_parts::compose_flush_groups(
         o.high.x = std::max(o.high.x, cell[0] + kRouteSlack);
         o.high.z = std::max(o.high.z, cell[2] + kRouteSlack);
       }
+      o.high.x = std::max(o.high.x, r.to.x + kRouteSlack);
+      o.high.z = std::max(o.high.z, r.to.z + kRouteSlack);
       o.repeaters = allowed(BlockType::Repeater);
       WireRouter router(cells, blocked, o);
       WireGoal goal{r.to, r.into};
@@ -532,6 +541,7 @@ std::optional<ComposeResult> compose_parts::compose_flush_groups(
         int x0 = 0;
         int z = 0;
         const Variant *variant = nullptr;
+        long cost = 0; // added to its rank: a fallback
       };
       std::vector<Choice> spots;
       for (const Variant &variant : variants) {
@@ -574,10 +584,28 @@ std::optional<ComposeResult> compose_parts::compose_flush_groups(
         }
         // A gate of new inputs only: start a fresh row, or a few further off
         // when the ports already there leave its inputs no room.
+        // Routed, it may stand further off: inputs on next rows need room for
+        // their wires to come together from ports kept rows apart.
         if (spots.size() == first_spot)
           for (int dz = 0; dz <= (use_router ? kFreshRowShift : 0); ++dz)
-            for (int x0 = 1; x0 <= 2 + options.flush_spacing; ++x0)
+            for (int x0 = 1; x0 <= 2 + options.flush_spacing +
+                                       (use_router ? kRoutedGap : 0);
+                 ++x0)
               spots.push_back({x0, next_free_z + dz, &variant});
+        // Routed, a gate with some new inputs also starts below the rows in
+        // use: by its signals, its new ports find no room between the ports
+        // already there.
+        if (use_router && spots.size() != first_spot &&
+            std::any_of(variant.ops.begin(), variant.ops.end(),
+                        [&](int op) { return !source[op]; })) {
+          int max_x = 0;
+          for (int op : variant.ops)
+            if (source[op])
+              max_x = std::max(max_x, source[op]->x);
+          for (int dz = 0; dz <= kFreshRowShift; ++dz)
+            for (int x0 = 1; x0 <= max_x + 2 + kRoutedGap; ++x0)
+              spots.push_back({x0, next_free_z + dz, &variant, kBelowSpotCost});
+        }
         // Signals far apart: spots near one leave the other's wire no room
         // to cross what lies between, so also every row between them, a
         // little further east.
@@ -602,7 +630,7 @@ std::optional<ComposeResult> compose_parts::compose_flush_groups(
       } // each module variant
 
       std::vector<Spot> candidates;
-      for (auto [x0, z, variant] : spots) {
+      for (auto [x0, z, variant, cost] : spots) {
         if (z < 0 || x0 < 1)
           continue;
         const GateModule &m = *variant->module;
@@ -667,6 +695,13 @@ std::optional<ComposeResult> compose_parts::compose_flush_groups(
                 if (free_port(cell))
                   chosen = cell;
               }
+            // Rows near it all taken: below everything, the wire drawn
+            // around what lies between.
+            for (int dz = 0; use_router && !chosen && dz <= kPortShift; ++dz) {
+              Vec3 cell{0, 1, next_free_z + dz};
+              if (free_port(cell))
+                chosen = cell;
+            }
             if (!chosen) {
               ok = false;
               continue;
@@ -698,7 +733,16 @@ std::optional<ComposeResult> compose_parts::compose_flush_groups(
           max_x = std::max(max_x, cell[0]);
           max_z = std::max(max_z, cell[2]);
         }
-        p.score = static_cast<long>(max_x + 1) * (max_z + 1) * 4 + route_length;
+        p.score = static_cast<long>(max_x + 1) * (max_z + 1) * 4 +
+                  route_length + cost;
+        // Later gates go below: a new port that other gates still read goes
+        // under this gate's other inputs, or its wire to them walls this
+        // gate's output in (the 4-to-1 multiplexer's shared select).
+        for (const auto &[op, cell] : p.new_ports)
+          if (last_use[op] > gi)
+            for (Vec3 other : targets)
+              if (other.z > cell.z)
+                p.score += kSharedPortAbove;
         for (Vec3 out : m.outs) {
           p.outputs.push_back({x0 + out.x, 1, z + out.z});
           p.output_ways.push_back(module_output_facing(msize, out));
@@ -717,8 +761,14 @@ std::optional<ComposeResult> compose_parts::compose_flush_groups(
       std::stable_sort(
           candidates.begin(), candidates.end(),
           [](const Spot &a, const Spot &b) { return a.score < b.score; });
+      // A gate with new inputs comes once, early, with every catalog shape
+      // of it to try: it keeps more.
+      const bool fresh =
+          std::any_of(group.operands.begin(), group.operands.end(),
+                      [&](int op) { return !source[op].has_value(); });
       const int kept =
-          use_router ? std::max(options.flush_candidates, kRoutedCandidates)
+          use_router ? std::max(options.flush_candidates,
+                                fresh ? kFreshCandidates : kRoutedCandidates)
                      : options.flush_candidates;
       if (static_cast<int>(candidates.size()) > kept)
         candidates.resize(kept);
@@ -855,6 +905,29 @@ std::optional<ComposeResult> compose_parts::compose_flush_groups(
           routed.push_back(route_stage(
               cells, footprints, p, signals, size, input_cells, output_cells,
               rows, stage_exits, why_not_routed.emplace_back()));
+          // Drawn in turn, a straight wire leaves a wire that turns beside
+          // it no room (the multiplexer's select into the row next to a
+          // data input). Turning wires first, the straight one goes past.
+          if (!routed.back() && !p.join && p.routes.size() > 1) {
+            Spot turning_first = p;
+            std::stable_sort(turning_first.routes.begin(),
+                             turning_first.routes.end(),
+                             [](const Route &a, const Route &b) {
+                               return std::abs(a.from.z - a.to.z) >
+                                      std::abs(b.from.z - b.to.z);
+                             });
+            const bool reordered = !std::equal(
+                p.routes.begin(), p.routes.end(), turning_first.routes.begin(),
+                [](const Route &a, const Route &b) {
+                  return a.node == b.node && a.to == b.to;
+                });
+            std::string why;
+            if (reordered)
+              if (std::optional<Cells> again = route_stage(
+                      cells, footprints, turning_first, signals, size,
+                      input_cells, output_cells, rows, stage_exits, why))
+                routed.back() = std::move(again);
+          }
           routed_count += routed.back() ? 1 : 0;
         } else {
           routed.push_back(std::nullopt);
