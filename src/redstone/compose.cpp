@@ -235,6 +235,8 @@ constexpr int kMaxFusedGroupings = 6;
 constexpr int kFusedSeeds = 4;
 // How long the plain build goes on once another build stands.
 constexpr double kPlainGraceSeconds = 10.0;
+// How long the other builds go on once one build stands.
+constexpr double kSideGraceSeconds = 10.0;
 // Builds with shuffled spot rankings started with the plain build.
 constexpr int kShuffledSeeds = 3;
 
@@ -250,6 +252,14 @@ flush_variants(const Netlist &netlist, const BoolTable &table,
   NetlistComposeOptions first = options;
   if (!first.gate_cache)
     first.gate_cache = &local_cache;
+  // The plain grouping's modules first, once: builds started side by side
+  // would each solve the same module at the same time, and a 4-output
+  // decoder timed out in all of them.
+  if (options.flush_router) {
+    int module_height = 0;
+    build_modules(group_gates(netlist, netlist.levels()), first, module_height,
+                  progress);
+  }
   std::vector<std::vector<Group>> fused;
   if (options.catalog && options.flush_router) {
     const std::string key =
@@ -280,6 +290,9 @@ flush_variants(const Netlist &netlist, const BoolTable &table,
   // backtracking when its gates cannot be wired.
   std::vector<std::future<std::optional<ComposeResult>>> fused_builds;
   std::atomic<bool> other_found = false;
+  // Stops the builds beside the plain one: the user's cancel, or a while
+  // after the first build stands (the rest only look for a smaller one).
+  std::atomic<bool> side_stop = false;
   // Builds of the plain grouping with shuffled spot rankings, also from the
   // start: when spots tie, which is kept decides whether a later gate finds
   // room, and the plain build alone goes back only so far (the counting
@@ -291,6 +304,7 @@ flush_variants(const Netlist &netlist, const BoolTable &table,
     o.flush_seed = options.flush_variants + s;
     o.flush_sat = false;
     o.preview = {};
+    o.cancel = &side_stop;
     shuffled_builds.push_back(
         std::async(std::launch::async, [&netlist, &table, &other_found, o] {
           std::optional<ComposeResult> r = compose_flush(netlist, table, o, {});
@@ -307,6 +321,7 @@ flush_variants(const Netlist &netlist, const BoolTable &table,
       o.flush_seed = seed;
       o.flush_sat = false;
       o.preview = {};
+      o.cancel = &side_stop;
       ProgressCallback note;
       // With the router's last complaint, which says what blocked it.
       if (seed == 0)
@@ -328,39 +343,56 @@ flush_variants(const Netlist &netlist, const BoolTable &table,
           }));
     }
   // Once another build stands, the plain one, which may be backtracking
-  // through gates it cannot wire, gets a little longer.
+  // through gates it cannot wire, gets a little longer; once any stands,
+  // the side builds do.
   std::atomic<bool> plain_stop = false;
-  std::atomic<bool> plain_done = false;
+  std::atomic<bool> plain_found = false;
+  std::atomic<bool> all_done = false;
   NetlistComposeOptions plain = first;
   plain.cancel = &plain_stop;
   std::thread watcher([&] {
-    std::optional<std::chrono::steady_clock::time_point> found_at;
-    while (!plain_done) {
-      if (options.cancel && options.cancel->load())
+    using Clock = std::chrono::steady_clock;
+    std::optional<Clock::time_point> other_at;
+    std::optional<Clock::time_point> any_at;
+    auto past = [](const std::optional<Clock::time_point> &since,
+                   double seconds) {
+      return since &&
+             Clock::now() - *since > std::chrono::duration<double>(seconds);
+    };
+    while (!all_done) {
+      if (options.cancel && options.cancel->load()) {
         plain_stop = true;
-      if (other_found && !found_at)
-        found_at = std::chrono::steady_clock::now();
-      if (found_at && std::chrono::steady_clock::now() - *found_at >
-                          std::chrono::duration<double>(kPlainGraceSeconds))
+        side_stop = true;
+      }
+      if (other_found && !other_at)
+        other_at = Clock::now();
+      if ((other_found || plain_found) && !any_at)
+        any_at = Clock::now();
+      if (past(other_at, kPlainGraceSeconds))
         plain_stop = true;
+      if (past(any_at, kSideGraceSeconds))
+        side_stop = true;
       std::this_thread::sleep_for(std::chrono::milliseconds(50));
     }
   });
   std::optional<ComposeResult> best =
       compose_flush(netlist, table, plain, progress);
-  plain_done = true;
-  watcher.join();
+  plain_found = best.has_value();
   if (!best && plain_stop && !(options.cancel && options.cancel->load()) &&
       progress)
     progress("flush: the plain build stopped: another build stands");
-  if (!options.flush_router)
+  if (!options.flush_router) {
+    all_done = true;
+    watcher.join();
     return best;
+  }
   std::vector<std::future<std::optional<ComposeResult>>> variants;
   for (int seed = 1; best && seed < options.flush_variants; ++seed) {
     NetlistComposeOptions o = first;
     o.flush_seed = seed;
     o.flush_sat = false; // variants are quick or nothing
     o.preview = {};      // the first build was shown
+    o.cancel = &side_stop;
     variants.push_back(std::async(std::launch::async, [&netlist, &table, o] {
       return compose_flush(netlist, table, o, {});
     }));
@@ -400,6 +432,8 @@ flush_variants(const Netlist &netlist, const BoolTable &table,
       best_fused = v >= plain_builds;
     }
   }
+  all_done = true;
+  watcher.join();
   if (progress)
     for (std::size_t g = 0; g < fused.size(); ++g)
       progress(fused_best[g]
