@@ -79,6 +79,31 @@ TEST_CASE("compose wires a full adder from its five gates") {
   }));
 }
 
+TEST_CASE("compose wires a 2-bit adder flat") {
+  // The second half adder's sum and carry must leave in the order their
+  // readers lie; the network lists them the other way round.
+  Spec spec = spec_of(4, 3, [](int t, int o) {
+    const int sum =
+        (t & 1) + 2 * ((t >> 1) & 1) + ((t >> 2) & 1) + 2 * ((t >> 3) & 1);
+    return (sum >> o) & 1;
+  });
+  NetlistComposeOptions options;
+  options.max_height = 2;
+  options.solver.verification.placements = {Placement{}};
+  std::vector<std::string> log;
+  std::optional<ComposeResult> result = compose_spec(
+      spec, options, [&](std::string_view m) { log.emplace_back(m); });
+  std::string text;
+  for (const auto &line : log)
+    text += line + "\n";
+  INFO(text);
+  REQUIRE(result);
+  CHECK(result->layout.size().y <= 2);
+  CHECK_FALSE(verify_layout(result->layout, result->spec,
+                            result->spec.verification_vectors(),
+                            options.solver.verification));
+}
+
 TEST_CASE("compose reranks alternative full-adder networks for routing") {
   Spec spec = spec_of(3, 2, [](int t, int o) {
     int count = (t & 1) + ((t >> 1) & 1) + ((t >> 2) & 1);

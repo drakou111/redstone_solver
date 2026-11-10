@@ -118,22 +118,40 @@ build_modules(const std::vector<Group> &groups,
   gate_options.cancel = options.cancel;
   std::map<std::vector<std::uint8_t>, GateModule> modules;
   module_height = 2;
-  for (const Group &group : groups) {
-    if (group.operands.size() != 2 || modules.contains(group.functions))
-      continue;
-    const std::string cache_key = gate_cache_key(group.functions, gate_options);
+  auto build = [&](const std::vector<std::uint8_t> &functions) {
+    const std::string cache_key = gate_cache_key(functions, gate_options);
     std::optional<GateModule> m;
     if (options.gate_cache)
       m = options.gate_cache->find(cache_key);
     if (!m) {
-      m = build_gate(group.functions, gate_options, progress);
-      if (!m)
-        return std::nullopt;
-      if (options.gate_cache)
+      m = build_gate(functions, gate_options, progress);
+      if (m && options.gate_cache)
         options.gate_cache->store(cache_key, *m);
     }
-    module_height = std::max(module_height, m->layout.size().y);
-    modules.emplace(group.functions, std::move(*m));
+    if (m) {
+      module_height = std::max(module_height, m->layout.size().y);
+      modules.emplace(functions, std::move(*m));
+    }
+    return modules.contains(functions);
+  };
+  for (const Group &group : groups) {
+    if (group.operands.size() != 2 || modules.contains(group.functions))
+      continue;
+    if (!build(group.functions))
+      return std::nullopt;
+  }
+  // With two outputs, also the module with them the other way round: which
+  // order keeps their wires apart depends on where their readers go. Built
+  // when it can be; the group's own order still serves. Not for more: a
+  // second 4-output decoder took the time the first needed.
+  for (const Group &group : groups) {
+    if (group.operands.size() != 2 || group.functions.size() != 2)
+      continue;
+    const std::vector<std::uint8_t> reversed(group.functions.rbegin(),
+                                             group.functions.rend());
+    if (!modules.contains(reversed) &&
+        !(options.cancel && options.cancel->load()))
+      build(reversed);
   }
   return modules;
 }

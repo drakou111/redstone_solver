@@ -470,36 +470,50 @@ std::optional<ComposeResult> compose_parts::compose_flush_groups(
     // tried at every spot.
     struct Variant {
       const GateModule *module = nullptr;
-      std::vector<int> ops; // operand node of each module input
+      std::vector<int> ops;  // operand node of each module input
+      std::vector<int> outs; // the group's output each module output gives
     };
     std::list<std::vector<GateModule>> catalog_modules;
     std::vector<Variant> variants;
-    std::vector<int> order(arity);
-    std::iota(order.begin(), order.end(), 0);
-    do {
-      std::vector<std::uint8_t> functions;
-      for (std::uint8_t f : group.functions)
-        functions.push_back(permute_function(f, arity, order));
-      std::vector<int> ops;
-      for (int k : order)
-        ops.push_back(group.operands[k]);
-      if (functions == group.functions && modules->contains(functions) &&
-          arity == 2)
-        variants.push_back({&modules->at(functions), ops});
-      // Modules with ports on the north or south face need the router.
-      if (options.catalog)
-        for (const GateModule &m :
-             catalog_modules.emplace_back(options.catalog->variants(
-                 catalog_key(options.palette, options.solver.verification),
-                 arity, functions, height)))
-          if (use_router ||
-              (std::all_of(m.ins.begin(), m.ins.end(),
-                           [](Vec3 in) { return in.x == 0; }) &&
-               std::all_of(m.outs.begin(), m.outs.end(), [&](Vec3 out) {
-                 return out.x == m.layout.size().x - 1;
-               })))
-            variants.push_back({&m, ops});
-    } while (std::next_permutation(order.begin(), order.end()));
+    // Outputs top to bottom in the group's order, and reversed: the order
+    // that keeps their wires apart depends on where their readers go (a
+    // half adder's sum and carry in a 2-bit adder).
+    std::vector<std::vector<int>> output_orders(1);
+    for (std::size_t o = 0; o < group.functions.size(); ++o)
+      output_orders[0].push_back(static_cast<int>(o));
+    if (group.functions.size() > 1)
+      output_orders.emplace_back(output_orders[0].rbegin(),
+                                 output_orders[0].rend());
+    for (const std::vector<int> &outs : output_orders) {
+      std::vector<std::uint8_t> ordered;
+      for (int o : outs)
+        ordered.push_back(group.functions[o]);
+      std::vector<int> order(arity);
+      std::iota(order.begin(), order.end(), 0);
+      do {
+        std::vector<std::uint8_t> functions;
+        for (std::uint8_t f : ordered)
+          functions.push_back(permute_function(f, arity, order));
+        std::vector<int> ops;
+        for (int k : order)
+          ops.push_back(group.operands[k]);
+        if (functions == ordered && modules->contains(functions) && arity == 2)
+          variants.push_back({&modules->at(functions), ops, outs});
+        // Modules with ports on the north or south face need the router.
+        if (options.catalog)
+          for (const GateModule &m :
+               catalog_modules.emplace_back(options.catalog->variants(
+                   catalog_key(options.palette, options.solver.verification),
+                   arity, functions, height)))
+            if (use_router ||
+                (std::all_of(m.ins.begin(), m.ins.end(),
+                             [](Vec3 in) { return in.x == 0; }) &&
+                 std::all_of(m.outs.begin(), m.outs.end(), [&](Vec3 out) {
+                   return out.x == m.layout.size().x - 1;
+                 })))
+              variants.push_back({&m, ops, outs});
+      } while (std::next_permutation(order.begin(), order.end()));
+    }
     const std::string names = group_name(group);
     if (variants.empty()) {
       say(std::format("flush: no module for gate {} ({})", gi + 1, names));
@@ -743,9 +757,13 @@ std::optional<ComposeResult> compose_parts::compose_flush_groups(
             for (Vec3 other : targets)
               if (other.z > cell.z)
                 p.score += kSharedPortAbove;
-        for (Vec3 out : m.outs) {
-          p.outputs.push_back({x0 + out.x, 1, z + out.z});
-          p.output_ways.push_back(module_output_facing(msize, out));
+        // Indexed like the group's outputs, whichever order the module has.
+        p.outputs.resize(m.outs.size());
+        p.output_ways.resize(m.outs.size());
+        for (std::size_t j = 0; j < m.outs.size(); ++j) {
+          const Vec3 out = m.outs[j];
+          p.outputs[variant->outs[j]] = {x0 + out.x, 1, z + out.z};
+          p.output_ways[variant->outs[j]] = module_output_facing(msize, out);
         }
         candidates.push_back(std::move(p));
       }
