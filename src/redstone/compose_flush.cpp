@@ -43,6 +43,8 @@ constexpr int kPortShift = 6;
 // them are tried per gate (best first).
 constexpr int kRoutedGap = 3;
 constexpr int kRoutedShift = 2;
+// Columns east of a gate's signals tried for spots between them.
+constexpr int kBetweenGap = 6;
 // Many: the best-ranked spots are the tightest, and with many module
 // variants the first few may all leave a wire no room. Routing stops once
 // the beam is full, so the rest cost only their ranking.
@@ -56,6 +58,8 @@ constexpr int kFreshRowShift = 6;
 // A module fed from its north or south face: rows its input may sit off
 // the signal's row (either way).
 constexpr int kSideShift = 3;
+// Cells past its source a signal still to be read keeps for its wire.
+constexpr int kExitDepth = 2;
 
 // A placed module's cells, both ends included.
 struct Footprint {
@@ -141,6 +145,22 @@ long area_of(const FlushState &state) {
 // is when on, found by simulating it under every input vector so far. Wires
 // may branch off any of it.
 using SignalCells = std::map<int, std::vector<std::pair<Vec3, int>>>;
+// Cells kept for one node's wire (the node), off limits to all others.
+using ExitCells = std::map<std::array<int, 3>, int>;
+
+// The first two cells a signal leaves its source through and the cells
+// beside them, on every level: a wire beside the exit would join the
+// signal's first dust, and one over it leaves no room to climb.
+void add_exit(ExitCells &exits, Vec3 source, Dir way, int node, int height) {
+  const Vec3 side = offset(rotate_clockwise(way));
+  Vec3 along = source;
+  for (int step = 1; step <= kExitDepth; ++step) {
+    along = along + offset(way);
+    for (Vec3 c : {along, along + side, along - side})
+      for (int y = 0; y < height; ++y)
+        exits.emplace(key({c.x, y, c.z}), node);
+  }
+}
 
 SignalCells signal_cells(const FlushState &state, const Netlist &netlist,
                          int height) {
@@ -322,16 +342,20 @@ std::optional<ComposeResult> compose_parts::compose_flush_groups(
 
   // A stage's wires drawn by the router, then checked like a solved stage:
   // the cells of the whole partial circuit, or nothing.
-  auto route_stage = [&](const Cells &base,
-                         const std::vector<Footprint> &footprints,
-                         const Spot &p, const SignalCells &signals, Vec3 size,
-                         const std::vector<Vec3> &input_cells,
-                         const std::vector<Vec3> &output_cells,
-                         const std::vector<StageRow> &rows,
-                         std::string &why) -> std::optional<Cells> {
+  auto route_stage =
+      [&](const Cells &base, const std::vector<Footprint> &footprints,
+          const Spot &p, const SignalCells &signals, Vec3 size,
+          const std::vector<Vec3> &input_cells,
+          const std::vector<Vec3> &output_cells,
+          const std::vector<StageRow> &rows, const ExitCells &exits,
+          std::string &why) -> std::optional<Cells> {
     Cells cells = base;
+    int routing = -1; // the node whose wire is being drawn
     auto blocked = [&](Vec3 c) {
       if (!p.join && inside(p.footprint, c))
+        return true;
+      if (auto it = exits.find(key(c));
+          it != exits.end() && it->second != routing)
         return true;
       return std::any_of(footprints.begin(), footprints.end(),
                          [&](const Footprint &f) { return inside(f, c); });
@@ -353,6 +377,7 @@ std::optional<ComposeResult> compose_parts::compose_flush_groups(
     // second joins it.
     bool first_join = true;
     for (const Route &r : p.routes) {
+      routing = r.node;
       std::vector<WireStart> starts;
       std::set<std::array<int, 3>> own;
       bool new_port = false;
@@ -482,6 +507,14 @@ std::optional<ComposeResult> compose_parts::compose_flush_groups(
     for (const FlushState &state : beam) {
       const SignalCells signals =
           use_router ? signal_cells(state, netlist, height) : SignalCells{};
+      // A signal still to be read keeps its way out: a wire drawn past it
+      // walls it in for good (the counting circuit's gate 5).
+      ExitCells exits;
+      if (use_router)
+        for (int node = 0; node < nodes; ++node)
+          if (state.source[node] && last_use[node] >= gi)
+            add_exit(exits, *state.source[node], state.leaves[node], node,
+                     height);
       const Cells &placed = state.placed;
       const std::vector<Footprint> &footprints = state.footprints;
       const std::vector<std::optional<Vec3>> &source = state.source;
@@ -545,6 +578,27 @@ std::optional<ComposeResult> compose_parts::compose_flush_groups(
           for (int dz = 0; dz <= (use_router ? kFreshRowShift : 0); ++dz)
             for (int x0 = 1; x0 <= 2 + options.flush_spacing; ++x0)
               spots.push_back({x0, next_free_z + dz, &variant});
+        // Signals far apart: spots near one leave the other's wire no room
+        // to cross what lies between, so also every row between them, a
+        // little further east.
+        if (use_router && arity >= 2) {
+          int min_z = std::numeric_limits<int>::max();
+          int max_z = std::numeric_limits<int>::min();
+          int max_x = 0;
+          int sourced = 0;
+          for (int op : variant.ops)
+            if (source[op]) {
+              ++sourced;
+              min_z = std::min(min_z, source[op]->z);
+              max_z = std::max(max_z, source[op]->z);
+              max_x = std::max(max_x, source[op]->x);
+            }
+          const int msize_z = variant.module->layout.size().z;
+          if (sourced >= 2 && max_z - min_z > kRoutedShift)
+            for (int x0 = max_x + 1; x0 <= max_x + 1 + kBetweenGap; ++x0)
+              for (int z = min_z - msize_z + 1; z <= max_z; ++z)
+                spots.push_back({x0, z, &variant});
+        }
       } // each module variant
 
       std::vector<Spot> candidates;
@@ -794,9 +848,13 @@ std::optional<ComposeResult> compose_parts::compose_flush_groups(
           routed.push_back(std::nullopt);
           why_not_routed.emplace_back();
         } else if (use_router) {
-          routed.push_back(route_stage(cells, footprints, p, signals, size,
-                                       input_cells, output_cells, rows,
-                                       why_not_routed.emplace_back()));
+          ExitCells stage_exits = exits;
+          for (std::size_t o = 0; o < group.nodes.size(); ++o)
+            add_exit(stage_exits, p.outputs[o], p.output_ways[o],
+                     group.nodes[o], height);
+          routed.push_back(route_stage(
+              cells, footprints, p, signals, size, input_cells, output_cells,
+              rows, stage_exits, why_not_routed.emplace_back()));
           routed_count += routed.back() ? 1 : 0;
         } else {
           routed.push_back(std::nullopt);
