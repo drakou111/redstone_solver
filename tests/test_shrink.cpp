@@ -89,6 +89,44 @@ TEST_CASE("shrink takes slices out of a verified layout until none can go") {
                             result.spec.verification_vectors()));
 }
 
+TEST_CASE("shrink moves a port in along its wire, then cuts the side") {
+  // IN1's wire turns south right past the port: no slice next to it is
+  // empty, but the port fits on the wire where it goes on east.
+  Spec spec = parse_spec(R"(
+size 4 2 2
+input IN1 repeater 0 1 0 east
+output OUT1 dust 3 1 1
+horizon 12
+row IN1(ss15) -> OUT1(ss1..15)
+row IN1(ss0) -> OUT1(ss0)
+)");
+  World layout = spec.base_world();
+  for (Vec3 p : {Vec3{1, 1, 0}, Vec3{1, 1, 1}, Vec3{2, 1, 1}}) {
+    layout.set(p, Block::dust());
+    layout.set(p - Vec3{0, 1, 0}, Block::solid());
+  }
+  layout.set({0, 0, 0}, Block::solid());
+  layout.set({3, 0, 1}, Block::solid());
+  REQUIRE_FALSE(verify_layout(layout, spec, spec.verification_vectors()));
+
+  ShrinkOptions options;
+  options.time_limit_seconds = 10.0;
+  options.parallel = 1; // the port move is tried first
+  options.diversify = false;
+  std::vector<std::string> log;
+  ShrinkResult result = shrink(
+      spec, layout, options, [&](std::string_view m) { log.emplace_back(m); });
+  std::string text;
+  for (const auto &line : log)
+    text += line + "\n";
+  INFO(text);
+  CHECK(text.find("its ports moved in") != std::string::npos);
+  CHECK(result.spec.size.x <= 3);
+  CHECK(result.layout.find_input(0)->x == 0);
+  CHECK_FALSE(verify_layout(result.layout, result.spec,
+                            result.spec.verification_vectors()));
+}
+
 TEST_CASE("tidy straightens a wire that takes a detour") {
   // A buffer whose wire goes around a U instead of straight across.
   std::string text = R"(

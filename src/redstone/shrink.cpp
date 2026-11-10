@@ -1,5 +1,6 @@
 #include "redstone/shrink.hpp"
 
+#include "redstone/simulator.hpp"
 #include "redstone/verifier.hpp"
 
 #include <algorithm>
@@ -8,6 +9,7 @@
 #include <format>
 #include <functional>
 #include <future>
+#include <map>
 #include <mutex>
 #include <random>
 #include <stdexcept>
@@ -171,6 +173,180 @@ std::optional<World> works_as_is(const Spec &cut, const SolverOptions &solver) {
                     solver.verification))
     return std::nullopt;
   return layout;
+}
+
+// Port moves: inputs this many or fewer (each signal is simulated under
+// every input vector), and other cells tried per port.
+constexpr int kMaxMoveInputs = 10;
+constexpr std::size_t kMoveAlternatives = 3;
+
+// Whether each wire cell (dust, repeater) is on, by input vector (input i
+// on in vector v when bit i of v is set), and each output, by vector.
+struct SignalPatterns {
+  std::map<std::array<int, 3>, std::vector<bool>> wire;
+  std::vector<std::vector<bool>> outputs;
+};
+
+std::optional<SignalPatterns> signal_patterns(const Spec &spec,
+                                              const World &layout) {
+  const int n = static_cast<int>(spec.inputs.size());
+  if (n > kMaxMoveInputs)
+    return std::nullopt;
+  constexpr int kSettleTicks = 400;
+  SignalPatterns result;
+  result.outputs.resize(spec.outputs.size());
+  std::vector<Vec3> wire;
+  for (int i = 0; i < layout.volume(); ++i) {
+    const Vec3 p = layout.position_of(i);
+    const BlockType type = layout.at(p).type;
+    if (type == BlockType::Dust || type == BlockType::Repeater)
+      wire.push_back(p);
+  }
+  Simulator sim(layout);
+  for (int v = 0; v < (1 << n); ++v) {
+    for (int i = 0; i < n; ++i)
+      sim.set_input(i, ((v >> i) & 1) != 0 ? kMaxSignal : 0);
+    if (!sim.run_until_quiet(kSettleTicks))
+      return std::nullopt;
+    for (Vec3 p : wire) {
+      const CellState state = sim.state_at(p);
+      result.wire[{p.x, p.y, p.z}].push_back(
+          layout.at(p).type == BlockType::Dust ? state.power > 0 : state.on);
+    }
+    for (std::size_t o = 0; o < spec.outputs.size(); ++o)
+      result.outputs[o].push_back(sim.output(static_cast<int>(o)) > 0);
+  }
+  return result;
+}
+
+// The ports on the west or east side moved one cell in, onto dust of their
+// own signal (dust or a repeater facing on), and that side cut away: the move a
+// hand shrink starts with. A built circuit's ports sit at the end of wires that
+// bend to line up with their gates, so no slice next to them is ever empty. The
+// bend left behind is removed. Ports keep their order along the side. Each try
+// is a spec with the moved layout as hints, still to be checked.
+std::vector<std::pair<std::string, Spec>> ports_moved_in(const Spec &spec,
+                                                         const World &layout) {
+  std::vector<std::pair<std::string, Spec>> tries;
+  if (spec.size.x < 3)
+    return tries;
+  const std::optional<SignalPatterns> patterns = signal_patterns(spec, layout);
+  if (!patterns)
+    return tries;
+  const int n = static_cast<int>(spec.inputs.size());
+  auto pattern_at = [&](Vec3 p) -> const std::vector<bool> * {
+    auto it = patterns->wire.find({p.x, p.y, p.z});
+    return it == patterns->wire.end() ? nullptr : &it->second;
+  };
+
+  for (const bool west : {true, false}) {
+    const int side = west ? 0 : spec.size.x - 1;
+    const int inner = west ? 1 : spec.size.x - 2;
+    // Where the signal goes on from the new port (inputs) or comes from
+    // (outputs): the cell further in.
+    const int beyond = west ? 2 : spec.size.x - 3;
+    struct Move {
+      bool input = true;
+      int channel = 0;
+      Vec3 from;
+      std::vector<Vec3> cells; // best first
+    };
+    std::vector<Move> moves;
+    bool possible = true;
+    auto add = [&](bool input, int channel, Vec3 from,
+                   const std::vector<bool> &signal) {
+      Move move{input, channel, from, {}};
+      std::vector<std::pair<std::array<int, 3>, Vec3>> ranked;
+      for (const auto &[cell, on] : patterns->wire) {
+        if (cell[0] != inner || on != signal)
+          continue;
+        const Vec3 c{cell[0], cell[1], cell[2]};
+        // A repeater carries the signal on only the way it faces.
+        const Block &here = layout.at(c);
+        if (here.type == BlockType::Repeater &&
+            here.facing != (west ? Dir::East : Dir::West))
+          continue;
+        const std::vector<bool> *next = pattern_at({beyond, c.y, c.z});
+        const int goes_on = next && *next == signal ? 0 : 1;
+        ranked.push_back(
+            {{goes_on, std::abs(c.z - from.z), std::abs(c.y - from.y)}, c});
+      }
+      std::stable_sort(
+          ranked.begin(), ranked.end(),
+          [](const auto &a, const auto &b) { return a.first < b.first; });
+      for (std::size_t k = 0; k < ranked.size() && k < kMoveAlternatives; ++k)
+        move.cells.push_back(ranked[k].second);
+      possible &= !move.cells.empty();
+      moves.push_back(std::move(move));
+    };
+    for (int i = 0; i < n; ++i)
+      if (spec.inputs[i].position.x == side) {
+        std::vector<bool> signal;
+        for (int v = 0; v < (1 << n); ++v)
+          signal.push_back(((v >> i) & 1) != 0);
+        add(true, i, spec.inputs[i].position, signal);
+      }
+    for (std::size_t o = 0; o < spec.outputs.size(); ++o)
+      if (spec.outputs[o].position.x == side)
+        add(false, static_cast<int>(o), spec.outputs[o].position,
+            patterns->outputs[o]);
+    if (moves.empty() || !possible)
+      continue;
+
+    // Every port its best cell, then each port in turn its other cells.
+    std::vector<std::vector<std::size_t>> choices{
+        std::vector<std::size_t>(moves.size(), 0)};
+    for (std::size_t m = 0; m < moves.size(); ++m)
+      for (std::size_t k = 1; k < moves[m].cells.size(); ++k) {
+        choices.push_back(std::vector<std::size_t>(moves.size(), 0));
+        choices.back()[m] = k;
+      }
+    for (const std::vector<std::size_t> &choice : choices) {
+      // Order along the side kept, no two ports on one cell.
+      bool ok = true;
+      for (std::size_t a = 0; a < moves.size() && ok; ++a)
+        for (std::size_t b = a + 1; b < moves.size() && ok; ++b) {
+          const Vec3 pa = moves[a].cells[choice[a]];
+          const Vec3 pb = moves[b].cells[choice[b]];
+          const int before = moves[a].from.z - moves[b].from.z;
+          const int after = pa.z - pb.z;
+          ok = pa != pb && (before > 0) == (after > 0) &&
+               (before < 0) == (after < 0);
+        }
+      if (!ok)
+        continue;
+      for (const bool clear_bend : {true, false}) {
+        World moved = layout;
+        for (std::size_t m = 0; m < moves.size(); ++m) {
+          const Move &move = moves[m];
+          const Vec3 to = move.cells[choice[m]];
+          const Block old = layout.at(move.from);
+          moved.set(move.from, Block::air());
+          if (clear_bend) {
+            // The wire's turn from the old port's row to the new port.
+            const std::vector<bool> *signal = pattern_at(to);
+            for (int z = std::min(move.from.z, to.z);
+                 z <= std::max(move.from.z, to.z); ++z) {
+              const Vec3 c{inner, to.y, z};
+              if (c != to && pattern_at(c) && *pattern_at(c) == *signal)
+                moved.set(c, Block::air());
+            }
+          }
+          moved.set(
+              to,
+              move.input
+                  ? Block::input(move.channel, old.input_kind(), old.facing)
+                  : Block::output(move.channel, old.output_kind(), old.facing));
+        }
+        Spec with_moved = spec_with_layout(spec, moved);
+        if (std::optional<Spec> cut = cut_slice(with_moved, 0, side))
+          tries.emplace_back(std::format("x = {}, its ports moved in{}", side,
+                                         clear_bend ? "" : " (bend kept)"),
+                             std::move(*cut));
+      }
+    }
+  }
+  return tries;
 }
 
 // Cuts with the fewest blocks in the removed slice first, each repaired near
@@ -559,6 +735,8 @@ ShrinkResult shrink(const Spec &spec, const World &layout,
         std::optional<std::size_t> attempt;
       };
       std::vector<AsIs> checks;
+      for (auto &[name, moved] : ports_moved_in(node.spec, node.layout))
+        checks.push_back({std::move(moved), std::move(name), std::nullopt});
       for (int axis = 0; axis < 3; ++axis)
         for (int k = 0; k + 1 < component(node.spec.size, axis); ++k)
           if (std::optional<Spec> once = cut_slice(node.spec, axis, k))
