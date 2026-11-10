@@ -771,7 +771,12 @@ std::optional<ComposeResult> compose_parts::compose_flush_groups(
       if (options.flush_seed != 0)
         for (Spot &p : candidates) {
           std::uint64_t h = static_cast<std::uint64_t>(options.flush_seed);
-          for (int v : {gi, p.x0, p.z, p.join ? 1 : 0})
+          // Where the outputs leave too: one module with its outputs in
+          // either order at the same spot otherwise ties for good.
+          std::vector<int> parts{gi, p.x0, p.z, p.join ? 1 : 0};
+          for (Vec3 out : p.outputs)
+            parts.insert(parts.end(), {out.x, out.z});
+          for (int v : parts)
             h = (h ^ static_cast<std::uint64_t>(v + 0x9e37)) * 0x100000001b3ULL;
           p.score += static_cast<long>(
               h % static_cast<std::uint64_t>(p.score / kNoiseShare + 1));

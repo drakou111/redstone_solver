@@ -233,9 +233,10 @@ bool smaller(const ComposeResult &a, const ComposeResult &b) {
 // Fused groupings tried (fewest modules first) and builds of each.
 constexpr int kMaxFusedGroupings = 6;
 constexpr int kFusedSeeds = 4;
-// How long the plain build goes on once a build with 3-input modules
-// stands.
+// How long the plain build goes on once another build stands.
 constexpr double kPlainGraceSeconds = 10.0;
+// Builds with shuffled spot rankings started with the plain build.
+constexpr int kShuffledSeeds = 3;
 
 // The plain flush build and, when the router draws the wires (each build
 // takes moments), more with shuffled spot rankings side by side, and builds
@@ -278,7 +279,26 @@ flush_variants(const Netlist &netlist, const BoolTable &table,
   // Started before the plain build, which can spend the whole budget
   // backtracking when its gates cannot be wired.
   std::vector<std::future<std::optional<ComposeResult>>> fused_builds;
-  std::atomic<bool> fused_found = false;
+  std::atomic<bool> other_found = false;
+  // Builds of the plain grouping with shuffled spot rankings, also from the
+  // start: when spots tie, which is kept decides whether a later gate finds
+  // room, and the plain build alone goes back only so far (the counting
+  // network wired with one half adder's outputs listed first, not the other
+  // way round, though both orders were tried).
+  std::vector<std::future<std::optional<ComposeResult>>> shuffled_builds;
+  for (int s = 0; options.flush_router && s < kShuffledSeeds; ++s) {
+    NetlistComposeOptions o = first;
+    o.flush_seed = options.flush_variants + s;
+    o.flush_sat = false;
+    o.preview = {};
+    shuffled_builds.push_back(
+        std::async(std::launch::async, [&netlist, &table, &other_found, o] {
+          std::optional<ComposeResult> r = compose_flush(netlist, table, o, {});
+          if (r)
+            other_found = true;
+          return r;
+        }));
+  }
   // The last word of each grouping's first build: why it found no place.
   std::vector<std::string> fused_last(fused.size());
   for (std::size_t g = 0; g < fused.size(); ++g)
@@ -299,16 +319,16 @@ flush_variants(const Netlist &netlist, const BoolTable &table,
         };
       fused_builds.push_back(std::async(
           std::launch::async,
-          [&netlist, &table, &grouping = fused[g], &fused_found, o, note] {
+          [&netlist, &table, &grouping = fused[g], &other_found, o, note] {
             std::optional<ComposeResult> r =
                 compose_flush_groups(netlist, table, grouping, o, note);
             if (r)
-              fused_found = true;
+              other_found = true;
             return r;
           }));
     }
-  // Once a build with 3-input modules stands, the plain one, which may be
-  // backtracking through gates it cannot wire, gets a little longer.
+  // Once another build stands, the plain one, which may be backtracking
+  // through gates it cannot wire, gets a little longer.
   std::atomic<bool> plain_stop = false;
   std::atomic<bool> plain_done = false;
   NetlistComposeOptions plain = first;
@@ -318,7 +338,7 @@ flush_variants(const Netlist &netlist, const BoolTable &table,
     while (!plain_done) {
       if (options.cancel && options.cancel->load())
         plain_stop = true;
-      if (fused_found && !found_at)
+      if (other_found && !found_at)
         found_at = std::chrono::steady_clock::now();
       if (found_at && std::chrono::steady_clock::now() - *found_at >
                           std::chrono::duration<double>(kPlainGraceSeconds))
@@ -332,9 +352,8 @@ flush_variants(const Netlist &netlist, const BoolTable &table,
   watcher.join();
   if (!best && plain_stop && !(options.cancel && options.cancel->load()) &&
       progress)
-    progress("flush: the plain build stopped: one with 3-input modules stands");
-  if (!options.flush_router ||
-      (fused.empty() && (!best || options.flush_variants <= 1)))
+    progress("flush: the plain build stopped: another build stands");
+  if (!options.flush_router)
     return best;
   std::vector<std::future<std::optional<ComposeResult>>> variants;
   for (int seed = 1; best && seed < options.flush_variants; ++seed) {
@@ -346,6 +365,8 @@ flush_variants(const Netlist &netlist, const BoolTable &table,
       return compose_flush(netlist, table, o, {});
     }));
   }
+  for (auto &build : shuffled_builds)
+    variants.push_back(std::move(build));
   const std::size_t plain_builds = variants.size();
   for (auto &build : fused_builds)
     variants.push_back(std::move(build));
