@@ -82,6 +82,7 @@ public final class ServerLink {
             options.addProperty("totalTime", this.state.getTimeLimitSeconds());
             // Then shrink: every variant is built, shrunk until the deadline, the smallest kept.
             options.addProperty("shrink", this.state.isAutoShrink());
+            options.addProperty("keepInputOrder", this.state.isInputsInOrder());
             options.addProperty("cutTime", Math.min(MAX_CUT_SECONDS, this.state.getTimeLimitSeconds()));
         }
         body.add("options", options);

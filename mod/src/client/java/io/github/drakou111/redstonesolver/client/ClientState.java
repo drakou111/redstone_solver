@@ -37,6 +37,7 @@ public final class ClientState {
     private double sketchSeconds = DEFAULT_SKETCH_SECONDS;
     private int version;
     private boolean autoShrink = true;
+    private boolean inputsInOrder;
     private boolean portsAlongSide;
     private boolean cancelling;
 
@@ -78,6 +79,15 @@ public final class ClientState {
 
     public void setAutoShrink(boolean autoShrink) {
         this.autoShrink = autoShrink;
+    }
+
+    /** Build from gates keeps the inputs down the west side in order, IN1 first. */
+    public boolean isInputsInOrder() {
+        return this.inputsInOrder;
+    }
+
+    public void setInputsInOrder(boolean inputsInOrder) {
+        this.inputsInOrder = inputsInOrder;
     }
 
     /** True from asking to cancel until the job ends. */

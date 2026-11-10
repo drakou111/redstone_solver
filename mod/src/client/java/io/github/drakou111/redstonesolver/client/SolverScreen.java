@@ -573,6 +573,14 @@ public final class SolverScreen extends Screen {
                         this.state.setAutoShrink(!shrinkAfter);
                         this.rebuildWidgets();
                     });
+            boolean inOrder = this.state.isInputsInOrder();
+            this.flowButton(inOrder ? "Inputs: in order" : "Inputs: any order",
+                    "In order: the inputs go down the west side as IN1, IN2, ... Any order: the solver picks the "
+                            + "order, which usually gives a smaller circuit. Wires that must cross need a box 4 high",
+                    () -> {
+                        this.state.setInputsInOrder(!inOrder);
+                        this.rebuildWidgets();
+                    });
         }
         boolean sketch = draft.getOtherBlocks() == CircuitDraft.OtherBlocks.SKETCH;
         this.flowButton(sketch ? "Your blocks: sketch" : "Your blocks: ignore",
