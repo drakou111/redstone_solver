@@ -265,19 +265,28 @@ void SatPortfolio::prefer(const std::vector<int> &lits) {
       worker->solver.phase(lit);
 }
 
-void SatPortfolio::add(const std::vector<std::vector<int>> &clauses,
-                       std::size_t from) {
+bool SatPortfolio::add(const std::vector<std::vector<int>> &clauses,
+                       std::size_t from, const std::function<bool()> &stop) {
+  constexpr std::size_t kClausesPerCheck = 4096;
+  std::atomic<bool> stopped = false;
   auto add_to = [&](Worker &worker) {
     for (std::size_t i = from; i < clauses.size(); ++i) {
+      if ((i - from) % kClausesPerCheck == 0 && stop && (stopped || stop())) {
+        stopped = true;
+        return;
+      }
       for (int lit : clauses[i])
         worker.solver.add(lit);
       worker.solver.add(0);
     }
   };
-  std::vector<std::jthread> threads;
-  for (std::size_t w = 1; w < this->workers_.size(); ++w)
-    threads.emplace_back([&, w] { add_to(*this->workers_[w]); });
-  add_to(*this->workers_[0]);
+  {
+    std::vector<std::jthread> threads;
+    for (std::size_t w = 1; w < this->workers_.size(); ++w)
+      threads.emplace_back([&, w] { add_to(*this->workers_[w]); });
+    add_to(*this->workers_[0]);
+  }
+  return !stopped;
 }
 
 SatPortfolio::Outcome

@@ -584,7 +584,9 @@ SearchResult run_sat_search(SatSearch &search,
       encoder.limit_blocks(bound - 1);
       applied_bound = bound;
     }
-    portfolio.add(encoder.clauses(), clauses_sent);
+    if (!portfolio.add(encoder.clauses(), clauses_sent,
+                       [&] { return cancelled() || Clock::now() >= deadline; }))
+      return end(cancelled() ? SearchEnd::Cancelled : SearchEnd::OutOfTime);
     if (clauses_sent == 0) {
       portfolio.prefer(encoder.preferred_literals());
       if (options.lazy_loops)

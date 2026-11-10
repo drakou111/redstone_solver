@@ -4,6 +4,7 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <vector>
 
@@ -36,8 +37,12 @@ public:
   // of active edges through an edge with a gap of 1 (with a clause made of
   // the loop's literals). Nodes are 0..nodes-1.
   void forbid_loops(int nodes, const std::vector<GraphEdge> &edges);
-  // Adds clauses[from..] (DIMACS literals) to every solver.
-  void add(const std::vector<std::vector<int>> &clauses, std::size_t from);
+  // Adds clauses[from..] (DIMACS literals) to every solver. Stops between
+  // clauses once `stop` says so (loading millions of clauses took up to
+  // half a minute); false then, and the portfolio is incomplete: solving it
+  // again is wrong.
+  bool add(const std::vector<std::vector<int>> &clauses, std::size_t from,
+           const std::function<bool()> &stop = {});
   // Stopped when the deadline passes or `cancel` or `interrupt` is set.
   // `assumptions` hold for this call only.
   Outcome solve(std::chrono::steady_clock::time_point deadline,
