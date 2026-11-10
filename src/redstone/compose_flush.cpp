@@ -663,6 +663,15 @@ std::optional<ComposeResult> compose_parts::compose_flush_groups(
           for (int y = 0; ok && y < height; ++y)
             for (int zz = p.footprint.z0; ok && zz <= p.footprint.z1; ++zz)
               ok = !placed.contains(key({x, y, zz}));
+        // Not on the way out of a signal later gates still read: the module
+        // would shut it in (the 2-bit comparison's third gate sat against
+        // the first module's other output).
+        for (auto it = exits.begin(); ok && it != exits.end(); ++it) {
+          const auto &[cell, node] = *it;
+          ok = last_use[node] <= gi || cell[0] < p.footprint.x0 ||
+               cell[0] > p.footprint.x1 || cell[2] < p.footprint.z0 ||
+               cell[2] > p.footprint.z1;
+        }
         long route_length = 0;
         for (int k = 0; ok && k < arity; ++k) {
           const Vec3 target = targets[k];
