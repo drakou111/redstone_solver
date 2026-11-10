@@ -858,6 +858,8 @@ namespace {
 
 // The gate networks of one table: found once, reused by every pass.
 constexpr double kWideSynthesisSeconds = 10.0;
+// The search for a two-signal decoder network (at most 24 small syntheses).
+constexpr double kDecodedNetworkSeconds = 5.0;
 
 struct Networks {
   bool searched = false;
@@ -933,12 +935,28 @@ std::optional<ComposeResult> compose_once(const Spec &spec,
         networks.candidates = synthesize_alternatives(
             table, *networks.best,
             static_cast<std::size_t>(options.network_candidates), alternatives);
-        std::stable_sort(networks.candidates.begin(), networks.candidates.end(),
-                         [](const Netlist &a, const Netlist &b) {
-                           return network_layout_score(a) <
-                                  network_layout_score(b);
-                         });
       }
+      // Two signals and a decoder: maybe more gates, but fewer modules to
+      // wire. The one easiest to lay out joins the candidates.
+      SynthesisOptions decoding = synthesis;
+      decoding.time_limit_seconds = kDecodedNetworkSeconds;
+      std::vector<Netlist> decoded = decoded_networks(table, decoding);
+      auto easiest = std::min_element(decoded.begin(), decoded.end(),
+                                      [](const Netlist &a, const Netlist &b) {
+                                        return network_layout_score(a) <
+                                               network_layout_score(b);
+                                      });
+      if (easiest != decoded.end() &&
+          std::none_of(networks.candidates.begin(), networks.candidates.end(),
+                       [&](const Netlist &c) {
+                         return c.describe() == easiest->describe();
+                       }))
+        networks.candidates.push_back(std::move(*easiest));
+      std::stable_sort(networks.candidates.begin(), networks.candidates.end(),
+                       [](const Netlist &a, const Netlist &b) {
+                         return network_layout_score(a) <
+                                network_layout_score(b);
+                       });
     }
   }
   if (!networks.best) {

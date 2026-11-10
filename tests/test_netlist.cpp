@@ -192,3 +192,39 @@ TEST_CASE("reading a network names what is wrong") {
   CHECK_THROWS_AS(parse_netlist("g1 = AND(IN1, IN2)", 2),
                   std::invalid_argument);
 }
+
+TEST_CASE("a table of few output combinations decodes two signals") {
+  // How many of three inputs are on, one-hot: four combinations.
+  std::vector<std::vector<int>> outputs(4);
+  for (int t = 0; t < 8; ++t) {
+    const int on = (t & 1) + ((t >> 1) & 1) + ((t >> 2) & 1);
+    for (int k = 0; k < 4; ++k)
+      outputs[k].push_back(on == k ? 1 : 0);
+  }
+  const BoolTable table = table_of(3, outputs);
+  SynthesisOptions options;
+  options.time_limit_seconds = 30.0;
+  std::vector<Netlist> networks = decoded_networks(table, options);
+  REQUIRE_FALSE(networks.empty());
+  bool full_adder = false;
+  for (const Netlist &network : networks) {
+    check_computes(network, table);
+    // Every output is a gate on the same two signals.
+    const Gate &first = network.gates[network.outputs[0] - network.inputs];
+    for (int out : network.outputs) {
+      const Gate &gate = network.gates[out - network.inputs];
+      CHECK(gate.a == first.a);
+      CHECK(gate.b == first.b);
+    }
+    // The full adder's sum and carry: five gates before the decoder.
+    full_adder |= network.gates.size() == 5 + 4;
+  }
+  CHECK(full_adder);
+  // Two outputs: not worth a decoder. Five combinations: too many.
+  CHECK(decoded_networks(table_of(2, {{0, 1, 1, 0}, {0, 0, 0, 1}}), options)
+            .empty());
+  std::vector<std::vector<int>> five(5, std::vector<int>(8, 0));
+  for (int t = 0; t < 8; ++t)
+    five[std::min(t, 4)][t] = 1;
+  CHECK(decoded_networks(table_of(3, five), options).empty());
+}

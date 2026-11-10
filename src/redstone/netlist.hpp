@@ -70,6 +70,17 @@ struct SynthesisOptions {
 std::optional<Netlist> synthesize(const BoolTable &table,
                                   const SynthesisOptions &options = {});
 
+// For a table whose outputs take at most four different combinations: two
+// signals that tell the combinations apart (a 2-output network), then one
+// gate per output reading just those two, which compose builds as a single
+// module. Often a gate or two more than the smallest network, but far fewer
+// modules and wires (counting how many of 3 inputs are on: a full adder and
+// a 2-to-4 decoder). One network per 2-bit code of the combinations (the
+// smallest for that code), each once. Nothing past 3 inputs, below 3
+// outputs, or when an output is left open for some input vector.
+std::vector<Netlist> decoded_networks(const BoolTable &table,
+                                      const SynthesisOptions &options = {});
+
 // Finds alternative networks with the same already-known minimum gate count,
 // using varied SAT seeds. The first result is `initial`; the remaining time
 // budget is spent looking for structurally different networks.

@@ -587,6 +587,81 @@ std::optional<Netlist> synthesize(const BoolTable &table,
   return std::nullopt;
 }
 
+std::vector<Netlist> decoded_networks(const BoolTable &table,
+                                      const SynthesisOptions &options) {
+  constexpr int kMaxDecodedInputs = 3;
+  constexpr int kMinOutputs = 3;
+  constexpr std::size_t kCodes = 4; // what two signals can tell apart
+  const int outputs = static_cast<int>(table.values.size());
+  if (table.inputs > kMaxDecodedInputs || outputs < kMinOutputs)
+    return {};
+  const int vectors = 1 << table.inputs;
+  // Each input vector's class: the combination of outputs it gives.
+  std::vector<std::vector<bool>> classes;
+  std::vector<int> class_of(vectors);
+  for (int t = 0; t < vectors; ++t) {
+    std::vector<bool> combination;
+    for (const auto &column : table.values) {
+      if (!column[t])
+        return {};
+      combination.push_back(*column[t]);
+    }
+    auto it = std::find(classes.begin(), classes.end(), combination);
+    class_of[t] = static_cast<int>(it - classes.begin());
+    if (it == classes.end())
+      classes.push_back(std::move(combination));
+  }
+  if (classes.size() > kCodes || classes.size() < 3)
+    return {};
+
+  const auto deadline =
+      std::chrono::steady_clock::now() +
+      std::chrono::duration_cast<std::chrono::steady_clock::duration>(
+          std::chrono::duration<double>(options.time_limit_seconds));
+  std::vector<Netlist> found;
+  std::set<std::string> seen;
+  std::vector<int> codes{0, 1, 2, 3}; // the first classes.size() are used
+  do {
+    if (std::chrono::steady_clock::now() >= deadline ||
+        (options.cancel && options.cancel->load()))
+      break;
+    // Two signals: the high and low bit of each vector's class code.
+    BoolTable bits;
+    bits.inputs = table.inputs;
+    bits.values.assign(2, {});
+    for (int t = 0; t < vectors; ++t) {
+      const int code = codes[class_of[t]];
+      bits.values[0].push_back((code & 2) != 0);
+      bits.values[1].push_back((code & 1) != 0);
+    }
+    SynthesisOptions o = options;
+    o.time_limit_seconds = std::chrono::duration<double>(
+                               deadline - std::chrono::steady_clock::now())
+                               .count();
+    if (o.time_limit_seconds <= 0)
+      break;
+    std::optional<Netlist> signals = synthesize(bits, o);
+    if (!signals)
+      continue;
+    Netlist network = *signals;
+    network.outputs.clear();
+    const int high = signals->outputs[0];
+    const int low = signals->outputs[1];
+    for (int k = 0; k < outputs; ++k) {
+      std::uint8_t function = 0;
+      for (std::size_t c = 0; c < classes.size(); ++c)
+        if (classes[c][k])
+          function |= static_cast<std::uint8_t>(1 << codes[c]);
+      network.outputs.push_back(network.inputs +
+                                static_cast<int>(network.gates.size()));
+      network.gates.push_back({high, low, function});
+    }
+    if (seen.insert(network.describe()).second)
+      found.push_back(std::move(network));
+  } while (std::next_permutation(codes.begin(), codes.end()));
+  return found;
+}
+
 std::vector<Netlist> synthesize_alternatives(const BoolTable &table,
                                              const Netlist &initial,
                                              std::size_t max_candidates,
