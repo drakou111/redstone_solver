@@ -96,6 +96,11 @@ struct NetlistComposeOptions {
   // a gate may sit away from its signal; later deadline passes raise both.
   int flush_margin = 1;
   int flush_spacing = 0;
+  // Input ports down the west side in their own order (IN1 first), set
+  // before any gate: the circuit is built around them. Rows from one port
+  // to the next; builds side by side also try wider ones.
+  bool keep_input_order = false;
+  int input_spacing = 2;
 };
 
 // The composed circuit for `netlist`; its spec has the table's rows (don't

@@ -164,6 +164,36 @@ TEST_CASE("flush placement builds a compact flat full adder") {
                             result->spec.verification_vectors()));
 }
 
+TEST_CASE("flush placement keeps the inputs in their own order") {
+  Spec spec = spec_of(3, 2, [](int t, int o) {
+    int count = (t & 1) + ((t >> 1) & 1) + ((t >> 2) & 1);
+    return o == 0 ? count % 2 : count >= 2 ? 1 : 0;
+  });
+  NetlistComposeOptions options;
+  options.max_height = 4;
+  options.keep_input_order = true;
+  options.columns = false;
+  options.solver.verification.placements = {Placement{}};
+  std::vector<std::string> log;
+  std::optional<ComposeResult> result = compose_spec(
+      spec, options, [&](std::string_view m) { log.emplace_back(m); });
+  std::string text;
+  for (const auto &line : log)
+    text += line + "\n";
+  INFO(text);
+  REQUIRE(result);
+  for (int i = 0; i < 3; ++i) {
+    std::optional<Vec3> port = result->layout.find_input(i);
+    REQUIRE(port);
+    CHECK(port->x == 0);
+    if (i > 0)
+      CHECK(port->z > result->layout.find_input(i - 1)->z);
+  }
+  CHECK_FALSE(verify_layout(result->layout, result->spec,
+                            result->spec.verification_vectors(),
+                            options.solver.verification));
+}
+
 TEST_CASE("compose and shrink keeps the smaller variant, verified") {
   Spec spec = spec_of(3, 2, [](int t, int o) {
     int count = (t & 1) + ((t >> 1) & 1) + ((t >> 2) & 1);

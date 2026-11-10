@@ -302,6 +302,8 @@ flush_variants(const Netlist &netlist, const BoolTable &table,
   for (int s = 0; options.flush_router && s < kShuffledSeeds; ++s) {
     NetlistComposeOptions o = first;
     o.flush_seed = options.flush_variants + s;
+    // Ports kept in order: wires to far gates may need more rows between.
+    o.input_spacing = options.input_spacing + s + 1;
     o.flush_sat = false;
     o.preview = {};
     o.cancel = &side_stop;
@@ -319,6 +321,7 @@ flush_variants(const Netlist &netlist, const BoolTable &table,
     for (int seed = 0; seed < kFusedSeeds; ++seed) {
       NetlistComposeOptions o = first;
       o.flush_seed = seed;
+      o.input_spacing = options.input_spacing + seed % 2;
       o.flush_sat = false;
       o.preview = {};
       o.cancel = &side_stop;
@@ -815,10 +818,12 @@ compose_and_shrink(const Spec &spec, const NetlistComposeOptions &options,
   // Each cut's model of a wide table holds a gigabyte or more.
   const int all_workers = wide ? std::min(shrink_workers(shrink), kWideWorkers)
                                : shrink_workers(shrink);
-  if (options.size_search && wide)
+  if (options.size_search && !options.keep_input_order && wide)
     say(std::format("no size search: {} inputs are too many to solve whole",
                     spec.inputs.size()));
-  const int size_workers = options.size_search && !wide ? all_workers / 2 : 0;
+  // Boxes of the size search place their own ports, in any order.
+  const bool search = options.size_search && !options.keep_input_order;
+  const int size_workers = search && !wide ? all_workers / 2 : 0;
   std::future<std::optional<SizeSearchResult>> sizes;
   if (size_workers > 0) {
     SizeSearchOptions s;

@@ -343,6 +343,17 @@ std::optional<ComposeResult> compose_parts::compose_flush_groups(
   beam[0].leaves.resize(nodes, Dir::East);
   beam[0].port.resize(n);
   beam[0].next_free_z = kMarginZ;
+  if (options.keep_input_order) {
+    const int spacing = std::max(2, options.input_spacing);
+    for (int i = 0; i < n; ++i) {
+      const Vec3 cell{0, 1, kMarginZ + spacing * i};
+      beam[0].port[i] = cell;
+      beam[0].source[i] = cell;
+      beam[0].placed[key(cell)] = Block::repeater(Dir::East);
+      beam[0].placed[key(cell - Vec3{0, 1, 0})] = Block::solid();
+    }
+    beam[0].next_free_z = kMarginZ + spacing * (n - 1) + 2;
+  }
   const int beam_width = std::max(1, options.flush_beam);
   // Rows beside a wire's straight path it may also use (to go around).
   const int margin = std::max(1, options.flush_margin);

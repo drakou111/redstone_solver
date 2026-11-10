@@ -113,6 +113,9 @@ std::string compose_key(const Spec &spec,
                      options.solver.verification.placements.size());
   for (BlockType type : spec.palette)
     key += std::format(" {}", palette_name(type));
+  // Older keys stay as they were: circuits stored before have any order.
+  if (options.keep_input_order)
+    key += "|inputs in order";
   return key;
 }
 
@@ -555,6 +558,7 @@ Json Api::start_compose(const Json &body) {
   options.max_height = settings.value("maxHeight", 0);
   options.flush_beam = settings.value("flushBeam", options.flush_beam);
   options.flush_router = settings.value("router", options.flush_router);
+  options.keep_input_order = settings.value("keepInputOrder", false);
   options.gate_cache = &this->gate_cache_;
   options.catalog = &this->catalog_;
   // With a shrink time, every variant is built and shrunk; the best is kept.
