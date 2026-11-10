@@ -15,6 +15,9 @@ namespace {
 
 // Truth tables are 8 bits: three inputs at most.
 constexpr std::size_t kMaxModuleInputs = 3;
+// Boxes added for modules with more outputs than the usual sizes hold.
+constexpr int kDeepModuleWidth = 5;
+constexpr int kModuleHeight = 2;
 
 std::string gate_spec_text(const std::vector<std::uint8_t> &functions,
                            Vec3 size, const std::vector<Vec3> &ins,
@@ -406,11 +409,20 @@ std::optional<GateModule> build_gate(const std::vector<std::uint8_t> &functions,
       std::chrono::steady_clock::now() +
       std::chrono::duration_cast<std::chrono::steady_clock::duration>(
           std::chrono::duration<double>(options.time_limit_seconds));
+  // Outputs sit on every other row: a module with many needs a deeper box
+  // than any of the usual sizes.
+  std::vector<Vec3> sizes = options.sizes;
+  const int rows_needed = 2 * static_cast<int>(functions.size()) - 1;
+  if (std::none_of(sizes.begin(), sizes.end(),
+                   [&](Vec3 s) { return s.z >= rows_needed; }))
+    for (int depth : {rows_needed, rows_needed + 1})
+      for (int width : {kDeepModuleWidth, kDeepModuleWidth + 1})
+        sizes.push_back({width, kModuleHeight, depth});
   int attempts_left = 0;
-  for (Vec3 size : options.sizes)
+  for (Vec3 size : sizes)
     attempts_left += static_cast<int>(
         output_row_choices(static_cast<int>(functions.size()), size.z).size());
-  for (Vec3 size : options.sizes) {
+  for (Vec3 size : sizes) {
     for (const std::vector<int> &rows :
          output_row_choices(static_cast<int>(functions.size()), size.z)) {
       if (options.cancel && options.cancel->load())

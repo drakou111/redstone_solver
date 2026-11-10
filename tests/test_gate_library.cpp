@@ -197,3 +197,18 @@ TEST_CASE("a module puts its output on its south face") {
   CHECK(module->layout.at({1, 1, 3}).type == BlockType::Air);
   CHECK(module->layout.at({3, 1, 1}).type == BlockType::Air); // east is clean
 }
+
+TEST_CASE("a module with more outputs than the usual boxes hold gets a "
+          "deeper box") {
+  GateLibraryOptions options;
+  // Only which boxes are tried matters here, not whether one holds it.
+  options.time_limit_seconds = 2.0;
+  // Three outputs on every other row need five rows; the usual boxes have
+  // at most four, and without more none would even be tried.
+  std::string text;
+  build_gate({0b0001, 0b1000, 0b0110}, options,
+             [&](std::string_view m) { text += std::string(m) + "\n"; });
+  INFO(text);
+  CHECK(text.find("x2x5") != std::string::npos);
+  CHECK(text.find("x2x3") == std::string::npos);
+}
