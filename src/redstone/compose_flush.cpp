@@ -855,6 +855,10 @@ std::optional<ComposeResult> compose_parts::compose_flush_groups(
       std::vector<std::string> why_not_routed;
       int routed_count = 0;
       for (std::size_t ci = 0; ci < candidates.size(); ++ci) {
+        // Thousands of spots can take seconds to route: a stopped build
+        // stops here, not at the next gate.
+        if (cancelled())
+          return std::nullopt;
         const Spot &p = candidates[ci];
         const bool sat_stage = options.flush_sat &&
                                static_cast<int>(ci) < options.flush_candidates;
