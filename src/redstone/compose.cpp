@@ -144,6 +144,16 @@ namespace {
 
 using namespace compose_parts;
 
+// Exact synthesis gets its full time, and the size search (one SAT solve of
+// the whole table per box) runs, up to this many inputs. Past it each box
+// is a model of millions of clauses, a gigabyte and more, that does not
+// stop while it is built: a 4-to-1 multiplexer's searches overran a 10
+// minute run by 10 minutes, held 20 GB, and found nothing.
+constexpr int kNarrowTableInputs = 4;
+// Shrink solves side by side on a wider table (12 held 36 GB on the
+// multiplexer).
+constexpr int kWideWorkers = 4;
+
 std::vector<BlockType> core_redstone_palette() {
   return {BlockType::Solid, BlockType::Dust, BlockType::Torch,
           BlockType::Repeater};
@@ -728,8 +738,14 @@ compose_and_shrink(const Spec &spec, const NetlistComposeOptions &options,
   for (const auto &[name, start] : starts)
     if (volume(start.layout.size()) < volume(beat->layout.size()))
       beat = &start;
-  const int all_workers = shrink_workers(shrink);
-  const int size_workers = options.size_search ? all_workers / 2 : 0;
+  const bool wide = static_cast<int>(spec.inputs.size()) > kNarrowTableInputs;
+  // Each cut's model of a wide table holds a gigabyte or more.
+  const int all_workers = wide ? std::min(shrink_workers(shrink), kWideWorkers)
+                               : shrink_workers(shrink);
+  if (options.size_search && wide)
+    say(std::format("no size search: {} inputs are too many to solve whole",
+                    spec.inputs.size()));
+  const int size_workers = options.size_search && !wide ? all_workers / 2 : 0;
   std::future<std::optional<SizeSearchResult>> sizes;
   if (size_workers > 0) {
     SizeSearchOptions s;
@@ -802,8 +818,6 @@ GateLibraryOptions gates_within_height(GateLibraryOptions gates,
 namespace {
 
 // The gate networks of one table: found once, reused by every pass.
-// Exact synthesis gets its full time up to this many inputs.
-constexpr int kNarrowTableInputs = 4;
 constexpr double kWideSynthesisSeconds = 10.0;
 
 struct Networks {
