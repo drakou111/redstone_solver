@@ -79,6 +79,14 @@ compose_flush_groups(const Netlist &netlist, const BoolTable &table,
 std::vector<Group> group_gates(const Netlist &netlist,
                                const std::vector<int> &level);
 
+// The circuit with its inputs down the west side in order (IN1 first):
+// moved east, with the crossing wires west of it drawn by the router. The
+// same circuit when they already are; nothing if no crossing fits.
+std::optional<ComposeResult>
+with_inputs_in_order(const ComposeResult &built,
+                     const NetlistComposeOptions &options,
+                     const ProgressCallback &progress);
+
 // One module per distinct function list of the 2-operand groups, or
 // nothing if one cannot be built (fused groups take catalog modules).
 // `module_height` is the tallest module's height (at least 2).

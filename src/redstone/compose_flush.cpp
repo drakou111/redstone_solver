@@ -51,6 +51,9 @@ constexpr int kBetweenGap = 6;
 constexpr int kRoutedCandidates = 192;
 // Rank cost of a shared new port above one of its gate's inputs.
 constexpr long kSharedPortAbove = 2000;
+// Rank cost of each pair of inputs a new port puts out of order (inputs
+// wanted in order).
+constexpr long kOrderInversionCost = 1500;
 // Rank cost of a spot below the rows in use, for a gate that also reads
 // signals already there: only when the spots by them fail.
 constexpr long kBelowSpotCost = 4000;
@@ -723,18 +726,62 @@ std::optional<ComposeResult> compose_parts::compose_flush_groups(
                 std::all_of(targets.begin(), targets.end(),
                             [&](Vec3 other) { return target.z <= other.z; });
             const int away = lowest ? -1 : 1;
-            for (int sign : {away, -away})
-              for (int shift = 0; shift <= reach && !chosen; ++shift) {
-                Vec3 cell{0, 1, target.z + sign * shift};
-                if (free_port(cell))
+            // Inputs wanted in order: a row between the ports of the
+            // inputs before and after it first.
+            auto keeps_order = [&](Vec3 cell) {
+              auto fits = [&](int input, Vec3 other) {
+                return (input < ops[k]) == (other.z < cell.z);
+              };
+              for (int i = 0; i < n; ++i)
+                if (port[i] && !fits(i, *port[i]))
+                  return false;
+              for (const auto &[index, other] : p.new_ports)
+                if (!fits(index, other))
+                  return false;
+              return true;
+            };
+            std::vector<bool> passes{false};
+            if (options.prefer_input_order)
+              passes.insert(passes.begin(), true);
+            for (bool in_order : passes) {
+              auto good = [&](Vec3 cell) {
+                return free_port(cell) && (!in_order || keeps_order(cell));
+              };
+              for (int sign : {away, -away})
+                for (int shift = 0; shift <= reach && !chosen; ++shift) {
+                  Vec3 cell{0, 1, target.z + sign * shift};
+                  if (good(cell))
+                    chosen = cell;
+                }
+              // Rows near it all taken: below everything, the wire drawn
+              // around what lies between.
+              for (int dz = 0; use_router && !chosen && dz <= kPortShift;
+                   ++dz) {
+                Vec3 cell{0, 1, next_free_z + dz};
+                if (good(cell))
                   chosen = cell;
               }
-            // Rows near it all taken: below everything, the wire drawn
-            // around what lies between.
-            for (int dz = 0; use_router && !chosen && dz <= kPortShift; ++dz) {
-              Vec3 cell{0, 1, next_free_z + dz};
-              if (free_port(cell))
-                chosen = cell;
+              // In order, anywhere between the ports of the inputs before
+              // and after it, nearest first: a gate placed late (the
+              // multiplexer's last select) may be far from that row.
+              if (in_order && use_router && !chosen) {
+                int low = 0;
+                int high = next_free_z + kPortShift;
+                for (int i = 0; i < n; ++i) {
+                  if (!port[i])
+                    continue;
+                  if (i < ops[k])
+                    low = std::max(low, port[i]->z + 1);
+                  else
+                    high = std::min(high, port[i]->z - 1);
+                }
+                const int far = std::max(std::abs(target.z - low),
+                                         std::abs(target.z - high));
+                for (int d = 0; !chosen && d <= far; ++d)
+                  for (int z : {target.z - d, target.z + d})
+                    if (!chosen && z >= low && z <= high && good(Vec3{0, 1, z}))
+                      chosen = Vec3{0, 1, z};
+              }
             }
             if (!chosen) {
               ok = false;
@@ -777,6 +824,16 @@ std::optional<ComposeResult> compose_parts::compose_flush_groups(
             for (Vec3 other : targets)
               if (other.z > cell.z)
                 p.score += kSharedPortAbove;
+        // Each input out of order is a crossing to draw later.
+        if (options.prefer_input_order)
+          for (const auto &[op, cell] : p.new_ports) {
+            for (int i = 0; i < n; ++i)
+              if (port[i] && (i < op) != (port[i]->z < cell.z))
+                p.score += kOrderInversionCost;
+            for (const auto &[other, at] : p.new_ports)
+              if (other < op && at.z > cell.z)
+                p.score += kOrderInversionCost;
+          }
         // Indexed like the group's outputs, whichever order the module has.
         p.outputs.resize(m.outs.size());
         p.output_ways.resize(m.outs.size());

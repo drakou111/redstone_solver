@@ -239,13 +239,12 @@ TEST_CASE("a gate that reads a piece's signals joins it as an output") {
   CHECK(alone[0].size() == 3);
 }
 
-TEST_CASE("flush placement builds a 4-to-1 multiplexer flat from three "
-          "2-to-1 selectors") {
-  // Three selector modules from a real catalog, each with inputs on next
-  // rows: a wire that turns into one must be drawn before the straight one
-  // beside it, and the shared select must enter each selector from below.
-  NetlistComposeOptions options;
-  options.max_height = 2;
+namespace {
+
+// The 4-to-1 multiplexer from three selector modules of a real catalog,
+// each with inputs on next rows; tried with the solver's four rankings.
+std::optional<ComposeResult> build_mux4(NetlistComposeOptions options,
+                                        std::string &log) {
   options.flush_sat = false; // the router alone
   options.palette.emplace();
   for (std::string_view name :
@@ -294,18 +293,62 @@ TEST_CASE("flush placement builds a 4-to-1 multiplexer flat from three "
     const int select = (t & 1) * 2 + ((t >> 1) & 1); // IN1 IN2
     table.values[0].push_back(((t >> (2 + select)) & 1) != 0);
   }
-  // The solver builds each grouping with four rankings of its spots.
   std::optional<ComposeResult> result;
-  std::string text;
   for (int seed = 0; seed < 4 && !result; ++seed) {
     options.flush_seed = seed;
     result = compose_flush_groups(
         mux, table, *three, options,
-        [&](std::string_view m) { text += std::string(m) + "\n"; });
+        [&](std::string_view m) { log += std::string(m) + "\n"; });
   }
+  return result;
+}
+
+} // namespace
+
+TEST_CASE("flush placement builds a 4-to-1 multiplexer flat from three "
+          "2-to-1 selectors") {
+  // A wire that turns into a selector must be drawn before the straight
+  // one beside it, and the shared select must enter each from below.
+  NetlistComposeOptions options;
+  options.max_height = 2;
+  std::string text;
+  std::optional<ComposeResult> result = build_mux4(options, text);
   INFO(text);
   REQUIRE(result);
   CHECK(result->layout.size().y <= 2);
   CHECK_FALSE(verify_layout(result->layout, result->spec,
                             result->spec.verification_vectors()));
+}
+
+TEST_CASE("the 4-to-1 multiplexer gets its inputs in order in front") {
+  NetlistComposeOptions options;
+  options.max_height = 4;
+  options.prefer_input_order = true;
+  std::string text;
+  std::optional<ComposeResult> built = build_mux4(options, text);
+  INFO(text);
+  REQUIRE(built);
+  for (int i = 0; i < 6; ++i)
+    text +=
+        std::format("IN{} at z {}\n", i + 1, built->layout.find_input(i)->z);
+  options.solver.verification.placements = {Placement{}};
+  std::optional<ComposeResult> result =
+      with_inputs_in_order(*built, options, [&](std::string_view m) {
+        text += std::string(m) + "\n";
+      });
+  INFO(text);
+  REQUIRE(result);
+  for (int i = 1; i < 6; ++i)
+    CHECK(result->layout.find_input(i)->z >
+          result->layout.find_input(i - 1)->z);
+  CHECK_FALSE(verify_layout(result->layout, result->spec,
+                            result->spec.verification_vectors(),
+                            options.solver.verification));
+  // A few columns more than the circuit, not a new layout.
+  const Vec3 grown = result->layout.size();
+  const Vec3 size = built->layout.size();
+  INFO(std::format("{}x{}x{} from {}x{}x{}", grown.x, grown.y, grown.z, size.x,
+                   size.y, size.z));
+  CHECK(grown.x <= size.x + 8);
+  CHECK(grown.z <= size.z + 4);
 }

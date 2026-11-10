@@ -101,6 +101,10 @@ struct NetlistComposeOptions {
   // to the next; builds side by side also try wider ones.
   bool keep_input_order = false;
   int input_spacing = 2;
+  // Softly: new input ports go where they keep the inputs in order when
+  // they can, and spots that break it rank lower (fewer crossings when the
+  // order is fixed afterwards).
+  bool prefer_input_order = false;
 };
 
 // The composed circuit for `netlist`; its spec has the table's rows (don't

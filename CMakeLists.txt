@@ -70,6 +70,7 @@ add_library(redstone_core STATIC
         src/redstone/shrink.cpp
         src/redstone/compose.cpp
         src/redstone/compose_flush.cpp
+        src/redstone/compose_order.cpp
         src/redstone/compose_fuse.cpp
         src/redstone/wire_router.cpp
         src/redstone/size_search.cpp

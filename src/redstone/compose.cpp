@@ -459,6 +459,43 @@ std::optional<ComposeResult>
 compose_with_palette(const Netlist &netlist, const BoolTable &table,
                      const NetlistComposeOptions &options,
                      const ProgressCallback &progress) {
+  // Inputs in order, three ways; the smallest is kept. Built where its ports
+  // suit it (or nearly in order), then given a crossing region in front;
+  // or built around ports set in order first. Which is smallest depends on
+  // the circuit: the full adder needs no crossing at all built nearly in
+  // order, while the 4-to-1 multiplexer is far smaller built freely.
+  if (options.keep_input_order) {
+    std::optional<ComposeResult> best;
+    auto keep = [&](std::optional<ComposeResult> result) {
+      if (result && (!best || smaller(*result, *best)))
+        best = std::move(result);
+    };
+    for (const bool prefer : {false, true}) {
+      NetlistComposeOptions any = options;
+      any.keep_input_order = false;
+      any.prefer_input_order = prefer;
+      if (progress)
+        progress(prefer ? "inputs in order: building nearly in order"
+                        : "inputs in order: building in any order");
+      if (std::optional<ComposeResult> built =
+              compose_with_palette(netlist, table, any, progress))
+        keep(with_inputs_in_order(*built, options, progress));
+      if (options.cancel && options.cancel->load())
+        return best;
+    }
+    if (progress)
+      progress("inputs in order: building around ports set in order");
+    NetlistComposeOptions fixed = options;
+    fixed.columns = false;
+    if (options.flush)
+      keep(flush_variants(netlist, table, fixed, progress));
+    if (best || (options.cancel && options.cancel->load()) || !options.columns)
+      return best;
+    // Columns place the inputs in order anyway.
+    if (progress)
+      progress("inputs in order: none fits; laying out in columns");
+    return compose_netlist(netlist, table, options, progress);
+  }
   if (options.flush) {
     if (std::optional<ComposeResult> flush =
             flush_variants(netlist, table, options, progress))
