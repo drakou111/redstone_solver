@@ -1063,6 +1063,7 @@ compose_untimed(const Spec &spec, const NetlistComposeOptions &options,
     return std::chrono::duration<double>(deadline - Clock::now()).count();
   };
   constexpr double kShortestPass = 5.0; // seconds; less is not worth a pass
+  constexpr double kInstantPassSeconds = 1.0;
   constexpr double kSynthesisShare = 0.2;
   DeadlineWatch watch(deadline, options.cancel);
   GateCache local_cache; // modules survive from pass to pass
@@ -1093,11 +1094,21 @@ compose_untimed(const Spec &spec, const NetlistComposeOptions &options,
     if (pass > 0 && progress)
       progress(std::format("pass {}: step limits x{:.0f}, {:.0f} s left",
                            pass + 1, scale, remaining));
+    const Clock::time_point pass_start = Clock::now();
     if (std::optional<ComposeResult> result =
             compose_once(spec, o, progress, networks))
       return result;
     if (!networks.best)
       return std::nullopt; // no network: more time will not make one
+    // A later pass (columns included) that fails at once ran out of nothing:
+    // more time will not help, and repeating it only fills the log.
+    if (pass > 0 &&
+        std::chrono::duration<double>(Clock::now() - pass_start).count() <
+            kInstantPassSeconds) {
+      if (progress)
+        progress("this pass failed without running out of time; stopping");
+      return std::nullopt;
+    }
   }
 }
 
