@@ -421,6 +421,94 @@ std::string Netlist::describe() const {
   return text;
 }
 
+Netlist parse_netlist(std::string_view text, int inputs) {
+  Netlist netlist;
+  netlist.inputs = inputs;
+  auto trim = [](std::string_view s) {
+    const auto first = s.find_first_not_of(" \t\r");
+    if (first == std::string_view::npos)
+      return std::string_view{};
+    const auto last = s.find_last_not_of(" \t\r");
+    return s.substr(first, last - first + 1);
+  };
+  auto number_after = [](std::string_view s, std::string_view prefix,
+                         int &value) {
+    if (!s.starts_with(prefix) || s.size() == prefix.size())
+      return false;
+    value = 0;
+    for (char ch : s.substr(prefix.size())) {
+      if (ch < '0' || ch > '9')
+        return false;
+      value = value * 10 + (ch - '0');
+    }
+    return true;
+  };
+  std::size_t line_start = 0;
+  while (line_start <= text.size()) {
+    std::size_t line_end = text.find('\n', line_start);
+    if (line_end == std::string_view::npos)
+      line_end = text.size();
+    const std::string_view line =
+        trim(text.substr(line_start, line_end - line_start));
+    line_start = line_end + 1;
+    if (line.empty() || line.starts_with('#'))
+      continue;
+    auto fail = [&](std::string_view why) {
+      throw std::invalid_argument(std::format(
+          "network line \"{}\": {}", std::string(line), std::string(why)));
+    };
+    // A node already defined: an input or an earlier gate.
+    auto node = [&](std::string_view name) {
+      name = trim(name);
+      int k = 0;
+      if (number_after(name, "IN", k) && k >= 1 && k <= inputs)
+        return k - 1;
+      if (number_after(name, "g", k) && k >= 1 &&
+          k <= static_cast<int>(netlist.gates.size()))
+        return inputs + k - 1;
+      fail(std::format("\"{}\" is not an input or an earlier gate",
+                       std::string(name)));
+      return 0;
+    };
+    const std::size_t equals = line.find('=');
+    if (equals == std::string_view::npos)
+      fail("expected \"name = ...\"");
+    const std::string_view lhs = trim(line.substr(0, equals));
+    const std::string_view rhs = trim(line.substr(equals + 1));
+    int k = 0;
+    if (number_after(lhs, "OUT", k)) {
+      if (k != static_cast<int>(netlist.outputs.size()) + 1)
+        fail("outputs must come in order OUT1, OUT2, ...");
+      netlist.outputs.push_back(node(rhs));
+      continue;
+    }
+    if (!number_after(lhs, "g", k))
+      fail("expected a gate gN or an output OUTN");
+    if (k != static_cast<int>(netlist.gates.size()) + 1)
+      fail("gates must come in order g1, g2, ...");
+    const std::size_t open = rhs.find('(');
+    const std::size_t comma = rhs.find(',');
+    if (open == std::string_view::npos || comma == std::string_view::npos ||
+        comma < open || !rhs.ends_with(')'))
+      fail("expected FUNCTION(a, b)");
+    const std::string_view name = trim(rhs.substr(0, open));
+    std::optional<std::uint8_t> function;
+    for (int f = 0; f < 16; ++f)
+      if (function_name(static_cast<std::uint8_t>(f)) == name)
+        function = static_cast<std::uint8_t>(f);
+    if (!function)
+      fail(std::format("unknown function \"{}\"", std::string(name)));
+    Gate gate;
+    gate.a = node(rhs.substr(open + 1, comma - open - 1));
+    gate.b = node(rhs.substr(comma + 1, rhs.size() - comma - 2));
+    gate.function = *function;
+    netlist.gates.push_back(gate);
+  }
+  if (netlist.outputs.empty())
+    throw std::invalid_argument("network has no outputs (OUT1 = ...)");
+  return netlist;
+}
+
 std::optional<Netlist> synthesize(const BoolTable &table,
                                   const SynthesisOptions &options) {
   auto deadline =

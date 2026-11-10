@@ -783,6 +783,33 @@ std::optional<ComposeResult> compose_once(const Spec &spec,
   synthesis.cancel = options.cancel;
   synthesis.sat_seed = options.solver.sat_seed;
   synthesis.time_limit_seconds = options.synthesis_seconds;
+  if (!networks.searched && !options.networks.empty()) {
+    networks.searched = true;
+    for (const Netlist &given : options.networks) {
+      if (given.inputs != table.inputs ||
+          given.outputs.size() != table.values.size())
+        throw std::invalid_argument(std::format(
+            "a given network has {} inputs and {} outputs; the table has {} "
+            "and {}",
+            given.inputs, given.outputs.size(), table.inputs,
+            table.values.size()));
+      for (int t = 0; t < (1 << table.inputs); ++t) {
+        const std::vector<bool> values = given.evaluate(t);
+        for (std::size_t o = 0; o < given.outputs.size(); ++o) {
+          const std::optional<bool> want = table.values[o][t];
+          if (want && *want != values[given.outputs[o]])
+            throw std::invalid_argument(std::format(
+                "a given network computes OUT{} wrong for input vector {}",
+                o + 1, t));
+        }
+      }
+    }
+    networks.best = options.networks.front();
+    networks.candidates = options.networks;
+    if (progress)
+      progress(
+          std::format("using {} given network(s)", options.networks.size()));
+  }
   if (!networks.searched) {
     networks.searched = true;
     // A split network is found at once; exact synthesis only has to beat

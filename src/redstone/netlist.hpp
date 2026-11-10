@@ -46,6 +46,11 @@ struct Netlist {
   std::string describe() const;
 };
 
+// Reads the text describe() writes ("g1 = AND(IN1, IN2)", "OUT1 = g1", one
+// per line; blank lines and lines starting with '#' are skipped). Throws
+// std::invalid_argument naming the line when it cannot be read.
+Netlist parse_netlist(std::string_view text, int inputs);
+
 // The 2-input functions that depend on both inputs (AND, OR, XOR, NAND,
 // NOR, XNOR and the four "one and not the other" forms).
 std::vector<std::uint8_t> two_input_functions();

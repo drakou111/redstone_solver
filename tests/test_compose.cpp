@@ -2,6 +2,7 @@
 #include <chrono>
 #include <format>
 #include <functional>
+#include <stdexcept>
 #include <string>
 
 #include "redstone/compose.hpp"
@@ -281,4 +282,29 @@ TEST_CASE("compose keeps the request's timing or says it misses it") {
     return l.find("misses the timing") != std::string::npos;
   });
   CHECK(told);
+}
+
+TEST_CASE("compose builds a given network instead of synthesizing one") {
+  // a OR b, given as a larger network: (a AND b) OR (a XOR b).
+  Spec spec = spec_of(2, 1, [](int t, int) { return t != 0; });
+  NetlistComposeOptions options;
+  options.stage_seconds = 60.0;
+  options.gates.time_limit_seconds = 60.0;
+  options.networks = {parse_netlist("g1 = AND(IN1, IN2)\ng2 = XOR(IN1, IN2)\n"
+                                    "g3 = OR(g1, g2)\nOUT1 = g3\n",
+                                    2)};
+  std::vector<std::string> log;
+  std::optional<ComposeResult> result = compose_spec(
+      spec, options, [&](std::string_view m) { log.emplace_back(m); });
+  std::string text;
+  for (const auto &line : log)
+    text += line + "\n";
+  INFO(text);
+  REQUIRE(result);
+  CHECK(text.find("using 1 given network") != std::string::npos);
+  CHECK_FALSE(verify_layout(result->layout, result->spec,
+                            result->spec.verification_vectors()));
+  // A network that computes something else is refused.
+  options.networks = {parse_netlist("g1 = AND(IN1, IN2)\nOUT1 = g1\n", 2)};
+  CHECK_THROWS_AS(compose_spec(spec, options), std::invalid_argument);
 }

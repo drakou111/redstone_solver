@@ -578,7 +578,12 @@ Json Api::start_compose(const Json &body) {
   Spec spec = spec_from_json(body.at("spec"));
   // Answered right away: a table that needs exact strengths cannot be
   // composed from on/off gates.
-  boolean_table(spec);
+  const BoolTable table = boolean_table(spec);
+  // Gate networks to build instead of the smallest one, as describe() text.
+  if (auto it = settings.find("networks"); it != settings.end())
+    for (const Json &text : *it)
+      options.networks.push_back(
+          parse_netlist(text.get<std::string>(), table.inputs));
   const bool use_library = this->library_ && settings.value("library", true);
   const std::string key = compose_key(spec, options);
   std::optional<CircuitLibrary::Entry> known;

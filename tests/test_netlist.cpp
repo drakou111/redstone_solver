@@ -1,4 +1,5 @@
 #include <algorithm>
+#include <stdexcept>
 #include <string>
 
 #include "redstone/netlist.hpp"
@@ -168,4 +169,26 @@ TEST_CASE("a split network uses don't-cares and shares sub-networks") {
   REQUIRE(net);
   CHECK(net->gates.size() == 1);
   CHECK(net->outputs[0] == net->outputs[1]);
+}
+
+TEST_CASE("a network's text reads back as the same network") {
+  Netlist net{3,
+              {{1, 2, 0b0110}, {1, 2, 0b1000}, {0, 3, 0b0100}, {5, 4, 0b0001}},
+              {6, 5}};
+  Netlist read = parse_netlist("# a comment\n" + net.describe() + "\n", 3);
+  CHECK(read.describe() == net.describe());
+  for (int t = 0; t < 8; ++t)
+    CHECK(read.evaluate(t) == net.evaluate(t));
+}
+
+TEST_CASE("reading a network names what is wrong") {
+  CHECK_THROWS_AS(parse_netlist("g1 = MAYBE(IN1, IN2)\nOUT1 = g1", 2),
+                  std::invalid_argument);
+  // A gate may read only inputs and earlier gates.
+  CHECK_THROWS_AS(parse_netlist("g1 = AND(IN1, g2)\nOUT1 = g1", 2),
+                  std::invalid_argument);
+  CHECK_THROWS_AS(parse_netlist("g1 = AND(IN1, IN3)\nOUT1 = g1", 2),
+                  std::invalid_argument);
+  CHECK_THROWS_AS(parse_netlist("g1 = AND(IN1, IN2)", 2),
+                  std::invalid_argument);
 }

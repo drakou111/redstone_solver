@@ -62,6 +62,9 @@ struct NetlistComposeOptions {
   int flush_candidates = 6; // positions tried per gate, best first
   // Exact synthesis of the smallest gate network gives up after this.
   double synthesis_seconds = 60.0;
+  // Gate networks to build, in order, instead of synthesizing one (a
+  // larger network can be easier to wire). Each must compute the table.
+  std::vector<Netlist> networks;
   // With a deadline, Compose does not stop after one pass: a pass that
   // fails is run again with doubled step limits, wider channels and a new
   // seed until the deadline, and every running solve stops when it passes.
