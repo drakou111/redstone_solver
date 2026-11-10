@@ -823,13 +823,24 @@ std::optional<ComposeResult> compose_parts::compose_flush_groups(
         candidates.insert(candidates.begin(), joins.begin(), joins.end());
       }
 
-      // Every position's stage is built, then all are solved side by side; the
-      // best-ranked one that wires up is kept and the rest are stopped.
-      std::vector<Spec> stages;
+      // Each position is routed in rank order until the beam is full. SAT,
+      // when nothing routes, only tries the first few: only theirs are built
+      // as stages (thousands of spots, each a copy of the circuit and a row
+      // per input vector, held tens of gigabytes).
+      std::vector<std::optional<Spec>> stages;
       std::vector<std::optional<Cells>> routed;
       std::vector<std::string> why_not_routed;
       int routed_count = 0;
-      for (const Spot &p : candidates) {
+      for (std::size_t ci = 0; ci < candidates.size(); ++ci) {
+        const Spot &p = candidates[ci];
+        const bool sat_stage = options.flush_sat &&
+                               static_cast<int>(ci) < options.flush_candidates;
+        if (use_router && routed_count >= beam_width) { // SAT will not run
+          routed.push_back(std::nullopt);
+          why_not_routed.emplace_back();
+          stages.emplace_back();
+          continue;
+        }
         Cells cells = placed;
         if (!p.join)
           add_layout(cells, p.module->layout, {p.x0, 0, p.z});
@@ -894,10 +905,7 @@ std::optional<ComposeResult> compose_parts::compose_flush_groups(
             row.outputs.push_back(values[node]);
           rows.push_back(std::move(row));
         }
-        if (use_router && routed_count >= beam_width) {
-          routed.push_back(std::nullopt);
-          why_not_routed.emplace_back();
-        } else if (use_router) {
+        if (use_router) {
           ExitCells stage_exits = exits;
           for (std::size_t o = 0; o < group.nodes.size(); ++o)
             add_exit(stage_exits, p.outputs[o], p.output_ways[o],
@@ -932,6 +940,10 @@ std::optional<ComposeResult> compose_parts::compose_flush_groups(
         } else {
           routed.push_back(std::nullopt);
           why_not_routed.emplace_back();
+        }
+        if (!sat_stage) {
+          stages.emplace_back();
+          continue;
         }
         Spec spec = make_spec(size, input_cells, output_cells, rows,
                               options.horizon, options.palette);
@@ -1022,7 +1034,9 @@ std::optional<ComposeResult> compose_parts::compose_flush_groups(
         solver.time_limit_seconds = options.flush_seconds;
         solver.stop_at_first = true;
         solver.cancel = options.cancel;
-        SolveReport report = solve(stages[i], solver);
+        if (!stages[i])
+          continue;
+        SolveReport report = solve(*stages[i], solver);
         const Spot &p = candidates[i];
         say(std::format("gate {} ({}){} at x {} z {}{}: {}", gi + 1, names,
                         p.join ? " as joined wires" : "", p.x0, p.z,
