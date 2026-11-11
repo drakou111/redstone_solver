@@ -3,6 +3,8 @@ package io.github.drakou111.redstonesolver;
 import java.io.IOException;
 import java.io.Reader;
 import java.io.UncheckedIOException;
+import java.lang.System.Logger;
+import java.lang.System.Logger.Level;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -15,10 +17,23 @@ public record ModConfig(Path solverExecutable) {
     public static final String EXECUTABLE_PROPERTY = "redstone.solver.exe";
 
     private static final String KEY_EXECUTABLE = "solver_exe";
+    private static final Logger LOGGER = System.getLogger(ModConfig.class.getName());
     private static final String TEMPLATE = """
-            # Path to redstone_solver.exe (build it with: cmake --build --preset release)
+            # Path to redstone_solver.exe. Empty: the solver that comes with the mod (unpacked into
+            # redstone_solver/ in the game folder), or one built there with: cmake --build --preset release
             solver_exe=
             """;
+
+    /** The solver from the mod jar, unpacked into {@code dir}; the exe in {@code dir} when the jar has none. */
+    private static Path bundledOrDefault(Path dir) {
+        Path fallback = dir.resolve("redstone_solver.exe");
+        try {
+            return NativeSolver.install(dir).orElse(fallback);
+        } catch (UncheckedIOException | IllegalStateException e) {
+            LOGGER.log(Level.WARNING, "Could not unpack the solver that comes with the mod: " + e.getMessage(), e);
+            return fallback;
+        }
+    }
 
     public static ModConfig load(Path configDir, Path gameDir) {
         Path file = configDir.resolve(FILE_NAME);
@@ -41,7 +56,7 @@ public record ModConfig(Path solverExecutable) {
         Path executable;
         if (!override.isEmpty()) executable = Path.of(override);
         else if (!configured.isEmpty()) executable = Path.of(configured);
-        else executable = gameDir.resolve("redstone_solver").resolve("redstone_solver.exe");
+        else executable = bundledOrDefault(gameDir.resolve("redstone_solver"));
 
         return new ModConfig(executable.toAbsolutePath().normalize());
     }

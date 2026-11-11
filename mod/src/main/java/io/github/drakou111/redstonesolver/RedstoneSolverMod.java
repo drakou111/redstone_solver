@@ -25,6 +25,12 @@ public final class RedstoneSolverMod implements ModInitializer {
         SolverPayloads.register();
         // Circuits found before are kept here and returned at once when asked for again.
         Path library = loader.getConfigDir().resolve(MOD_ID).resolve("library");
+        // Build from gates needs the gate catalog; a copy comes with the mod.
+        try {
+            NativeSolver.installCatalog(library);
+        } catch (java.io.UncheckedIOException e) {
+            LOGGER.log(Level.WARNING, "Could not copy the gate catalog: " + e.getMessage(), e);
+        }
         SolverService solver = new SolverService(config.solverExecutable(), Optional.of(library));
         new SolverNetworking(new PlayerSessions(), solver).register();
         ServerLifecycleEvents.SERVER_STOPPING.register(server -> solver.close());

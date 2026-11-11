@@ -44,6 +44,79 @@ processResources {
 	}
 }
 
+// The jar carries the native solver (Windows x64: the exe and its DLLs) and
+// the gate catalog; the mod unpacks them on first start (NativeSolver).
+// files.txt lists them after a fingerprint of their contents, so a newer
+// bundle replaces an older one.
+abstract class BundleSolver extends DefaultTask {
+	@InputFiles
+	abstract ConfigurableFileCollection getSolverFiles()
+
+	@org.gradle.api.tasks.Optional
+	@InputFile
+	abstract RegularFileProperty getCatalog()
+
+	@OutputDirectory
+	abstract DirectoryProperty getOutputDir()
+
+	@TaskAction
+	void bundle() {
+		def out = outputDir.get().asFile.toPath()
+		def natives = out.resolve("redstone_solver/natives/windows-x64")
+		if (java.nio.file.Files.exists(out)) out.toFile().deleteDir()
+		java.nio.file.Files.createDirectories(natives)
+		def files = solverFiles.files.sort { it.name }
+		if (!files.any { it.name == "redstone_solver.exe" })
+			throw new GradleException("Build the solver first (cmake --build --preset release): no redstone_solver.exe in " + solverFiles.asPath)
+		if (!files.any { it.name == "vcruntime140.dll" })
+			throw new GradleException("No Visual C++ runtime to ship with the solver; pass -PvcRedist=<dir with vcruntime140.dll>")
+		def digest = java.security.MessageDigest.getInstance("SHA-256")
+		files.each { f ->
+			java.nio.file.Files.copy(f.toPath(), natives.resolve(f.name))
+			digest.update(f.name.getBytes("UTF-8"))
+			digest.update(java.nio.file.Files.readAllBytes(f.toPath()))
+		}
+		def fingerprint = digest.digest().encodeHex().toString().substring(0, 16)
+		java.nio.file.Files.writeString(natives.resolve("files.txt"), ([fingerprint] + files*.name).join("\n") + "\n")
+		if (catalog.isPresent() && catalog.get().asFile.exists()) {
+			def catalogDir = out.resolve("redstone_solver/catalog")
+			java.nio.file.Files.createDirectories(catalogDir)
+			java.nio.file.Files.copy(catalog.get().asFile.toPath(), catalogDir.resolve("gate_catalog.json"))
+		}
+	}
+}
+
+def solverBuildDir = rootProject.file("../build/msvc/Release")
+// The Visual C++ runtime the solver needs, shipped next to it (Microsoft
+// allows that) so players need not install it: -PvcRedist=<dir>, or the
+// newest Visual Studio 2022 redistributable folder.
+def vcRuntimeDir = {
+	if (project.hasProperty("vcRedist")) return file(project.property("vcRedist"))
+	def root = new File("C:/Program Files/Microsoft Visual Studio/2022")
+	def found = root.exists() ? root.listFiles().findResults { edition ->
+		def msvc = new File(edition, "VC/Redist/MSVC")
+		msvc.exists() ? msvc.listFiles().findResults { v ->
+			def crt = new File(v, "x64/Microsoft.VC143.CRT")
+			crt.isDirectory() ? crt : null
+		} : []
+	}.flatten() : []
+	return found ? found.max { it.parentFile.parentFile.name } : null
+}()
+def bundleSolver = tasks.register("bundleSolver", BundleSolver) {
+	solverFiles.from(fileTree(solverBuildDir) { include "redstone_solver.exe", "*.dll" })
+	if (vcRuntimeDir != null)
+		solverFiles.from(fileTree(vcRuntimeDir) {
+			include "msvcp140.dll", "msvcp140_atomic_wait.dll", "vcruntime140.dll", "vcruntime140_1.dll"
+		})
+	def catalogFile = rootProject.file("run/config/redstone_solver/library/gate_catalog.json")
+	if (catalogFile.exists()) catalog.set(catalogFile)
+	outputDir.set(layout.buildDirectory.dir("bundled-solver"))
+}
+
+jar {
+	from(bundleSolver)
+}
+
 tasks.withType(JavaCompile).configureEach {
 	it.options.release = 25
 }
