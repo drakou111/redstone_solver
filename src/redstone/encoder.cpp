@@ -977,8 +977,10 @@ struct CircuitEncoder::Impl {
 
     for (int i = 0; i < n; ++i) {
       const Cell &c = this->cells[i];
-      if (c.kind[kInputDust].is_true())
-        s.dust[i] = Int::constant(this->input_value(s, c));
+      // A dust input at full strength cannot be raised further; below it,
+      // the dust around it may give more (see the dust rule below).
+      if (c.kind[kInputDust].is_true() && this->input_value(s, c) == kMaxSignal)
+        s.dust[i] = Int::constant(kMaxSignal);
       else if (!c.dust.is_false())
         s.dust[i] = this->b.new_int(0, kMaxSignal);
       if (c.may(kComparator))
@@ -1120,7 +1122,7 @@ struct CircuitEncoder::Impl {
     measure.emplace(*this, slice + "dust");
     for (int i = 0; i < n; ++i) {
       const Cell &c = this->cells[i];
-      if (c.dust.is_false() || c.kind[kInputDust].is_true())
+      if (c.dust.is_false() || s.dust[i].is_constant())
         continue;
       Vec3 p = c.position;
       // Signals from neighbours, ignoring other dust.
@@ -1162,12 +1164,12 @@ struct CircuitEncoder::Impl {
         candidates.push_back(
             {!neighbor.conductor, dust_at(side + offset(Dir::Down)).plus(-1)});
       }
-      this->b.require_equal_max_chosen(s.dust[i], candidates,
-                                       {c.dust, !c.kind[kInputDust]});
-      this->b.require_equal(s.dust[i], Int::constant(0), {!c.dust});
+      // A dust input is dust powered from outside as well: its input value
+      // is one more source.
       if (c.may(kInputDust))
-        this->b.require_equal(s.dust[i], this->input_signal(s, c),
-                              {c.kind[kInputDust]});
+        candidates.push_back({c.kind[kInputDust], this->input_signal(s, c)});
+      this->b.require_equal_max_chosen(s.dust[i], candidates, {c.dust});
+      this->b.require_equal(s.dust[i], Int::constant(0), {!c.dust});
     }
 
     // What a comparator at p sending towards d reads from behind, including

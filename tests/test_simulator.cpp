@@ -357,7 +357,28 @@ TEST_CASE("repeater input outputs 15 for any non-zero value") {
   CHECK(sim.output(0) == 0);
 }
 
-TEST_CASE("dust input is held at the input value and decays along dust") {
+TEST_CASE("dust input takes power from neighbouring dust, as with a lever") {
+  // Two dust inputs joined by dust: the one switched off is still lit by
+  // the other, as dust beside a lever is in game, and goes dark with it.
+  World world = with_glass_floor({3, 2, 1});
+  world.set({0, 1, 0}, Block::input(0, InputKind::Dust));
+  world.set({1, 1, 0}, Block::dust());
+  world.set({2, 1, 0}, Block::input(1, InputKind::Dust));
+  Simulator sim = settled(world);
+  sim.set_input(0, 15);
+  sim.run_until_quiet(20);
+  CHECK(sim.state_at({2, 1, 0}).power == 13);
+  sim.set_input(1, 15);
+  sim.run_until_quiet(20);
+  CHECK(sim.state_at({2, 1, 0}).power == 15);
+  sim.set_input(1, 0);
+  sim.set_input(0, 0);
+  sim.run_until_quiet(20);
+  CHECK(sim.state_at({0, 1, 0}).power == 0);
+  CHECK(sim.state_at({2, 1, 0}).power == 0);
+}
+
+TEST_CASE("dust input powered at the input value decays along dust") {
   World world = with_glass_floor({4, 2, 1});
   world.set({0, 1, 0}, Block::input(0, InputKind::Dust));
   world.set({1, 1, 0}, Block::dust());

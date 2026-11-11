@@ -123,12 +123,8 @@ void Simulator::set_input(int channel, int signal) {
     return;
   }
   if (is_dust(b)) {
-    // Like dust whose power changed: update around it and its neighbours.
-    CellState next = this->states_[this->cell(p)];
-    next.power = static_cast<std::uint8_t>(signal);
-    this->set_state(p, next, false);
-    for (Vec3 q : this->order_.dust_update_positions(p))
-      this->update_neighbors_at(q);
+    // Like dust whose source changed.
+    this->update_dust(p);
     return;
   }
   this->update_comparators_around_container(p);
@@ -621,9 +617,12 @@ void Simulator::shape_changed(Vec3 p, Dir toward_changed) {
 
 // DefaultRedstoneController.updatePowerStrength.
 void Simulator::update_dust(Vec3 p) {
-  if (is_input(this->block(p), InputKind::Dust))
-    return; // held at the input value
   int target = this->dust_target_strength(p);
+  // A dust input is dust powered from outside (a lever beside it, say): the
+  // input value, or more if the dust around it gives more.
+  const Block &b = this->block(p);
+  if (is_input(b, InputKind::Dust))
+    target = std::max(target, static_cast<int>(this->input_values_[b.channel]));
   CellState s = this->states_[this->cell(p)];
   if (s.power == target)
     return;
