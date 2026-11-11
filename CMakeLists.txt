@@ -107,6 +107,12 @@ target_link_libraries(redstone_cli PRIVATE redstone_core)
 target_compile_options(redstone_cli PRIVATE ${REDSTONE_WARNINGS})
 redstone_copy_runtime_dlls(redstone_cli)
 
+# --- Evolve: anneals a spec's box directly, judged by the simulator
+add_executable(redstone_evolve src/evolve/main.cpp)
+target_link_libraries(redstone_evolve PRIVATE redstone_core)
+target_compile_options(redstone_evolve PRIVATE ${REDSTONE_WARNINGS})
+redstone_copy_runtime_dlls(redstone_evolve)
+
 # --- Benchmark: times the solver on bench/*.txt
 add_executable(redstone_bench src/bench/main.cpp)
 target_link_libraries(redstone_bench PRIVATE redstone_core)
