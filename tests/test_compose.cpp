@@ -194,6 +194,60 @@ TEST_CASE("flush placement keeps the inputs in their own order") {
                             options.solver.verification));
 }
 
+namespace {
+
+// Rows of the output ports from north to south, in output order.
+std::vector<int> output_rows(const ComposeResult &result) {
+  std::vector<int> rows;
+  for (std::size_t o = 0; o < result.spec.outputs.size(); ++o) {
+    std::optional<Vec3> port = result.layout.find_output(static_cast<int>(o));
+    REQUIRE(port);
+    CHECK(port->x == result.layout.size().x - 1);
+    rows.push_back(port->z);
+  }
+  return rows;
+}
+
+std::optional<ComposeResult> full_adder_with_outputs(bool reversed_allowed,
+                                                     std::string &log) {
+  Spec spec = spec_of(3, 2, [](int t, int o) {
+    int count = (t & 1) + ((t >> 1) & 1) + ((t >> 2) & 1);
+    return o == 0 ? count % 2 : count >= 2 ? 1 : 0;
+  });
+  NetlistComposeOptions options;
+  options.max_height = 4;
+  options.keep_output_order = true;
+  options.allow_reversed_outputs = reversed_allowed;
+  options.columns = false;
+  options.solver.verification.placements = {Placement{}};
+  std::optional<ComposeResult> result = compose_spec(
+      spec, options, [&](std::string_view m) { log += std::string(m) + "\n"; });
+  if (result)
+    CHECK_FALSE(verify_layout(result->layout, result->spec,
+                              result->spec.verification_vectors(),
+                              options.solver.verification));
+  return result;
+}
+
+} // namespace
+
+TEST_CASE("outputs come in their own order, or reversed when allowed") {
+  std::string log;
+  std::optional<ComposeResult> ordered = full_adder_with_outputs(false, log);
+  INFO(log);
+  REQUIRE(ordered);
+  std::vector<int> rows = output_rows(*ordered);
+  CHECK(rows[0] < rows[1]);
+
+  std::optional<ComposeResult> either = full_adder_with_outputs(true, log);
+  REQUIRE(either);
+  rows = output_rows(*either);
+  CHECK(rows[0] != rows[1]);
+  // Reversed is one more choice, so never larger.
+  const Vec3 a = either->layout.size(), b = ordered->layout.size();
+  CHECK(a.x * a.z <= b.x * b.z);
+}
+
 TEST_CASE("compose and shrink keeps the smaller variant, verified") {
   Spec spec = spec_of(3, 2, [](int t, int o) {
     int count = (t & 1) + ((t >> 1) & 1) + ((t >> 2) & 1);

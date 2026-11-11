@@ -459,6 +459,17 @@ std::optional<ComposeResult>
 compose_with_palette(const Netlist &netlist, const BoolTable &table,
                      const NetlistComposeOptions &options,
                      const ProgressCallback &progress) {
+  // Outputs in order: built as asked otherwise, then given a crossing
+  // region behind.
+  if (options.keep_output_order) {
+    NetlistComposeOptions free = options;
+    free.keep_output_order = false;
+    std::optional<ComposeResult> built =
+        compose_with_palette(netlist, table, free, progress);
+    if (!built || (options.cancel && options.cancel->load()))
+      return built;
+    return with_outputs_in_order(*built, options, progress);
+  }
   // Inputs in order, three ways; the smallest is kept. Built where its ports
   // suit it (or nearly in order), then given a crossing region in front;
   // or built around ports set in order first. Which is smallest depends on

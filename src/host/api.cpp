@@ -116,6 +116,9 @@ std::string compose_key(const Spec &spec,
   // Older keys stay as they were: circuits stored before have any order.
   if (options.keep_input_order)
     key += "|inputs in order";
+  if (options.keep_output_order)
+    key += options.allow_reversed_outputs ? "|outputs in order or reversed"
+                                          : "|outputs in order";
   return key;
 }
 
@@ -559,6 +562,13 @@ Json Api::start_compose(const Json &body) {
   options.flush_beam = settings.value("flushBeam", options.flush_beam);
   options.flush_router = settings.value("router", options.flush_router);
   options.keep_input_order = settings.value("keepInputOrder", false);
+  // "any", "inOrder" or "inOrderOrReversed".
+  const std::string output_order = settings.value("outputOrder", std::string("any"));
+  if (output_order != "any" && output_order != "inOrder" &&
+      output_order != "inOrderOrReversed")
+    throw std::invalid_argument("outputOrder is any, inOrder or inOrderOrReversed");
+  options.keep_output_order = output_order != "any";
+  options.allow_reversed_outputs = output_order == "inOrderOrReversed";
   options.gate_cache = &this->gate_cache_;
   options.catalog = &this->catalog_;
   // With a shrink time, every variant is built and shrunk; the best is kept.

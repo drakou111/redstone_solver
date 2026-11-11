@@ -105,6 +105,11 @@ struct NetlistComposeOptions {
   // they can, and spots that break it rank lower (fewer crossings when the
   // order is fixed afterwards).
   bool prefer_input_order = false;
+  // Output ports down the east side in their own order (OUT1 first), by a
+  // crossing region east of the circuit when needed. With
+  // allow_reversed_outputs, OUT1 may also come last, whichever is smaller.
+  bool keep_output_order = false;
+  bool allow_reversed_outputs = false;
 };
 
 // The composed circuit for `netlist`; its spec has the table's rows (don't

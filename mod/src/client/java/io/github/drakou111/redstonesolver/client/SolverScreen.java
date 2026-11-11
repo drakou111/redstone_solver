@@ -581,6 +581,15 @@ public final class SolverScreen extends Screen {
                         this.state.setInputsInOrder(!inOrder);
                         this.rebuildWidgets();
                     });
+            ClientState.OutputOrder outputOrder = this.state.getOutputOrder();
+            this.flowButton(outputOrder.getLabel(),
+                    "Any order: outputs end where the circuit makes them. In order: they come out down the east "
+                            + "side as OUT1, OUT2, ... In order or flipped: OUT1 first or last, whichever gives the "
+                            + "smaller circuit",
+                    () -> {
+                        this.state.setOutputOrder(outputOrder.next());
+                        this.rebuildWidgets();
+                    });
         }
         boolean sketch = draft.getOtherBlocks() == CircuitDraft.OtherBlocks.SKETCH;
         this.flowButton(sketch ? "Your blocks: sketch" : "Your blocks: ignore",

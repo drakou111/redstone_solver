@@ -6,6 +6,7 @@ import io.github.drakou111.redstonesolver.core.CircuitDraft;
 import io.github.drakou111.redstonesolver.core.Layout;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Objects;
 import java.util.Optional;
 
 /** Everything the client knows: the draft being edited, solve settings and the last solve's state. */
@@ -38,6 +39,7 @@ public final class ClientState {
     private int version;
     private boolean autoShrink = true;
     private boolean inputsInOrder;
+    private OutputOrder outputOrder = OutputOrder.ANY;
     private boolean portsAlongSide;
     private boolean cancelling;
 
@@ -88,6 +90,43 @@ public final class ClientState {
 
     public void setInputsInOrder(boolean inputsInOrder) {
         this.inputsInOrder = inputsInOrder;
+    }
+
+    /** How Build from gates orders the outputs down the east side. */
+    public enum OutputOrder {
+        ANY("any", "Outputs: any order"),
+        IN_ORDER("inOrder", "Outputs: in order"),
+        IN_ORDER_OR_REVERSED("inOrderOrReversed", "Outputs: in order or flipped");
+
+        private final String wireName;
+        private final String label;
+
+        OutputOrder(String wireName, String label) {
+            this.wireName = wireName;
+            this.label = label;
+        }
+
+        /** The value the solver host reads. */
+        public String getWireName() {
+            return this.wireName;
+        }
+
+        public String getLabel() {
+            return this.label;
+        }
+
+        public OutputOrder next() {
+            OutputOrder[] all = values();
+            return all[(this.ordinal() + 1) % all.length];
+        }
+    }
+
+    public OutputOrder getOutputOrder() {
+        return this.outputOrder;
+    }
+
+    public void setOutputOrder(OutputOrder outputOrder) {
+        this.outputOrder = Objects.requireNonNull(outputOrder);
     }
 
     /** True from asking to cancel until the job ends. */

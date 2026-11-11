@@ -87,6 +87,15 @@ with_inputs_in_order(const ComposeResult &built,
                      const NetlistComposeOptions &options,
                      const ProgressCallback &progress);
 
+// The circuit with its outputs down the east side in order (OUT1 first, or
+// last when options.allow_reversed_outputs): a crossing region added east
+// of it. The same circuit when they already are; nothing if no crossing
+// fits.
+std::optional<ComposeResult>
+with_outputs_in_order(const ComposeResult &built,
+                      const NetlistComposeOptions &options,
+                      const ProgressCallback &progress);
+
 // One module per distinct function list of the 2-operand groups, or
 // nothing if one cannot be built (fused groups take catalog modules).
 // `module_height` is the tallest module's height (at least 2).
