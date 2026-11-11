@@ -30,6 +30,7 @@ constexpr long kInvalid = std::numeric_limits<long>::min();
 constexpr long kBlockCost = 1; // a little pressure toward fewer blocks
 constexpr int kMaxCellsPerStep = 3;
 constexpr double kSwapShare = 0.15;
+constexpr double kFreshShare = 0.5; // of runs, when grids come from elsewhere
 constexpr auto kProgressEvery = std::chrono::seconds(30);
 constexpr auto kPreviewEvery = std::chrono::seconds(2);
 constexpr auto kPoll = std::chrono::milliseconds(200);
@@ -158,6 +159,21 @@ bool needs_floor(const Block &b) {
          (b.type == BlockType::Torch && b.facing == Dir::Down);
 }
 
+// A grid of the box's size as genes: its blocks in the cells (ports left
+// out, blocks outside the palette made air); nothing for another size.
+std::optional<std::vector<Block>> genes_of(const Board &board, const World &w) {
+  if (w.size() != board.spec.size)
+    return std::nullopt;
+  std::vector<Block> genes(board.cells.size(), Block::air());
+  for (std::size_t i = 0; i < board.cells.size(); ++i) {
+    const Block b = w.at(board.cells[i]);
+    if (b.type != BlockType::Input && b.type != BlockType::Output &&
+        (b.type == BlockType::Air || board.spec.palette_contains(b.type)))
+      genes[i] = b;
+  }
+  return genes;
+}
+
 World build(const Board &board, const std::vector<Block> &genes) {
   World w = board.base;
   for (std::size_t i = 0; i < genes.size(); ++i) {
@@ -246,6 +262,15 @@ private:
   std::unique_ptr<ExpressChecker> express_;
 };
 
+// A few threads that share where their runs carry on from.
+struct Island {
+  std::vector<Block> genes;
+  long score = std::numeric_limits<long>::min();
+};
+
+// Threads per island.
+constexpr int kThreadsPerIsland = 2;
+
 struct Shared {
   std::atomic<bool> done = false;
   std::atomic<long> evaluations = 0;
@@ -254,9 +279,13 @@ struct Shared {
   std::atomic<long> runs = 0;
   std::mutex mutex;
   std::optional<World> found;
-  std::vector<Block> best_genes; // under mutex
+  std::vector<Block> best_genes; // under mutex: the best grid of all
   long best_genes_score = std::numeric_limits<long>::min();
   int best_version = 0; // under mutex: counts new bests
+  // Under mutex: each island's best grid, where its threads' runs carry on
+  // from. Islands apart keep looking in different places; one best shared
+  // by every thread pulls them all into the same dead end.
+  std::vector<Island> islands;
 };
 
 int thread_count(int asked) {
@@ -270,7 +299,8 @@ bool stopped(const std::atomic<bool> *cancel, Clock::time_point deadline) {
 }
 
 void anneal(const Board &board, const EvolveOptions &o, unsigned seed,
-            Shared &shared, Clock::time_point deadline) {
+            int island, Shared &shared, Clock::time_point deadline) {
+  long my_best = std::numeric_limits<long>::min();
   std::mt19937 rng(seed);
   const std::size_t count = board.cells.size();
   std::uniform_int_distribution<std::size_t> cell(0, count - 1);
@@ -280,11 +310,18 @@ void anneal(const Board &board, const EvolveOptions &o, unsigned seed,
   while (!shared.done && !stopped(o.cancel, deadline)) {
     ++shared.runs;
     std::vector<Block> genes = board.start;
-    {
+    std::optional<std::vector<Block>> fresh;
+    if (o.fresh_start && unit(rng) < kFreshShare)
+      if (std::optional<World> w = o.fresh_start())
+        fresh = genes_of(board, *w);
+    if (fresh) {
+      genes = std::move(*fresh);
+    } else {
       // Some runs carry on from the best grid so far.
       std::lock_guard lock(shared.mutex);
-      if (!shared.best_genes.empty() && unit(rng) < o.from_best)
-        genes = shared.best_genes;
+      const Island &mine = shared.islands[island];
+      if (!mine.genes.empty() && unit(rng) < o.from_best)
+        genes = mine.genes;
     }
     bool perfect = false;
     long current = score(board, build(board, genes), genes, perfect);
@@ -329,15 +366,18 @@ void anneal(const Board &board, const EvolveOptions &o, unsigned seed,
       if (s >= current || unit(rng) < std::exp((s - current) / t)) {
         genes = std::move(next);
         current = s;
-        long seen = shared.best;
-        while (current > seen &&
-               !shared.best.compare_exchange_weak(seen, current))
-          ;
-        if (current > seen) {
+        if (current > my_best) {
+          my_best = current;
           std::lock_guard lock(shared.mutex);
+          Island &mine = shared.islands[island];
+          if (current > mine.score) {
+            mine.score = current;
+            mine.genes = genes;
+          }
           if (current > shared.best_genes_score) {
             shared.best_genes_score = current;
             shared.best_genes = genes;
+            shared.best = current;
             ++shared.best_version;
           }
         }
@@ -369,6 +409,8 @@ EvolveResult evolve(const Spec &spec, const EvolveOptions &options,
                   board.rows.size(), board.wanted.front().size()));
 
   Shared shared;
+  shared.islands.resize(static_cast<std::size_t>(
+      (threads + kThreadsPerIsland - 1) / kThreadsPerIsland));
   const auto start = Clock::now();
   const auto deadline =
       start + std::chrono::duration_cast<Clock::duration>(
@@ -377,7 +419,7 @@ EvolveResult evolve(const Spec &spec, const EvolveOptions &options,
   for (int t = 0; t < threads; ++t)
     workers.emplace_back(anneal, std::cref(board), std::cref(options),
                          options.seed * 7919u + static_cast<unsigned>(t),
-                         std::ref(shared), deadline);
+                         t / kThreadsPerIsland, std::ref(shared), deadline);
   const long perfect = perfect_score_of(board);
   auto next_progress = start + kProgressEvery;
   auto next_preview = start;

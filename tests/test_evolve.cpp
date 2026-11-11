@@ -2,6 +2,7 @@
 #include <string>
 
 #include "redstone/evolve.hpp"
+#include "redstone/solver.hpp"
 #include "redstone/spec.hpp"
 #include "redstone/verifier.hpp"
 
@@ -180,4 +181,24 @@ TEST_CASE("evolve stops when cancelled and wants a 2-high box") {
   Spec tall = spec;
   tall.size.y = 3;
   CHECK_THROWS_AS(evolve(tall, quick(1)), std::invalid_argument);
+}
+
+TEST_CASE("Search the box runs Evolve beside the SAT search, 2-high boxes") {
+  const Spec spec = parse_spec(kOr);
+  for (const bool alongside : {true, false}) {
+    SolverOptions o;
+    o.time_limit_seconds = 60;
+    o.threads = 4;
+    o.stop_at_first = true;
+    o.evolve_alongside = alongside;
+    o.verification.placements = {Placement{}};
+    std::string log;
+    SolveReport report = solve(
+        spec, o, [&](std::string_view m) { log += std::string(m) + "\n"; });
+    INFO(log);
+    REQUIRE(report.solution);
+    CHECK_FALSE(verify_layout(report.solution->layout, spec,
+                              spec.verification_vectors(), o.verification));
+    CHECK((log.find("[evolve]") != std::string::npos) == alongside);
+  }
 }

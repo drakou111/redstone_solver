@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <array>
 #include <chrono>
+#include <deque>
 #include <format>
 #include <limits>
 #include <map>
@@ -18,6 +19,7 @@
 #include "ortools/sat/cp_model_solver.h"
 #include "ortools/sat/model.h"
 #include "ortools/sat/sat_parameters.pb.h"
+#include "redstone/evolve.hpp"
 #include "redstone/report.hpp"
 #include "redstone/sat_engine.hpp"
 
@@ -464,7 +466,13 @@ struct SharedSearch {
   // Set once the answer is settled (optimality proven, or a first circuit
   // found in stop-at-first mode); every search then stops.
   std::atomic<bool> finished = false;
+  // Recent rejected candidates (guarded by mutex): near misses Evolve may
+  // start from.
+  std::deque<World> near_misses;
 };
+
+// Rejected candidates kept for Evolve; older ones make way.
+constexpr std::size_t kMaxNearMisses = 16;
 
 struct SatSearch {
   std::string name;
@@ -711,6 +719,12 @@ SearchResult run_sat_search(SatSearch &search,
     bool allow_transitions =
         ++count >= (options.stop_at_first ? kFirstRejectionsBeforeTransition
                                           : kRejectionsBeforeTransition);
+    {
+      std::lock_guard lock(shared.mutex);
+      shared.near_misses.push_back(candidate.layout);
+      if (shared.near_misses.size() > kMaxNearMisses)
+        shared.near_misses.pop_front();
+    }
     std::size_t steady_before = plan.steady.size();
     std::size_t transitions_before = plan.transitions.size();
     bool refined = refine_plan(plan, spec, *failure, allow_transitions);
@@ -739,6 +753,73 @@ SearchResult run_sat_search(SatSearch &search,
     }
   }
   return end(SearchEnd::RefinementLimit);
+}
+
+// Evolve beside the SAT searches (2-high boxes): it judges grids by the
+// simulator, so it often finds circuits the SAT model struggles with
+// (loops, tricky analog ones), and it starts some runs from the SAT
+// search's rejected candidates, near misses it can repair. A circuit it
+// finds is refined and published like any other; in first-circuit mode it
+// settles the answer. Returns whether it found one.
+bool evolve_alongside(const Spec &spec, const SolverOptions &options,
+                      SharedSearch &shared,
+                      std::vector<std::unique_ptr<SatSearch>> &searches,
+                      Clock::time_point deadline, std::atomic<bool> &stop,
+                      const std::function<void(std::string)> &say) {
+  EvolveOptions o;
+  o.time_limit_seconds =
+      std::chrono::duration<double>(deadline - Clock::now()).count();
+  if (o.time_limit_seconds <= 0)
+    return false;
+  const int hardware =
+      options.threads > 0
+          ? options.threads
+          : static_cast<int>(std::max(1u, std::thread::hardware_concurrency()));
+  o.threads = options.evolve_threads > 0
+                  ? options.evolve_threads
+                  : std::max(1, hardware - static_cast<int>(searches.size()));
+  o.seed = static_cast<unsigned>(options.sat_seed) + 1;
+  o.verification = options.verification;
+  o.cancel = &stop;
+  o.fresh_start = [&shared]() -> std::optional<World> {
+    std::lock_guard lock(shared.mutex);
+    if (shared.near_misses.empty())
+      return std::nullopt;
+    World w = std::move(shared.near_misses.front());
+    shared.near_misses.pop_front();
+    return w;
+  };
+  EvolveResult result;
+  try {
+    result = evolve(spec, o, [&](std::string_view m) { say(std::string(m)); });
+  } catch (const std::invalid_argument &e) {
+    say(std::format("not used here: {}", e.what()));
+    return false;
+  }
+  if (!result.layout || shared.finished)
+    return false;
+  World layout = std::move(*result.layout);
+  refine_layout(
+      layout, spec, spec.verification_vectors(), options.verification,
+      options.cancel,
+      std::min(deadline, Clock::now() + (options.stop_at_first
+                                             ? kFirstSolutionRefinementTime
+                                             : kFinalRefinementTime)));
+  int blocks = 0;
+  for (int i = 0; i < layout.volume(); ++i) {
+    const BlockType t = layout.at(layout.position_of(i)).type;
+    if (t != BlockType::Air && t != BlockType::Input && t != BlockType::Output)
+      ++blocks;
+  }
+  say(std::format("a {}-block circuit, published to the other searches",
+                  blocks));
+  if (options.preview && blocks < shared.best_blocks)
+    options.preview(layout);
+  SatSearch self; // not one of `searches`: every one of them takes the bound
+  publish(shared, searches, self, EncodedSolution{layout, blocks, {}, {}, {}});
+  if (options.stop_at_first)
+    finish_all(shared, searches);
+  return true;
 }
 
 // The main search on the spec's palette, plus (unless the palette is already
@@ -783,6 +864,19 @@ SolveReport solve_sat(const Spec &spec, const SolverOptions &options,
   std::mutex progress_mutex;
   SharedSearch shared;
   std::vector<SearchResult> results(searches.size());
+  std::atomic<bool> evolve_stop = false;
+  bool evolve_found = false;
+  std::jthread evolver;
+  if (options.evolve_alongside && spec.size.y == 2)
+    evolver = std::jthread([&] {
+      evolve_found = evolve_alongside(spec, options, shared, searches, deadline,
+                                      evolve_stop, [&](std::string message) {
+                                        if (!progress)
+                                          return;
+                                        std::lock_guard lock(progress_mutex);
+                                        progress("[evolve] " + message);
+                                      });
+    });
   {
     std::vector<std::jthread> threads;
     for (std::size_t i = 0; i < searches.size(); ++i)
@@ -807,6 +901,12 @@ SolveReport solve_sat(const Spec &spec, const SolverOptions &options,
       });
   }
 
+  // The SAT searches are done (settled, cancelled or out of time): so is
+  // Evolve.
+  evolve_stop = true;
+  if (evolver.joinable())
+    evolver.join();
+
   SolveReport report;
   report.solution = std::move(shared.best);
   for (const SearchResult &result : results) {
@@ -822,7 +922,7 @@ SolveReport solve_sat(const Spec &spec, const SolverOptions &options,
     status = report.solution ? SolveStatus::Optimal : SolveStatus::Infeasible;
   else if (ended(SearchEnd::Cancelled))
     status = SolveStatus::Cancelled;
-  else if (ended(SearchEnd::Found))
+  else if (ended(SearchEnd::Found) || (evolve_found && options.stop_at_first))
     status = SolveStatus::Feasible;
   else if (results[0].end == SearchEnd::RefinementLimit)
     status = SolveStatus::RefinementLimit;

@@ -24,6 +24,10 @@ constexpr std::string_view kUsage =
     "  --time-limit <seconds>  total time budget (default 60)\n"
     "  --threads <n>           solver threads (default: all)\n"
     "  --first                 stop at the first verified circuit\n"
+    "  --no-evolve             2-high boxes: no Evolve beside the SAT search\n"
+    "                          (it fills the box block by block, judged by\n"
+    "                          the simulator, and repairs rejected "
+    "candidates)\n"
     "  --one-placement         verify only the layout as drawn (no other\n"
     "                          rotations or world positions): faster\n"
     "                          circuits, but they may fail built elsewhere\n"
@@ -118,6 +122,8 @@ CliOptions parse_args(int argc, char **argv) {
       options.solver.verification.placements = {rs::Placement{}};
     else if (arg == "--first")
       options.solver.stop_at_first = true;
+    else if (arg == "--no-evolve")
+      options.solver.evolve_alongside = false;
     else if (arg == "--sketch-time")
       options.solver.sketch_step_seconds = parse_number(value(), arg);
     else if (arg == "--show-rejected")

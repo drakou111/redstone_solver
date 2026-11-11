@@ -1,6 +1,7 @@
 #pragma once
 
 #include <atomic>
+#include <functional>
 #include <optional>
 
 #include "redstone/solver.hpp"
@@ -19,16 +20,20 @@ struct EvolveOptions {
   double time_limit_seconds = 60.0;
   int threads = 0; // 0: all hardware threads
   unsigned seed = 1;
-  double start_temperature = 300.0;
+  // Defaults from the runs that found the 7x2x7 input counter.
+  double start_temperature = 150.0;
   double end_temperature = 5.0;
-  long steps_per_run = 200000; // then a run starts over
-  double from_best = 0.5;      // share of runs that start from the best grid
-  bool use_sketch = true;      // runs start from the spec's hint lines
+  long steps_per_run = 1000000; // then a run starts over
+  double from_best = 0.7;       // share of runs that start from the best grid
+  bool use_sketch = true;       // runs start from the spec's hint lines
   // Checks a grid that gets every row right before it is accepted.
   VerificationOptions verification;
   std::atomic<bool> *cancel = nullptr;
   // The best grid so far, now and then.
   PreviewCallback preview;
+  // Where some runs start instead: a grid from elsewhere (the SAT search's
+  // rejected candidates, say), or nothing when there is none.
+  std::function<std::optional<World>()> fresh_start;
 };
 
 struct EvolveResult {

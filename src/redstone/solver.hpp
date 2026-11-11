@@ -52,6 +52,11 @@ struct SolverOptions {
   // SAT engine: signal loops through components are forbidden one loop at a
   // time, as candidates show them, instead of by rank variables up front.
   bool lazy_loops = false;
+  // SAT engine, 2-high boxes: Evolve (redstone/evolve.hpp) runs beside the
+  // SAT searches on the threads they leave free (evolve_threads: how many;
+  // 0: the rest), starting some runs from their rejected candidates.
+  bool evolve_alongside = true;
+  int evolve_threads = 0;
   VerificationOptions verification;
   // Set to true from another thread to stop early.
   std::atomic<bool> *cancel = nullptr;
