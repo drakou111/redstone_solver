@@ -795,6 +795,10 @@ bool evolve_alongside(const Spec &spec, const SolverOptions &options,
   } catch (const std::invalid_argument &e) {
     say(std::format("not used here: {}", e.what()));
     return false;
+  } catch (const std::exception &e) {
+    // Evolve only helps; it must never take the solve down with it.
+    say(std::format("stopped by an error: {}", e.what()));
+    return false;
   }
   if (!result.layout || shared.finished)
     return false;

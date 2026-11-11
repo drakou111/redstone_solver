@@ -54,8 +54,10 @@ struct SolverOptions {
   bool lazy_loops = false;
   // SAT engine, 2-high boxes: Evolve (redstone/evolve.hpp) runs beside the
   // SAT searches on the threads they leave free (evolve_threads: how many;
-  // 0: the rest), starting some runs from their rejected candidates.
-  bool evolve_alongside = true;
+  // 0: the rest), starting some runs from their rejected candidates. Off by
+  // default: solves run many at a time (shrink, gate modules) must not each
+  // take every core; a single top-level search turns it on.
+  bool evolve_alongside = false;
   int evolve_threads = 0;
   VerificationOptions verification;
   // Set to true from another thread to stop early.

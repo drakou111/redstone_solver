@@ -287,6 +287,8 @@ Json Api::start_solve(const Json &body) {
   options.stop_at_first = settings.value("first", false);
   options.sketch_step_seconds = settings.value("sketchTime", 3.0);
   options.verification = verification_from(settings);
+  // Search the box: Evolve beside the SAT search in 2-high boxes.
+  options.evolve_alongside = settings.value("evolve", true);
   // One search alone leaves most cores idle, and how long it takes varies a
   // lot with its seed: several run side by side.
   options.extra_searches = settings.value(

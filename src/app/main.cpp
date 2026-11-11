@@ -89,7 +89,7 @@ constexpr std::string_view kUsage =
 
 struct CliOptions {
   std::filesystem::path spec_path;
-  rs::SolverOptions solver;
+  rs::SolverOptions solver{.evolve_alongside = true};
   bool check = false;
 };
 
