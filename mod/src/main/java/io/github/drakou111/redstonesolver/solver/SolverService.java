@@ -20,7 +20,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
  * time (solve, compose or shrink), polling its progress on a virtual thread.
  */
 public final class SolverService implements AutoCloseable {
-    public static final Set<String> JOB_ROUTES = Set.of("solve/start", "compose/start", "shrink/start");
+    public static final Set<String> JOB_ROUTES = Set.of("solve/start", "compose/start", "shrink/start", "evolve/start");
 
     private static final Logger LOGGER = System.getLogger(SolverService.class.getName());
     private static final Duration POLL_INTERVAL = Duration.ofMillis(500);

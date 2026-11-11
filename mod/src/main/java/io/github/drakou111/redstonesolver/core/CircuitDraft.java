@@ -54,6 +54,7 @@ public final class CircuitDraft {
     private Integer earliestTicks;
     private Integer latestTicks;
     private OtherBlocks otherBlocks = OtherBlocks.IGNORE;
+    private boolean allowLoops;
     private boolean formulaMode;
     private final Map<String, String> formulas = new LinkedHashMap<>();
     private final Set<String> analogInputs = new LinkedHashSet<>();
@@ -216,6 +217,18 @@ public final class CircuitDraft {
 
     public void setOtherBlocks(OtherBlocks otherBlocks) {
         this.otherBlocks = otherBlocks;
+    }
+
+    /**
+     * Whether a circuit may route a signal back through a component (a loop). Loops that settle can make
+     * circuits smaller, but they can also hold a state, so each check must start from the circuit as built.
+     */
+    public boolean isAllowLoops() {
+        return this.allowLoops;
+    }
+
+    public void setAllowLoops(boolean allowLoops) {
+        this.allowLoops = allowLoops;
     }
 
     /** In formula mode the truth table comes from one formula per output instead of rows. */
@@ -526,6 +539,7 @@ public final class CircuitDraft {
         if (this.latestTicks != null) json.addProperty("latestTicks", this.latestTicks);
         if (this.earliestTicks != null) json.addProperty("earliestTicks", this.earliestTicks);
         json.addProperty("otherBlocks", this.otherBlocks.name());
+        json.addProperty("allowLoops", this.allowLoops);
         json.addProperty("formulaMode", this.formulaMode);
         JsonObject formulas = new JsonObject();
         for (Map.Entry<String, String> entry : this.formulas.entrySet()) formulas.addProperty(entry.getKey(), entry.getValue());
@@ -560,6 +574,8 @@ public final class CircuitDraft {
             if (json.has("latestTicks")) draft.setLatestTicks(Optional.of(json.get("latestTicks").getAsInt()));
             if (json.has("earliestTicks")) draft.setEarliestTicks(Optional.of(json.get("earliestTicks").getAsInt()));
             draft.setOtherBlocks(OtherBlocks.valueOf(json.get("otherBlocks").getAsString()));
+            // Loops came later; older saves have them off.
+            if (json.has("allowLoops")) draft.setAllowLoops(json.get("allowLoops").getAsBoolean());
             // Formulas came later; older saves have none.
             if (json.has("formulaMode")) draft.setFormulaMode(json.get("formulaMode").getAsBoolean());
             if (json.has("formulas")) {
@@ -642,7 +658,7 @@ public final class CircuitDraft {
         JsonArray palette = new JsonArray();
         for (String block : this.getPalette()) palette.add(block);
         spec.add("palette", palette);
-        spec.addProperty("feedback", false);
+        spec.addProperty("feedback", this.allowLoops);
         spec.addProperty("supportLayer", true);
         JsonArray tiled = new JsonArray();
         for (int axis = 0; axis < 3; axis++) tiled.add(false);

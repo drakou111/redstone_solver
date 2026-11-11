@@ -86,6 +86,11 @@ public final class ServerLink {
             options.addProperty("outputOrder", this.state.getOutputOrder().getWireName());
             options.addProperty("cutTime", Math.min(MAX_CUT_SECONDS, this.state.getTimeLimitSeconds()));
         }
+        if (this.state.getMethod() == ClientState.Method.EVOLVE) {
+            // The time limit covers the search and, with Then shrink, the shrink after it.
+            options.addProperty("shrink", this.state.isAutoShrink());
+            options.addProperty("cutTime", Math.min(MAX_CUT_SECONDS, this.state.getTimeLimitSeconds()));
+        }
         body.add("options", options);
         this.lastSolve = body.deepCopy();
         this.send("solve", body);

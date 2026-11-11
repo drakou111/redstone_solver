@@ -49,6 +49,20 @@ class CircuitDraftTest {
     }
 
     @Test
+    void loopsAreOffUntilAllowedAndSavedWithTheDraft() {
+        CircuitDraft draft = buffer();
+        assertThat(draft.toSpecJson().get("feedback").getAsBoolean()).isFalse();
+
+        draft.setAllowLoops(true);
+        assertThat(draft.toSpecJson().get("feedback").getAsBoolean()).isTrue();
+        assertThat(CircuitDraft.fromJson(draft.toJson()).isAllowLoops()).isTrue();
+
+        JsonObject older = draft.toJson();
+        older.remove("allowLoops");
+        assertThat(CircuitDraft.fromJson(older).isAllowLoops()).isFalse();
+    }
+
+    @Test
     void timingSetsTheLatestTick() {
         CircuitDraft draft = buffer();
         draft.setLatestTicks(Optional.of(4));

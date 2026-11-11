@@ -1269,7 +1269,13 @@ std::optional<ComposeResult> compose_spec(const Spec &spec,
                                           const ProgressCallback &progress) {
   NetlistComposeOptions o = options;
   o.timing = spec.timing;
-  return with_timing(compose_untimed(spec, o, progress), spec, o, progress);
+  std::optional<ComposeResult> result =
+      with_timing(compose_untimed(spec, o, progress), spec, o, progress);
+  // Gates never loop, but a shrink afterwards may use loops when the request
+  // allows them.
+  if (result)
+    result->spec.allow_feedback = spec.allow_feedback;
+  return result;
 }
 
 namespace {

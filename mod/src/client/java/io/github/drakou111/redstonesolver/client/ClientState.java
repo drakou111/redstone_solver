@@ -16,10 +16,16 @@ public final class ClientState {
     /** Results kept (the server keeps as many). */
     public static final int MAX_RESULTS = 20;
 
-    /** How the circuit is built: one search of the whole box, or from gates. */
+    /** How the circuit is built: one search of the whole box, from gates, or by evolving the box block by block. */
     public enum Method {
         SOLVE,
-        COMPOSE
+        COMPOSE,
+        EVOLVE;
+
+        public Method next() {
+            Method[] all = values();
+            return all[(this.ordinal() + 1) % all.length];
+        }
     }
 
     private CircuitDraft draft = new CircuitDraft();

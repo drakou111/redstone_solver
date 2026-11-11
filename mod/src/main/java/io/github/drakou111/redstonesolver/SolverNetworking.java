@@ -81,8 +81,9 @@ public final class SolverNetworking {
     }
 
     /**
-     * Body: {spec, origin: [x, y, z], method: "solve" | "compose", options: {timeLimit, onePlacement,
-     * sketchTime, maxHeight, totalTime, shrink, cutTime}}. The options go to the solver unchanged.
+     * Body: {spec, origin: [x, y, z], method: "solve" | "compose" | "evolve", options: {timeLimit,
+     * onePlacement, sketchTime, maxHeight, totalTime, shrink, shrinkTime, cutTime}}. The options go to the
+     * solver unchanged.
      */
     private void solve(MinecraftServer server, ServerPlayer player, JsonObject body) {
         JsonObject spec = body.getAsJsonObject("spec");
@@ -95,6 +96,7 @@ public final class SolverNetworking {
         String route = switch (method) {
             case "solve" -> "solve/start";
             case "compose" -> "compose/start";
+            case "evolve" -> "evolve/start";
             default -> throw new IllegalArgumentException("unknown method " + method);
         };
 
@@ -198,9 +200,9 @@ public final class SolverNetworking {
         if (outcome.layout().isPresent()) {
             JsonObject layoutJson = outcome.layoutJson().orElseThrow();
             boolean skipBottom = floorAssumed && outcome.layout().get().size().y() >= 2;
-            // Build from gates draws its own bottom layer; it may stand on the floor only if it
-            // still works with that layer full.
-            if (skipBottom && route.equals("compose/start")) {
+            // Build from gates and Evolve draw their own bottom layer; it may stand on the floor
+            // only if it still works with that layer full.
+            if (skipBottom && (route.equals("compose/start") || route.equals("evolve/start"))) {
                 JsonObject onFloor = withFullBottomLayer(layoutJson);
                 if (this.worksAs(outcome.spec().orElseThrow(), onFloor, request)) {
                     layoutJson = onFloor;

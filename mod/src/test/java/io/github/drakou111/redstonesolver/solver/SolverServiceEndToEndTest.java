@@ -106,6 +106,23 @@ class SolverServiceEndToEndTest {
     }
 
     @Test
+    void evolvesANotGate() throws Exception {
+        JsonObject options = new JsonObject();
+        options.addProperty("timeLimit", TIME_LIMIT_SECONDS);
+        JsonObject request = new JsonObject();
+        request.add("spec", notGate().toSpecJson());
+        request.add("options", options);
+
+        try (SolverService service = new SolverService(executable)) {
+            SolveOutcome evolved = run(service, "evolve/start", request);
+
+            assertThat(evolved.error()).isEmpty();
+            assertThat(evolved.layout()).isPresent();
+            assertThat(evolved.layout().get().size()).isEqualTo(new Cell(4, 2, 1));
+        }
+    }
+
+    @Test
     void shrinksASolvedCircuitIntoASmallerBox() throws Exception {
         CircuitDraft draft = new CircuitDraft();
         draft.setCorner1(new Cell(0, 0, 0));

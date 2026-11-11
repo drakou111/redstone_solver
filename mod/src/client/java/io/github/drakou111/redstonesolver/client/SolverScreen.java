@@ -545,16 +545,30 @@ public final class SolverScreen extends Screen {
                 "How long the solver may take in all (building, then shrinking): 90s, 10m, 1h");
 
         this.flowNewLine();
-        boolean compose = this.state.getMethod() == ClientState.Method.COMPOSE;
-        this.flowButton(compose ? "Build from gates" : "Search the box",
+        ClientState.Method method = this.state.getMethod();
+        boolean compose = method == ClientState.Method.COMPOSE;
+        boolean evolve = method == ClientState.Method.EVOLVE;
+        this.flowButton(compose ? "Build from gates" : evolve ? "Evolve" : "Search the box",
                 "Search the box: one search for the smallest circuit in your box. Build from gates: on/off tables "
                         + "only; builds each gate and wires them up, handles bigger tables, places the ports itself "
-                        + "and stays within your box's height (it is wider than a search result)",
+                        + "and stays within your box's height (it is wider than a search result). Evolve: boxes 2 "
+                        + "high, on/off inputs; changes the box a few blocks at a time and tests each try in the "
+                        + "simulator, starting from your blocks with Your blocks: sketch. Good at small tricky "
+                        + "circuits and at making a working circuit smaller",
                 () -> {
-                    this.state.setMethod(compose ? ClientState.Method.SOLVE : ClientState.Method.COMPOSE);
+                    this.state.setMethod(method.next());
                     this.rebuildWidgets();
                 });
-        if (!compose) {
+        boolean loops = draft.isAllowLoops();
+        this.flowButton(loops ? "Loops: allowed" : "Loops: not allowed",
+                "Allowed: a signal may run back through a component, as long as the circuit always settles "
+                        + "the same way. This can make circuits much smaller (Evolve uses it well; Search the box "
+                        + "gets slow with it). Not allowed: every signal only goes forward",
+                () -> {
+                    draft.setAllowLoops(!loops);
+                    this.rebuildWidgets();
+                });
+        if (method == ClientState.Method.SOLVE) {
             boolean alongSide = this.state.isPortsAlongSide();
             this.flowButton(alongSide ? "Ports: along their side" : "Ports: as placed",
                     "As placed: inputs and outputs stay exactly where you put them. Along their side: each may "
@@ -565,14 +579,16 @@ public final class SolverScreen extends Screen {
                         this.rebuildWidgets();
                     });
         }
-        if (compose) {
+        if (compose || evolve) {
             boolean shrinkAfter = this.state.isAutoShrink();
             this.flowButton(shrinkAfter ? "Then shrink: on" : "Then shrink: off",
-                    "Shrink the built circuit right away (gates come out spread wide; this takes more time)",
+                    "Shrink the circuit right away (gates come out spread wide; this takes more time)",
                     () -> {
                         this.state.setAutoShrink(!shrinkAfter);
                         this.rebuildWidgets();
                     });
+        }
+        if (compose) {
             boolean inOrder = this.state.isInputsInOrder();
             this.flowButton(inOrder ? "Inputs: in order" : "Inputs: any order",
                     "In order: the inputs go down the west side as IN1, IN2, ... Any order: the solver picks the "

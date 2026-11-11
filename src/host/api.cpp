@@ -16,6 +16,7 @@
 #include "redstone/compose.hpp"
 #include "redstone/layout_check.hpp"
 #include "redstone/report.hpp"
+#include "redstone/evolve.hpp"
 #include "redstone/shrink.hpp"
 
 namespace rs::host {
@@ -180,6 +181,8 @@ Json Api::handle(std::string_view route, const Json &body) {
     return this->start_compose(body);
   if (route == "shrink/start")
     return this->start_shrink(body);
+  if (route == "evolve/start")
+    return this->start_evolve(body);
   if (route == "solve/start")
     return this->start_solve(body);
   if (route == "catalog/build")
@@ -411,6 +414,75 @@ Json Api::start_shrink(const Json &body) {
                              std::chrono::steady_clock::now() - start)
                              .count();
         return JobResult{std::move(report), std::move(shrunk.spec)};
+      });
+  return Json::object();
+}
+
+// Evolve: the box searched block by block, every grid judged by the
+// simulator (redstone/evolve.hpp); the draft's hints are the start.
+// timeLimit covers everything: with "shrink", the search gets a share of it
+// and the circuit found is shrunk for the rest.
+Json Api::start_evolve(const Json &body) {
+  if (this->job_ && !this->job_->is_done())
+    throw std::invalid_argument("a solve is already running");
+  Spec spec = spec_from_json(body.at("spec"));
+  const Json &settings = body.value("options", Json::object());
+  constexpr double kSearchShare = 0.7; // of the time, with a shrink after
+  constexpr double kMinShrinkSeconds = 10.0;
+  const double total = settings.value("timeLimit", 120.0);
+  const bool then_shrink = settings.value("shrink", false);
+  EvolveOptions options;
+  options.time_limit_seconds = then_shrink ? total * kSearchShare : total;
+  options.verification = verification_from(settings);
+  ShrinkOptions shrink_options;
+  shrink_options.cut_seconds = settings.value("cutTime", 60.0);
+  shrink_options.solver.sketch_step_seconds = settings.value("sketchTime", 3.0);
+  shrink_options.solver.verification = options.verification;
+  if (total <= 0 || shrink_options.cut_seconds <= 0)
+    throw std::invalid_argument("time limits must be positive");
+  this->job_ = std::make_unique<SolveJob>(
+      spec, [spec, options, then_shrink, shrink_options,
+             total](const JobContext &job) {
+        auto start = std::chrono::steady_clock::now();
+        EvolveOptions o = options;
+        o.cancel = job.cancel;
+        o.preview = job.preview;
+        EvolveResult found = evolve(spec, o, job.progress);
+        SolveReport report;
+        auto finish = [&] {
+          report.seconds = std::chrono::duration<double>(
+                               std::chrono::steady_clock::now() - start)
+                               .count();
+        };
+        if (!found.layout) {
+          report.status = job.cancel && job.cancel->load()
+                              ? SolveStatus::Cancelled
+                              : SolveStatus::OutOfTime;
+          finish();
+          return JobResult{std::move(report), std::nullopt};
+        }
+        World layout = std::move(*found.layout);
+        std::optional<Spec> result_spec;
+        const double left =
+            total - std::chrono::duration<double>(
+                        std::chrono::steady_clock::now() - start)
+                        .count();
+        if (then_shrink && left >= kMinShrinkSeconds &&
+            !(job.cancel && job.cancel->load())) {
+          ShrinkOptions s = shrink_options;
+          s.time_limit_seconds = left;
+          s.cut_seconds = std::min(s.cut_seconds, left);
+          s.cancel = job.cancel;
+          s.preview = job.preview;
+          ShrinkResult shrunk = shrink(spec, layout, s, job.progress);
+          layout = std::move(shrunk.layout);
+          result_spec = std::move(shrunk.spec);
+        }
+        report.status = SolveStatus::Feasible;
+        report.solution =
+            EncodedSolution{layout, layout_blocks(layout), {}, {}, {}};
+        finish();
+        return JobResult{std::move(report), std::move(result_spec)};
       });
   return Json::object();
 }

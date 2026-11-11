@@ -39,6 +39,7 @@ private:
   Json check_sketch(const Json &body) const;
   Json start_solve(const Json &body);
   Json start_shrink(const Json &body);
+  Json start_evolve(const Json &body);
   Json start_compose(const Json &body);
   Json start_catalog(const Json &body);
   Json solve_status(const Json &body) const;

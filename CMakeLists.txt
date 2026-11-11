@@ -78,6 +78,7 @@ add_library(redstone_core STATIC
         src/redstone/gate_library.cpp
         src/redstone/sat_engine.cpp
         src/redstone/layout_check.cpp
+        src/redstone/evolve.cpp
         src/redstone/circuit_gen.cpp)
 target_include_directories(redstone_core PUBLIC src)
 target_compile_options(redstone_core PRIVATE ${REDSTONE_WARNINGS})
@@ -237,6 +238,7 @@ if (REDSTONE_BUILD_TESTS)
             tests/test_size_search.cpp
             tests/test_fuse.cpp
             tests/test_catalog_file.cpp
+            tests/test_evolve.cpp
             src/host/library.cpp
             src/host/catalog_file.cpp
             src/host/json_io.cpp)
