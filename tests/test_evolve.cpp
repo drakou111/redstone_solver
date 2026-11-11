@@ -166,8 +166,8 @@ TEST_CASE("evolve keeps a working sketch, loops only when allowed") {
   CHECK_FALSE(refused.layout);
   CHECK(refused.rejected > 0);
   // Its closest try is right everywhere; only the loop rule refused it.
-  CHECK(refused.checks == 32);
-  CHECK(refused.best_right == 32);
+  CHECK(refused.checks == 64); // 8 rows x 4 outputs, from built and in the walk
+  CHECK(refused.best_right == 64);
 }
 
 TEST_CASE("evolve stops when cancelled and wants a 2-high box") {

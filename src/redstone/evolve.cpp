@@ -186,7 +186,11 @@ World build(const Board &board, const std::vector<Block> &genes) {
 
 // Rows right (weighted) minus how far off the wrong outputs are, minus a
 // little per block; kInvalid for a grid that cannot be built. `right`, if
-// given, gets how many (row, output) pairs are right.
+// given, gets how many output checks are right. Each row is checked twice:
+// from the circuit as built, and in a walk through every row in turn (one
+// input changes at a time, nothing rebuilt), so a circuit that remembers
+// the row before (a loop that latches) scores low. Outputs must be right
+// by the spec's horizon, as the verifier wants.
 long score(const Board &board, const World &w, const std::vector<Block> &genes,
            bool &perfect, int *right = nullptr) {
   perfect = false;
@@ -199,29 +203,46 @@ long score(const Board &board, const World &w, const std::vector<Block> &genes,
     if (b.type != BlockType::Air)
       total -= kBlockCost;
   bool all = true;
-  // As the verifier does first: settled once as built (inputs off), then
-  // each row from there, so a circuit cannot depend on the rows before.
-  Simulator built(w);
-  if (!built.run_until_quiet(kSettleTicks))
-    return kUnsettled;
-  for (std::size_t r = 0; r < board.rows.size(); ++r) {
-    Simulator sim = built;
-    for (std::size_t k = 0; k < board.rows[r].size(); ++k)
-      sim.set_input(static_cast<int>(k), board.rows[r][k]);
-    if (!sim.run_until_quiet(kSettleTicks))
-      return kUnsettled;
+  const int deadline = board.spec.timing.horizon();
+  auto check = [&](Simulator &sim, std::size_t r) {
+    // Not at rest by the deadline: every output of the row counts wrong.
+    const bool in_time = sim.run_until_quiet(deadline);
     for (std::size_t o = 0; o < board.wanted[r].size(); ++o) {
       const SignalRange want = board.wanted[r][o];
       const int p = sim.output(static_cast<int>(o));
-      if (p >= want.min && p <= want.max) {
+      if (in_time && p >= want.min && p <= want.max) {
         total += kRowWeight;
         if (right)
           ++*right;
       } else {
         all = false;
-        total -= p < want.min ? want.min - p : p - want.max;
+        total -= p < want.min ? want.min - p : p > want.max ? p - want.max : 1;
       }
     }
+    return sim.run_until_quiet(kSettleTicks);
+  };
+  auto set_row = [&](Simulator &sim, std::size_t r) {
+    for (std::size_t k = 0; k < board.rows[r].size(); ++k)
+      sim.set_input(static_cast<int>(k), board.rows[r][k]);
+  };
+  // As the verifier does first: settled once as built (inputs off), then
+  // each row from there.
+  Simulator built(w);
+  if (!built.run_until_quiet(kSettleTicks))
+    return kUnsettled;
+  for (std::size_t r = 0; r < board.rows.size(); ++r) {
+    Simulator sim = built;
+    set_row(sim, r);
+    if (!check(sim, r))
+      return kUnsettled;
+  }
+  // The walk: rows are in Gray code order, and it ends back at the first.
+  Simulator walk = built;
+  for (std::size_t i = 1; i <= board.rows.size(); ++i) {
+    const std::size_t r = i % board.rows.size();
+    set_row(walk, r);
+    if (!check(walk, r))
+      return kUnsettled;
   }
   perfect = all;
   return total;
@@ -229,7 +250,8 @@ long score(const Board &board, const World &w, const std::vector<Block> &genes,
 
 // How many (row, output) pairs there are to get right.
 int checks_of(const Board &board) {
-  return static_cast<int>(board.rows.size() * board.wanted.front().size());
+  // Each row from the circuit as built, and once more in the walk.
+  return 2 * static_cast<int>(board.rows.size() * board.wanted.front().size());
 }
 
 long perfect_score_of(const Board &board) {
@@ -244,17 +266,30 @@ public:
   Acceptance(const Board &board, const VerificationOptions &verification)
       : board_(board), verification_(verification) {}
 
-  bool accepts(const World &w) {
+  // Why `w` is refused, or nothing when it is accepted.
+  std::optional<std::string> refusal(const World &w) {
     if (!this->board_.spec.allow_feedback) {
       if (!this->express_)
         this->express_ = std::make_unique<ExpressChecker>(this->board_.spec);
       if (!this->express_->can_express(w))
-        return false;
+        return "a signal loops through a component (Loops: not allowed)";
     }
-    return !verify_layout(w, this->board_.spec,
-                          this->board_.spec.verification_vectors(),
-                          this->verification_);
+    std::optional<VerificationFailure> failure = verify_layout(
+        w, this->board_.spec, this->board_.spec.verification_vectors(),
+        this->verification_);
+    if (!failure)
+      return std::nullopt;
+    std::string where =
+        failure->from
+            ? std::format("switching {} -> {}", to_string(*failure->from),
+                          to_string(failure->to))
+            : std::format("settling at {}", to_string(failure->to));
+    if (!failure->at_identity_placement())
+      where += ", built turned or elsewhere";
+    return std::format("{}: {}", where, failure->reason);
   }
+
+  bool accepts(const World &w) { return !this->refusal(w); }
 
 private:
   const Board &board_;
@@ -278,6 +313,7 @@ struct Shared {
   std::atomic<long> rejected = 0;
   std::atomic<long> runs = 0;
   std::mutex mutex;
+  std::string first_refusal; // under mutex: why the first such grid failed
   std::optional<World> found;
   std::vector<Block> best_genes; // under mutex: the best grid of all
   long best_genes_score = std::numeric_limits<long>::min();
@@ -354,14 +390,18 @@ void anneal(const Board &board, const EvolveOptions &o, unsigned seed,
       if (s == kInvalid)
         continue;
       if (perfect) {
-        if (acceptance.accepts(w)) {
+        std::optional<std::string> refused = acceptance.refusal(w);
+        if (!refused) {
           std::lock_guard lock(shared.mutex);
           if (!shared.found)
             shared.found = w;
           shared.done = true;
           break;
         }
-        ++shared.rejected;
+        if (++shared.rejected == 1) {
+          std::lock_guard lock(shared.mutex);
+          shared.first_refusal = *refused;
+        }
       }
       if (s >= current || unit(rng) < std::exp((s - current) / t)) {
         genes = std::move(next);
@@ -403,7 +443,8 @@ EvolveResult evolve(const Spec &spec, const EvolveOptions &options,
   const int checks = checks_of(board);
   say(std::format("evolve: {}x{}x{} box, {} cells to fill, {} threads{}; "
                   "{} output checks to get right ({} input rows x {} "
-                  "outputs)",
+                  "outputs, each from the circuit as built and again in a "
+                  "walk through the rows)",
                   spec.size.x, spec.size.y, spec.size.z, board.cells.size(),
                   threads, spec.allow_feedback ? ", loops allowed" : "", checks,
                   board.rows.size(), board.wanted.front().size()));
@@ -500,8 +541,8 @@ EvolveResult evolve(const Spec &spec, const EvolveOptions &options,
                     result.best_right, checks,
                     result.rejected > 0
                         ? std::format(" ({} right everywhere but refused "
-                                      "by the checks)",
-                                      result.rejected)
+                                      "by the checks; the first: {})",
+                                      result.rejected, shared.first_refusal)
                         : std::string()));
   return result;
 }
