@@ -36,6 +36,8 @@ struct EvolveResult {
   std::optional<World> best;   // otherwise the closest grid found
   long best_score = 0;         // rows-right score of `best`
   long perfect_score = 0;      // the score of a grid right in every row
+  int checks = 0;              // (row, output) pairs to get right
+  int best_right = 0;          // how many of them `best` gets right
   long evaluations = 0;
   long rejected = 0; // grids right in every row the checks refused
 };

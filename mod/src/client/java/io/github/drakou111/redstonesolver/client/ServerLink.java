@@ -1,5 +1,6 @@
 package io.github.drakou111.redstonesolver.client;
 
+import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
@@ -29,6 +30,8 @@ public final class ServerLink {
     // Circuits are checked as built, facing this way only: much faster, and
     // rotated or moved copies behave the same in practice.
     private static final boolean ONE_PLACEMENT = true;
+    /** How Evolve's log lines start. */
+    private static final String EVOLVE_PREFIX = "evolve: ";
 
     private final ClientState state;
     private final DraftAutosave autosave;
@@ -264,11 +267,29 @@ public final class ServerLink {
             return;
         }
         if (!json.has("blockCount")) {
+            Optional<String> closest = closestTry(json);
+            if (closest.isPresent()) {
+                player.sendSystemMessage(Chat.error("No working circuit yet: " + closest.get()
+                        + ". The hologram showed that closest try; give it more time, or start from it as a sketch."));
+                return;
+            }
             player.sendSystemMessage(Chat.error("No circuit found (%s after %.0f s). Try a bigger box, looser timing or more time."
                     .formatted(json.get("status").getAsString(), json.get("seconds").getAsDouble())));
             return;
         }
         player.sendSystemMessage(resultMessage(json));
+    }
+
+    /** For Evolve: how close its best try came ("stopped after 26 s; the closest got 28 of 32 output checks right"). */
+    static Optional<String> closestTry(JsonObject result) {
+        if (!result.has("log")) return Optional.empty();
+        JsonArray log = result.getAsJsonArray("log");
+        for (int i = log.size() - 1; i >= 0; i--) {
+            String line = log.get(i).getAsString();
+            if (line.startsWith(EVOLVE_PREFIX) && line.contains("the closest got"))
+                return Optional.of(line.substring(EVOLVE_PREFIX.length()));
+        }
+        return Optional.empty();
     }
 
     static MutableComponent resultMessage(JsonObject json) {

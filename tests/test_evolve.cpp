@@ -1,11 +1,12 @@
-#include <catch2/catch_test_macros.hpp>
-
 #include <atomic>
 #include <string>
 
 #include "redstone/evolve.hpp"
 #include "redstone/spec.hpp"
 #include "redstone/verifier.hpp"
+
+// Last, so Catch2's CHECK replaces the one abseil (via OR-Tools) defines.
+#include <catch2/catch_test_macros.hpp>
 
 using namespace rs;
 
@@ -163,6 +164,9 @@ TEST_CASE("evolve keeps a working sketch, loops only when allowed") {
   EvolveResult refused = evolve(spec, quick(5));
   CHECK_FALSE(refused.layout);
   CHECK(refused.rejected > 0);
+  // Its closest try is right everywhere; only the loop rule refused it.
+  CHECK(refused.checks == 32);
+  CHECK(refused.best_right == 32);
 }
 
 TEST_CASE("evolve stops when cancelled and wants a 2-high box") {

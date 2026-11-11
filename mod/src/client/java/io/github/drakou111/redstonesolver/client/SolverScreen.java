@@ -843,9 +843,15 @@ public final class SolverScreen extends Screen {
             lines.add("Failed: " + result.get("error").getAsString());
             color = BAD_COLOR;
         } else if (!result.has("blockCount")) {
-            lines.add("No circuit found (%s after %.0f s).".formatted(result.get("status").getAsString(),
-                    result.get("seconds").getAsDouble()));
-            lines.add("Try a bigger box, looser timing or more time.");
+            Optional<String> closest = ServerLink.closestTry(result);
+            if (closest.isPresent()) {
+                lines.add("No working circuit yet: " + closest.get() + ".");
+                lines.add("Give it more time, or start from your blocks as a sketch.");
+            } else {
+                lines.add("No circuit found (%s after %.0f s).".formatted(result.get("status").getAsString(),
+                        result.get("seconds").getAsDouble()));
+                lines.add("Try a bigger box, looser timing or more time.");
+            }
             color = BAD_COLOR;
         } else {
             JsonArray size = result.getAsJsonArray("size");

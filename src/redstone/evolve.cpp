@@ -169,10 +169,13 @@ World build(const Board &board, const std::vector<Block> &genes) {
 }
 
 // Rows right (weighted) minus how far off the wrong outputs are, minus a
-// little per block; kInvalid for a grid that cannot be built.
+// little per block; kInvalid for a grid that cannot be built. `right`, if
+// given, gets how many (row, output) pairs are right.
 long score(const Board &board, const World &w, const std::vector<Block> &genes,
-           bool &perfect) {
+           bool &perfect, int *right = nullptr) {
   perfect = false;
+  if (right)
+    *right = 0;
   if (!w.validate().empty())
     return kInvalid;
   long total = 0;
@@ -196,6 +199,8 @@ long score(const Board &board, const World &w, const std::vector<Block> &genes,
       const int p = sim.output(static_cast<int>(o));
       if (p >= want.min && p <= want.max) {
         total += kRowWeight;
+        if (right)
+          ++*right;
       } else {
         all = false;
         total -= p < want.min ? want.min - p : p - want.max;
@@ -206,9 +211,13 @@ long score(const Board &board, const World &w, const std::vector<Block> &genes,
   return total;
 }
 
+// How many (row, output) pairs there are to get right.
+int checks_of(const Board &board) {
+  return static_cast<int>(board.rows.size() * board.wanted.front().size());
+}
+
 long perfect_score_of(const Board &board) {
-  return kRowWeight *
-         static_cast<long>(board.rows.size() * board.wanted.front().size());
+  return kRowWeight * checks_of(board);
 }
 
 // The checks a grid that gets every row right must pass: without feedback,
@@ -247,7 +256,7 @@ struct Shared {
   std::optional<World> found;
   std::vector<Block> best_genes; // under mutex
   long best_genes_score = std::numeric_limits<long>::min();
-  bool best_changed = false; // under mutex: a new best to preview
+  int best_version = 0; // under mutex: counts new bests
 };
 
 int thread_count(int asked) {
@@ -329,7 +338,7 @@ void anneal(const Board &board, const EvolveOptions &o, unsigned seed,
           if (current > shared.best_genes_score) {
             shared.best_genes_score = current;
             shared.best_genes = genes;
-            shared.best_changed = true;
+            ++shared.best_version;
           }
         }
       }
@@ -351,11 +360,13 @@ EvolveResult evolve(const Spec &spec, const EvolveOptions &options,
     if (progress)
       progress(message);
   };
-  say(std::format("evolve: {}x{}x{} box, {} cells to fill, {} rows, {} "
-                  "threads{}",
+  const int checks = checks_of(board);
+  say(std::format("evolve: {}x{}x{} box, {} cells to fill, {} threads{}; "
+                  "{} output checks to get right ({} input rows x {} "
+                  "outputs)",
                   spec.size.x, spec.size.y, spec.size.z, board.cells.size(),
-                  board.rows.size(), threads,
-                  spec.allow_feedback ? ", loops allowed" : ""));
+                  threads, spec.allow_feedback ? ", loops allowed" : "", checks,
+                  board.rows.size(), board.wanted.front().size()));
 
   Shared shared;
   const auto start = Clock::now();
@@ -370,16 +381,41 @@ EvolveResult evolve(const Spec &spec, const EvolveOptions &options,
   const long perfect = perfect_score_of(board);
   auto next_progress = start + kProgressEvery;
   auto next_preview = start;
+  int seen_version = 0, previewed_version = 0;
+  int best_right = -1;
+  // How many checks the best grid so far gets right (when it changed).
+  auto check_best = [&] {
+    std::vector<Block> genes;
+    {
+      std::lock_guard lock(shared.mutex);
+      if (shared.best_version == seen_version)
+        return false;
+      seen_version = shared.best_version;
+      genes = shared.best_genes;
+    }
+    bool perfect_grid = false;
+    int right = 0;
+    score(board, build(board, genes), genes, perfect_grid, &right);
+    if (right <= best_right)
+      return false;
+    best_right = right;
+    return true;
+  };
   while (!shared.done && !stopped(options.cancel, deadline)) {
     std::this_thread::sleep_for(kPoll);
     const auto now = Clock::now();
+    const double s = std::chrono::duration<double>(now - start).count();
+    if (check_best())
+      say(std::format("evolve: closest so far: {} of {} output checks right "
+                      "({:.0f} s)",
+                      best_right, checks, s));
     if (options.preview && now >= next_preview) {
       std::optional<World> best;
       {
         std::lock_guard lock(shared.mutex);
-        if (shared.best_changed) {
+        if (shared.best_version != previewed_version) {
           best = build(board, shared.best_genes);
-          shared.best_changed = false;
+          previewed_version = shared.best_version;
         }
       }
       if (best)
@@ -387,10 +423,9 @@ EvolveResult evolve(const Spec &spec, const EvolveOptions &options,
       next_preview = now + kPreviewEvery;
     }
     if (now >= next_progress) {
-      const double s = std::chrono::duration<double>(now - start).count();
-      say(std::format("evolve: {:.0f} s, best {} of {} rows-right points, "
-                      "{:.0f} grids/s, {} rejected",
-                      s, shared.best.load(), perfect,
+      say(std::format("evolve: {:.0f} s, closest {} of {} output checks "
+                      "right, {:.0f} grids/s, {} rejected",
+                      s, std::max(best_right, 0), checks,
                       shared.evaluations.load() / s, shared.rejected.load()));
       next_progress = now + kProgressEvery;
     }
@@ -403,17 +438,29 @@ EvolveResult evolve(const Spec &spec, const EvolveOptions &options,
   result.evaluations = shared.evaluations;
   result.rejected = shared.rejected;
   result.layout = shared.found;
+  result.checks = checks;
   if (!shared.best_genes.empty()) {
     result.best = build(board, shared.best_genes);
     result.best_score = shared.best_genes_score;
+    check_best();
+    result.best_right = std::max(best_right, 0);
   }
   const double s = std::chrono::duration<double>(Clock::now() - start).count();
-  say(result.layout
-          ? std::format("evolve: found in {:.1f} s ({} grids)", s,
-                        result.evaluations)
-          : std::format("evolve: nothing in {:.0f} s ({} grids, best {} of "
-                        "{})",
-                        s, result.evaluations, result.best_score, perfect));
+  const bool cancelled = options.cancel && options.cancel->load();
+  if (result.layout)
+    say(std::format("evolve: found a working circuit in {:.1f} s ({} grids "
+                    "tried)",
+                    s, result.evaluations));
+  else
+    say(std::format("evolve: {} after {:.0f} s; the closest got {} of {} "
+                    "output checks right{}",
+                    cancelled ? "stopped" : "no working circuit", s,
+                    result.best_right, checks,
+                    result.rejected > 0
+                        ? std::format(" ({} right everywhere but refused "
+                                      "by the checks)",
+                                      result.rejected)
+                        : std::string()));
   return result;
 }
 
