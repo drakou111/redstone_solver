@@ -130,15 +130,7 @@ add_executable(redstone_satbench src/bench/sat_main.cpp)
 target_link_libraries(redstone_satbench PRIVATE redstone_core)
 redstone_copy_runtime_dlls(redstone_satbench)
 
-# miniz reads block textures from the user's Minecraft jar.
-FetchContent_Declare(miniz
-        GIT_REPOSITORY https://github.com/richgel999/miniz.git
-        GIT_TAG 3.1.2
-        GIT_SHALLOW TRUE)
-FetchContent_MakeAvailable(miniz)
-
-# --- Desktop app: native window (webview) showing the web UI from web/,
-# served with its JSON API from 127.0.0.1.
+# --- The solver host the mod runs: its JSON API on 127.0.0.1.
 # A localhost server needs no TLS or compression; probing for them would pick
 # up unrelated toolchains' libraries (e.g. MSYS2's zlib).
 foreach (feature OPENSSL ZLIB BROTLI ZSTD)
@@ -153,59 +145,22 @@ FetchContent_Declare(nlohmann_json
         GIT_REPOSITORY https://github.com/nlohmann/json.git
         GIT_TAG v3.12.0
         GIT_SHALLOW TRUE)
-set(WEBVIEW_BUILD_TESTS OFF CACHE BOOL "" FORCE)
-set(WEBVIEW_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
-set(WEBVIEW_BUILD_DOCS OFF CACHE BOOL "" FORCE)
-set(WEBVIEW_ENABLE_CLANG_FORMAT OFF CACHE BOOL "" FORCE)
-set(WEBVIEW_ENABLE_CLANG_TIDY OFF CACHE BOOL "" FORCE)
-set(WEBVIEW_INSTALL_TARGETS OFF CACHE BOOL "" FORCE)
-FetchContent_Declare(webview
-        GIT_REPOSITORY https://github.com/webview/webview.git
-        GIT_TAG 0.12.0
-        GIT_SHALLOW TRUE)
-FetchContent_MakeAvailable(httplib nlohmann_json webview)
-
-find_program(NPM_EXECUTABLE NAMES npm.cmd npm REQUIRED)
-set(WEB_DIR ${CMAKE_SOURCE_DIR}/web)
-set(WEB_DIST ${CMAKE_BINARY_DIR}/web_dist)
-file(GLOB_RECURSE WEB_SOURCES CONFIGURE_DEPENDS ${WEB_DIR}/src/*)
-add_custom_command(OUTPUT ${CMAKE_BINARY_DIR}/web_node_modules.stamp
-        COMMAND ${NPM_EXECUTABLE} ci --no-audit --no-fund
-        COMMAND ${CMAKE_COMMAND} -E touch ${CMAKE_BINARY_DIR}/web_node_modules.stamp
-        DEPENDS ${WEB_DIR}/package-lock.json
-        WORKING_DIRECTORY ${WEB_DIR}
-        COMMENT "Installing web UI packages")
-add_custom_command(OUTPUT ${WEB_DIST}/index.html
-        COMMAND ${NPM_EXECUTABLE} run build -- --outDir ${WEB_DIST}
-        DEPENDS ${CMAKE_BINARY_DIR}/web_node_modules.stamp ${WEB_SOURCES}
-        ${WEB_DIR}/index.html ${WEB_DIR}/vite.config.ts ${WEB_DIR}/tsconfig.json
-        WORKING_DIRECTORY ${WEB_DIR}
-        COMMENT "Building the web UI")
-set(EMBEDDED_CPP ${CMAKE_BINARY_DIR}/generated/embedded_files.cpp)
-add_custom_command(OUTPUT ${EMBEDDED_CPP}
-        COMMAND ${CMAKE_COMMAND} -DINPUT_DIR=${WEB_DIST} -DOUTPUT=${EMBEDDED_CPP}
-        -P ${CMAKE_SOURCE_DIR}/cmake/EmbedFiles.cmake
-        DEPENDS ${WEB_DIST}/index.html ${CMAKE_SOURCE_DIR}/cmake/EmbedFiles.cmake
-        COMMENT "Embedding the web UI")
+FetchContent_MakeAvailable(httplib nlohmann_json)
 
 add_executable(redstone_solver WIN32
         src/host/main.cpp
         src/host/api.cpp
         src/host/json_io.cpp
         src/host/library.cpp
-        src/host/catalog_file.cpp
-        src/host/minecraft_assets.cpp
-        ${EMBEDDED_CPP})
-target_link_libraries(redstone_solver PRIVATE redstone_core miniz httplib::httplib
-        nlohmann_json::nlohmann_json webview::core_static)
+        src/host/catalog_file.cpp)
+target_link_libraries(redstone_solver PRIVATE redstone_core httplib::httplib
+        nlohmann_json::nlohmann_json)
 target_compile_options(redstone_solver PRIVATE ${REDSTONE_WARNINGS})
 if (MSVC)
-    # Keep the standard main() entry point for a windowed (no console) app.
+    # No console window when the game starts it; keep the standard main().
     target_link_options(redstone_solver PRIVATE /ENTRY:mainCRTStartup)
 endif ()
 redstone_copy_runtime_dlls(redstone_solver)
-add_custom_command(TARGET redstone_solver POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_directory ${CMAKE_SOURCE_DIR}/examples $<TARGET_FILE_DIR:redstone_solver>/examples)
 
 # --- Tests
 if (REDSTONE_BUILD_TESTS)

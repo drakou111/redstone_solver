@@ -46,15 +46,6 @@ class SolverServiceEndToEndTest {
     }
 
     @Test
-    void theSolverAcceptsTheDraftSpec() {
-        try (SolverClient client = SolverClient.start(executable)) {
-            JsonObject body = new JsonObject();
-            body.add("spec", notGate().toSpecJson());
-            assertThat(client.call("spec/check", body).has("world")).isTrue();
-        }
-    }
-
-    @Test
     void solvesANotGateIntoPlaceableBlocks() throws Exception {
         CompletableFuture<SolveOutcome> done = new CompletableFuture<>();
         try (SolverService service = new SolverService(executable)) {

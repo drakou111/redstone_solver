@@ -4,15 +4,12 @@
 #include <atomic>
 #include <chrono>
 #include <format>
-#include <fstream>
 #include <future>
 #include <set>
-#include <sstream>
 #include <stdexcept>
 #include <thread>
 
 #include "host/catalog_file.hpp"
-#include "host/minecraft_assets.hpp"
 #include "redstone/compose.hpp"
 #include "redstone/layout_check.hpp"
 #include "redstone/report.hpp"
@@ -32,45 +29,9 @@ constexpr const char *kCatalogFileName = "gate_catalog.json";
 constexpr int kThreadsPerExtraSearch = 3;
 constexpr int kMaxExtraSearches = 7;
 
-constexpr int kSettleTicks = 400;
-constexpr int kMaxTicksPerRequest = 10'000;
-constexpr const char *kDefaultExample = "and_gate.txt";
-
-std::string read_text(const std::filesystem::path &path) {
-  std::ifstream file(path, std::ios::binary);
-  if (!file)
-    throw std::invalid_argument("cannot open " + path.string());
-  std::ostringstream content;
-  content << file.rdbuf();
-  return content.str();
-}
-
-std::string string_field(const Json &body, const char *name) {
-  if (!body.contains(name) || !body.at(name).is_string())
-    throw std::invalid_argument(std::format("'{}' must be a string", name));
-  return body.at(name).get<std::string>();
-}
-
-int int_field(const Json &body, const char *name) {
-  if (!body.contains(name) || !body.at(name).is_number_integer())
-    throw std::invalid_argument(std::format("'{}' must be an integer", name));
-  return body.at(name).get<int>();
-}
-
-// Number of consecutive input (or output) channels starting at 0.
-int count_ports(const World &world, bool inputs) {
-  int count = 0;
-  while (inputs ? world.find_input(count).has_value()
-                : world.find_output(count).has_value())
-    ++count;
-  return count;
-}
-
 } // namespace
 
-Api::Api(std::filesystem::path examples_dir,
-         std::optional<std::filesystem::path> library_dir)
-    : examples_dir_(std::move(examples_dir)) {
+Api::Api(std::optional<std::filesystem::path> library_dir) {
   if (library_dir) {
     this->library_ = std::make_unique<CircuitLibrary>(*library_dir);
     this->catalog_file_ = *library_dir / kCatalogFileName;
@@ -167,16 +128,6 @@ JobWork offering(CircuitLibrary *library, std::string key, Json request_spec,
 
 Json Api::handle(std::string_view route, const Json &body) {
   std::lock_guard lock(this->mutex_);
-  if (route == "session")
-    return this->session();
-  if (route == "spec/load")
-    return this->load_spec(body);
-  if (route == "spec/save")
-    return this->save_spec(body);
-  if (route == "spec/check_sketch")
-    return this->check_sketch(body);
-  if (route == "spec/check")
-    return this->check_spec(body);
   if (route == "compose/start")
     return this->start_compose(body);
   if (route == "shrink/start")
@@ -194,68 +145,13 @@ Json Api::handle(std::string_view route, const Json &body) {
       this->job_->cancel();
     return Json::object();
   }
-  if (route == "sim/reset")
-    return this->reset_simulator(body);
-  if (route == "sim/input")
-    return this->simulator_input(body);
-  if (route == "sim/tick")
-    return this->simulator_tick(body);
-  if (route == "sim/settle")
-    return this->simulator_settle();
-  if (route == "sim/use")
-    return this->simulator_use(body);
   if (route == "result/analyze")
     return this->analyze_result(body);
-  if (route == "sim/state")
-    return this->simulator_state();
   if (route == "verify")
     return this->verify(body);
   if (route == "export")
     return this->export_commands(body);
-  if (route == "textures")
-    return this->textures(body);
   throw std::invalid_argument(std::format("unknown request '{}'", route));
-}
-
-Json Api::session() const {
-  Json examples = Json::array();
-  std::error_code error;
-  for (const auto &entry :
-       std::filesystem::directory_iterator(this->examples_dir_, error))
-    if (entry.path().extension() == ".txt")
-      examples.push_back(entry.path().string());
-  std::sort(examples.begin(), examples.end());
-  std::optional<std::filesystem::path> jar = find_minecraft_jar();
-  return {{"examples", examples},
-          {"defaultPath", (this->examples_dir_ / kDefaultExample).string()},
-          {"jar", jar ? Json(jar->string()) : Json(nullptr)},
-          {"palette", [] {
-             Json names = Json::array();
-             for (BlockType type : default_palette())
-               names.push_back(palette_name(type));
-             return names;
-           }()}};
-}
-
-Json Api::load_spec(const Json &body) const {
-  std::string path = string_field(body, "path");
-  Spec spec = parse_spec(read_text(path));
-  return {{"spec", to_json(spec)}, {"path", path}};
-}
-
-Json Api::save_spec(const Json &body) const {
-  std::string path = string_field(body, "path");
-  Spec spec = spec_from_json(body.at("spec"));
-  std::ofstream file(std::filesystem::path(path), std::ios::binary);
-  if (!file)
-    throw std::invalid_argument("cannot write " + path);
-  file << format_spec(spec);
-  return {{"path", path}};
-}
-
-Json Api::check_spec(const Json &body) const {
-  Spec spec = spec_from_json(body.at("spec"));
-  return {{"world", to_json(spec.base_world())}};
 }
 
 namespace {
@@ -269,13 +165,6 @@ VerificationOptions verification_from(const Json &settings) {
 }
 
 } // namespace
-
-Json Api::check_sketch(const Json &body) const {
-  Spec spec = spec_from_json(body.at("spec"));
-  LayoutCheck check =
-      check_layout(layout_from_hints(spec), spec, verification_from(body));
-  return {{"passes", check.passes()}, {"report", format_check(check, spec)}};
-}
 
 Json Api::start_solve(const Json &body) {
   if (this->job_ && !this->job_->is_done())
@@ -773,67 +662,6 @@ Json Api::solve_status(const Json &body) const {
   return status;
 }
 
-Simulator &Api::simulator() {
-  if (!this->sim_)
-    throw std::invalid_argument("no circuit loaded in the simulator");
-  return *this->sim_;
-}
-
-const Simulator &Api::simulator() const {
-  if (!this->sim_)
-    throw std::invalid_argument("no circuit loaded in the simulator");
-  return *this->sim_;
-}
-
-Json Api::reset_simulator(const Json &body) {
-  World world = world_from_json(body.at("world"));
-  this->sim_.emplace(world);
-  this->sim_inputs_ = count_ports(world, true);
-  this->sim_outputs_ = count_ports(world, false);
-  // A live world (settle: false) evolves tick by tick, as after an edit in
-  // the game; otherwise it starts at rest.
-  if (body.value("settle", true))
-    this->sim_->run_until_quiet(kSettleTicks);
-  if (body.contains("inputs")) {
-    const Json &inputs = body.at("inputs");
-    for (int i = 0;
-         i < this->sim_inputs_ && i < static_cast<int>(inputs.size()); ++i)
-      this->sim_->set_input(i, inputs[i].get<int>());
-    this->sim_->run_until_quiet(kSettleTicks);
-  }
-  return this->simulator_state();
-}
-
-Json Api::simulator_input(const Json &body) {
-  Simulator &sim = this->simulator();
-  sim.set_input(int_field(body, "channel"), int_field(body, "value"));
-  if (body.value("settle", false))
-    sim.run_until_quiet(kSettleTicks);
-  return this->simulator_state();
-}
-
-Json Api::simulator_tick(const Json &body) {
-  int count = std::clamp(body.value("count", 1), 1, kMaxTicksPerRequest);
-  Simulator &sim = this->simulator();
-  for (int i = 0; i < count; ++i)
-    sim.tick();
-  return this->simulator_state();
-}
-
-Json Api::simulator_settle() {
-  this->simulator().run_until_quiet(kSettleTicks);
-  return this->simulator_state();
-}
-
-// A player's right-click on a lever or button.
-Json Api::simulator_use(const Json &body) {
-  const Json &at = body.at("position");
-  if (!at.is_array() || at.size() != 3)
-    throw std::invalid_argument("position must be [x, y, z]");
-  this->simulator().use({at[0].get<int>(), at[1].get<int>(), at[2].get<int>()});
-  return this->simulator_state();
-}
-
 // What the results card shows about a circuit: whether it passes, and per
 // output the latest tick at which it still changed after any input change.
 Json Api::analyze_result(const Json &body) const {
@@ -849,11 +677,6 @@ Json Api::analyze_result(const Json &body) const {
   return {{"passes", check.passes()}, {"settleTicks", settle}};
 }
 
-Json Api::simulator_state() const {
-  return simulation_json(this->simulator(), this->sim_inputs_,
-                         this->sim_outputs_);
-}
-
 Json Api::verify(const Json &body) const {
   Spec spec = spec_from_json(body.at("spec"));
   World world = world_from_json(body.at("world"));
@@ -866,21 +689,6 @@ Json Api::verify(const Json &body) const {
 
 Json Api::export_commands(const Json &body) const {
   return {{"text", setblock_commands(world_from_json(body.at("world")))}};
-}
-
-Json Api::textures(const Json &body) {
-  std::optional<std::filesystem::path> jar;
-  if (body.contains("jar") && body.at("jar").is_string())
-    jar = body.at("jar").get<std::string>();
-  else
-    jar = find_minecraft_jar();
-  if (!jar)
-    throw std::invalid_argument("no Minecraft install found; choose a jar");
-  try {
-    return {{"jar", jar->string()}, {"textures", load_block_textures(*jar)}};
-  } catch (const std::runtime_error &error) {
-    throw std::invalid_argument(error.what());
-  }
 }
 
 } // namespace rs::host

@@ -5,28 +5,24 @@
 #include <random>
 #include <string>
 #include <string_view>
-#include <thread>
 
 #include <httplib.h>
-#include <webview/webview.h>
 
 #include "host/api.hpp"
-#include "host/embedded_files.hpp"
 
 namespace {
 
-constexpr int kWindowWidth = 1600;
-constexpr int kWindowHeight = 1000;
 constexpr int kTokenBytes = 16;
 constexpr const char *kHost = "127.0.0.1";
 constexpr const char *kUsage =
     "Usage: redstone_solver [--serve] [--port <n>] [--token <t>] "
     "[--library <dir>] [--help]\n"
     "\n"
-    "Opens the Redstone Solver window.\n"
-    "  --serve     no window: serve the UI and print its URL (for testing)\n"
+    "The solver behind the Minecraft mod: serves its JSON API on 127.0.0.1\n"
+    "and prints the URL (with the session token) on the first line.\n"
+    "  --serve     accepted for compatibility; serving is all it does\n"
     "  --port <n>  port to serve on (default: any free port)\n"
-    "  --token <t> session token instead of a random one (for testing)\n"
+    "  --token <t> session token instead of a random one\n"
     "  --library <dir> keep verified circuits there; requests seen before\n"
     "              are answered from it at once\n";
 
@@ -38,8 +34,8 @@ std::string random_token() {
   return token;
 }
 
-// The UI and its API on 127.0.0.1. API calls must carry the session token so
-// other local pages cannot drive the solver or write files.
+// API calls must carry the session token so other local programs and web
+// pages cannot drive the solver or write files.
 void configure(httplib::Server &server, rs::host::Api &api,
                const std::string &token) {
   server.Post(R"(/api/(.+))", [&api, token](const httplib::Request &request,
@@ -57,31 +53,17 @@ void configure(httplib::Server &server, rs::host::Api &api,
       rs::host::Json reply = api.handle(request.matches[1].str(), body);
       response.set_content(reply.dump(), "application/json");
     } catch (const std::exception &error) {
-      // Reported to the UI, which shows it to the user.
+      // Reported to the mod, which shows it to the player.
       response.status = 400;
       response.set_content(rs::host::Json{{"error", error.what()}}.dump(),
                            "application/json");
     }
-  });
-
-  server.Get(R"(/.*)", [](const httplib::Request &request,
-                          httplib::Response &response) {
-    std::string path = request.path == "/" ? "/index.html" : request.path;
-    for (const rs::host::EmbeddedFile &file : rs::host::embedded_files()) {
-      if (file.path != path)
-        continue;
-      response.set_content(reinterpret_cast<const char *>(file.data), file.size,
-                           std::string(file.mime));
-      return;
-    }
-    response.status = 404;
   });
 }
 
 } // namespace
 
 int main(int argc, char **argv) {
-  bool serve_only = false;
   int port = 0;
   std::string token = random_token();
   std::optional<std::filesystem::path> library;
@@ -92,7 +74,7 @@ int main(int argc, char **argv) {
       return 0;
     }
     if (arg == "--serve") {
-      serve_only = true;
+      continue;
     } else if (arg == "--port" && i + 1 < argc) {
       port = std::stoi(argv[++i]);
     } else if (arg == "--token" && i + 1 < argc) {
@@ -105,10 +87,7 @@ int main(int argc, char **argv) {
     }
   }
 
-  std::filesystem::path program_dir =
-      std::filesystem::absolute(argv[0]).parent_path();
-  rs::host::Api api(program_dir / "examples", library);
-
+  rs::host::Api api(library);
   httplib::Server server;
   configure(server, api, token);
   if (port == 0)
@@ -119,24 +98,8 @@ int main(int argc, char **argv) {
     std::fprintf(stderr, "cannot listen on %s\n", kHost);
     return 1;
   }
-  std::thread listener([&server] { server.listen_after_bind(); });
-  std::string url = std::format("http://{}:{}/?token={}", kHost, port, token);
-
-  if (serve_only) {
-    std::printf("%s\n", url.c_str());
-    std::fflush(stdout);
-    listener.join();
-    return 0;
-  }
-
-  {
-    webview::webview window(false, nullptr);
-    window.set_title("Redstone Solver");
-    window.set_size(kWindowWidth, kWindowHeight, WEBVIEW_HINT_NONE);
-    window.navigate(url);
-    window.run();
-  }
-  server.stop();
-  listener.join();
+  std::printf("http://%s:%d/?token=%s\n", kHost, port, token.c_str());
+  std::fflush(stdout);
+  server.listen_after_bind();
   return 0;
 }

@@ -392,40 +392,4 @@ Json to_json(const VerificationFailure &failure) {
             {"mirrored", placement.symmetry.mirrored()}}}};
 }
 
-Json simulation_json(const Simulator &sim, int input_count, int output_count) {
-  const World &world = sim.world();
-  Json cells = Json::array();
-  for (int i = 0; i < world.volume(); ++i) {
-    Vec3 p = world.position_of(i);
-    const Block &b = world.at(p);
-    if (b.type == BlockType::Air)
-      continue;
-    CellState s = sim.state_at(p);
-    Json cell{{"position", vec3(p)},
-              {"power", s.power},
-              {"on", s.on},
-              {"locked", s.locked},
-              {"comparator", sim.comparator_output_at(p)}};
-    if (is_dust(b)) {
-      Json points = Json::array();
-      for (Dir d : kHorizontalDirs)
-        if (sim.dust_points(p, d))
-          points.push_back(to_string(d));
-      cell["points"] = points;
-    }
-    cells.push_back(std::move(cell));
-  }
-  Json inputs = Json::array();
-  for (int i = 0; i < input_count; ++i)
-    inputs.push_back(sim.input(i));
-  Json outputs = Json::array();
-  for (int o = 0; o < output_count; ++o)
-    outputs.push_back(sim.output(o));
-  return {{"time", sim.time()},
-          {"pending", sim.has_pending_ticks()},
-          {"inputs", inputs},
-          {"outputs", outputs},
-          {"cells", cells}};
-}
-
 } // namespace rs::host

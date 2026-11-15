@@ -2,7 +2,6 @@
 
 #include <nlohmann/json.hpp>
 
-#include "redstone/simulator.hpp"
 #include "redstone/solver.hpp"
 #include "redstone/spec.hpp"
 #include "redstone/verifier.hpp"
@@ -27,8 +26,5 @@ World world_from_json(const Json &json);
 
 Json to_json(const SolveReport &report);
 Json to_json(const VerificationFailure &failure);
-
-// Live state of every non-air cell, plus inputs, outputs and time.
-Json simulation_json(const Simulator &sim, int input_count, int output_count);
 
 } // namespace rs::host
