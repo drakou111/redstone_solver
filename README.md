@@ -1,78 +1,106 @@
 # redstone_solver
 
-Finds Minecraft Java Edition redstone circuits that satisfy a truth table over signal strengths,
-within a time window and a build volume. A CP-SAT model (OR-Tools) proposes the circuit with the
-fewest blocks; a game-tick simulator of vanilla redstone (classic dust update order) then checks it
-at 8 orientations and several world positions, and any counterexample is fed back into the model.
+Finds Minecraft Java Edition redstone circuits from a truth table. You describe a box, where the
+inputs and outputs are, what each output should be for each input combination (signal strengths
+0-15), how fast it must react and which blocks it may use. The solver then looks for the circuit
+with the fewest blocks. A CP-SAT model (OR-Tools) proposes circuits, and a game-tick simulator of
+vanilla redstone checks each one in every orientation, feeding any failure back into the model.
 
-## Setup
+It comes as a Fabric mod (solve from inside your world), a desktop app with a 3D editor, and a
+command line tool. All three share the same C++ solver.
 
-Windows: Visual Studio 2022 (MSVC), CMake 3.25+ and Node.js 20+. Use a CMake build with working
-TLS (the one bundled with Visual Studio or CLion; MSYS2/MinGW CMake cannot verify GitHub's
-certificate). OR-Tools, the web UI's npm packages and the other libraries are downloaded on the
-first build.
+## Install the mod (players)
+
+Requirements: Windows x64, Minecraft Java 26.3, [Fabric Loader](https://fabricmc.net/use/) 0.20.1
+or newer, and [Fabric API](https://modrinth.com/mod/fabric-api).
+
+1. Download `redstone-solver-mod-<version>.jar` from the Releases page.
+2. Put it in your `mods/` folder and start the game.
+
+On first start, the mod unpacks its solver into `.minecraft/redstone_solver/`. That happens once,
+and again only when a new version of the mod brings a changed solver. Nothing else needs to be
+installed. Linux and macOS are not supported yet: the jar carries only the Windows solver.
+
+## Use it in game
+
+In a world with cheats (all keys can be rebound under Controls):
+
+- **J** and **K** on two corner blocks set the box. Its bottom layer is kept for support blocks.
+- Place a repeater, comparator, dust or barrel where a port goes, look at it and press **I** or
+  **O** to make it an input or output (its kind and facing come from the block).
+- **P** opens a menu to keep a block, force a cell empty or clear marks.
+- **R** opens the Solver panel. There you set the truth table (one row per input combination, or
+  one formula per output such as `(A + B) % 16`), the timing, the allowed blocks, the time limit
+  and the method. Then press Solve, and Place, Discard or Shrink the result.
+
+The panel's methods (details and trade-offs in [docs/solve_methods.md](docs/solve_methods.md)):
+
+- **Search the box:** an exact search of the whole box for the fewest blocks. It is the best for
+  small circuits, and it also runs Evolve alongside.
+- **Build from gates:** splits the truth table into 2-input gates and wires prebuilt gate modules
+  together. It handles larger circuits, though they come out bigger.
+- **Evolve:** a randomized search that keeps the closest tries. It can find circuits the exact
+  search runs out of time on, and shows its best attempt so far as a hologram.
+- **Then shrink:** after Build from gates or Evolve, removes rows and columns while the circuit
+  still works.
+
+The options:
+
+- **Loops** allows feedback loops and repeater locks. Leave it off for plain logic; turn it on
+  when a memory-like circuit is fine.
+- **Inputs** and **Outputs** say whether the ports must keep the order you placed them in, or may
+  be swapped or flipped.
+
+Your draft is saved per world in `config/redstone_solver/drafts` and restored when you come back.
+`/rs save <name>` and `/rs load <name>` keep named copies, Export copies the circuit as
+`/setblock` commands, and `/rs help` lists everything as typed commands.
+
+If the solver fails, the game log (`logs/latest.log`) has its output and exit code; please
+include it in bug reports.
+
+## Build from source
+
+Windows: Visual Studio 2022 (MSVC), CMake 3.25+, Node.js 20+ and a JDK 25 for the mod. Use a CMake
+with working TLS, such as the one bundled with Visual Studio or CLion; MSYS2/MinGW CMake cannot
+verify GitHub's certificate. OR-Tools, the web UI's npm packages and the other libraries are
+downloaded on the first build.
 
 ```
 cmake --preset msvc
 cmake --build --preset release
+ctest --preset release                        # C++ tests
+cd web && npm test && npx playwright test     # UI unit and end-to-end tests
 ```
 
-Only `Release` and `RelWithDebInfo` exist: the prebuilt OR-Tools is release-only.
+Only `Release` and `RelWithDebInfo` exist, because the prebuilt OR-Tools is release-only.
 
-## Usage
-
-Run `build/msvc/Release/redstone_solver.exe`. Describe the circuit on the left (volume, inputs and
-outputs with their block type, truth table, timing, allowed blocks), or directly in the 3D view
-with the tools at its top: add or move ports, pre-place blocks the solver must keep, and mark cells
-it must leave empty. Press Solve, then explore the circuit: switch inputs by clicking them or with
-the sliders, step the simulator, edit blocks (every edit is re-checked) and export `/setblock`
-commands. Block textures are read from your own Minecraft client jar (found automatically for
-Prism and the vanilla launcher); nothing from Minecraft is bundled.
-
-Next to Solve: Compose splits an on/off truth table into the smallest network of 2-input gates,
-builds each gate with the solver and wires them column by column (it places the ports itself and
-handles larger circuits than one solve can), Shrink removes columns, rows and layers from a solved
-circuit while it still works, and Sketch checks, keeps or clears hint blocks (a draft the solver
-starts from).
-Options holds "only as drawn" (faster circuits that may fail when built rotated or elsewhere).
-
-## Minecraft mod (Fabric, 26.3)
-
-`mod/` is a Fabric mod that runs the same solver from inside the game. Build the solver first, then
-the mod (Gradle runs itself on a JDK 25 it finds installed, whatever JAVA_HOME says):
+The mod (in `mod/`) bundles the solver you just built, so build that first. Gradle runs itself on
+a JDK 25 it finds installed:
 
 ```
 cd mod
-./gradlew build          # jar in mod/build/libs; tests run the solver if it is built
-./gradlew runClient      # a dev game that already points at build/msvc/Release/redstone_solver.exe
+./gradlew build          # jar in mod/build/libs; the tests run the real solver
+./gradlew runClient      # a dev game using build/msvc/Release/redstone_solver.exe
 ```
 
-To use the jar in your own game, set `solver_exe` in `config/redstone_solver.properties` (created on
-first start). In a world with cheats (keys are rebindable under Controls):
+To use a solver other than the bundled one, set `solver_exe` in
+`config/redstone_solver.properties`.
 
-- J and K on two corner blocks set the box (its bottom layer is for supports).
-- Place a repeater, comparator, dust or barrel where a port goes, look at it and press I or O to set
-  input or output (its kind and facing come from the block). P opens the menu to keep a block,
-  force a cell empty or clear marks.
-- R opens the Solver panel: truth table (rows, or one formula per output such as `(A + B) % 16` or
-  `A + B >= 16` for on/off), timing, time limit, Solve or Compose, what to do with your
-  own blocks in the box (ignore or use as a sketch), Solve, then Place, Discard or Shrink.
+## Desktop app
 
-Your draft is saved per world in `config/redstone_solver/drafts` and restored when you come back;
-`/rs save <name>` and `/rs load <name>` keep named copies. Export copies the circuit as `/setblock`
-commands. `/rs help` lists the same as typed commands.
+Run `build/msvc/Release/redstone_solver.exe`. Describe the circuit on the left (volume, ports,
+truth table, timing, allowed blocks), or directly in the 3D view: add or move ports, pre-place
+blocks the solver must keep, and mark cells it must leave empty. Press Solve, then explore the
+circuit: switch inputs by clicking them, step the simulator, edit blocks (every edit is
+re-checked) and export `/setblock` commands. Block textures are read from your own Minecraft jar
+(found automatically for Prism and the vanilla launcher); nothing from Minecraft is bundled.
 
-Command line and tests:
+## Command line
 
 ```
 build/msvc/Release/redstone_cli.exe examples/and_gate.txt --time-limit 60
-build/msvc/Release/redstone_cli.exe my_sketch.txt --check   # simulate the layout in its hint lines
-build/msvc/Release/redstone_datagen.exe --spec examples/full_adder.txt --count 100000 --out data.rsd
-python ml/loop3.py                            # train the circuit sketcher (PyTorch, CUDA)
-python ml/compose_full_adder.py               # flat full adder from two SAT-made half adders (~10 s)
-python ml/shrink_layout.py                    # shrink it a column or row at a time (minutes per step)
-ctest --preset release                        # C++ tests
-cd web && npm test && npx playwright test     # UI unit and end-to-end tests
+build/msvc/Release/redstone_cli.exe my_sketch.txt --check    # simulate the layout in its hint lines
+build/msvc/Release/redstone_evolve.exe examples/and_gate.txt --seconds 60
 ```
 
 A spec file (see `examples/` and `redstone_cli --help`):
@@ -90,11 +118,29 @@ row IN1(ss0) -> OUT1(ss0)
 row IN2(ss0) -> OUT1(ss0)
 ```
 
-A port can also be placed by the solver: `input IN1 repeater free` plus one or more
-`region IN1 0 1 0..2` lines listing the cells it may use (ranges allowed). The solver also picks
-the facing of repeater and comparator ports. In the app, set a port to "solver picks" and draw its
-cells with the Port area tool (P).
+More spec lines:
 
-`support_layer on` (the default) keeps the bottom layer to solid (wool) support blocks, which makes solving
-much faster. `tile z` asks for a circuit whose copies can sit side by side along z without influencing each
-other. `feedback off` (the default) rules out loops and repeater locks, which would act as memory.
+- **Free ports:** `input IN1 repeater free`, plus one or more `region IN1 0 1 0..2` lines, lets
+  the solver place the port within those cells and pick its facing.
+- **`support_layer on`** (the default) keeps the bottom layer to solid support blocks, which
+  makes solving much faster.
+- **`tile z`** asks for a circuit whose copies can sit side by side along z.
+- **`feedback off`** (the default) rules out loops and repeater locks.
+
+## Repository layout
+
+| Path | Contents |
+|---|---|
+| `src/redstone/` | solver library: simulator, SAT encoder, compose, shrink, evolve |
+| `src/host/` | `redstone_solver.exe`: the desktop app, and with `--serve` the HTTP host the mod talks to |
+| `src/app`, `src/evolve`, `src/bench`, `src/datagen` | command line tools (`redstone_cli`, `redstone_evolve`, ...) |
+| `web/` | the desktop app's UI (React, three.js) |
+| `mod/` | the Fabric mod |
+| `tests/`, `bench/`, `examples/` | C++ tests, benchmark specs, example specs |
+| `docs/` | how the solve methods compare; `ideas.md` is the roadmap of open ideas |
+| `ml/` | experimental: a PyTorch circuit sketcher and layout scripts, not used by the mod or app |
+
+## License
+
+MIT, see [LICENSE](LICENSE). The solver and the mod jar include third-party libraries under
+their own licenses; see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
