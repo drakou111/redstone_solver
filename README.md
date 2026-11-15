@@ -3,8 +3,9 @@
 Finds Minecraft Java Edition redstone circuits from a truth table. You describe a box, where the
 inputs and outputs are, what each output should be for each input combination (signal strengths
 0-15), how fast it must react and which blocks it may use. The solver then looks for the circuit
-with the fewest blocks. A CP-SAT model (OR-Tools) proposes circuits, and a game-tick simulator of
-vanilla redstone checks each one in every orientation, feeding any failure back into the model.
+with the fewest blocks. The circuit is encoded as SAT clauses and solved by several CaDiCaL
+instances racing with different seeds; a game-tick simulator of vanilla redstone checks each
+candidate in every orientation, and any failure is fed back as new clauses.
 
 It comes as a Fabric mod: you describe the circuit in your world and the mod places the result.
 The same C++ solver also has command line tools.
