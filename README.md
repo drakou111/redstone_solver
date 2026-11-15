@@ -6,8 +6,8 @@ inputs and outputs are, what each output should be for each input combination (s
 with the fewest blocks. A CP-SAT model (OR-Tools) proposes circuits, and a game-tick simulator of
 vanilla redstone checks each one in every orientation, feeding any failure back into the model.
 
-It comes as a Fabric mod (solve from inside your world), a desktop app with a 3D editor, and a
-command line tool. All three share the same C++ solver.
+It comes as a Fabric mod: you describe the circuit in your world and the mod places the result.
+The same C++ solver also has command line tools.
 
 ## Install the mod (players)
 
@@ -60,16 +60,15 @@ include it in bug reports.
 
 ## Build from source
 
-Windows: Visual Studio 2022 (MSVC), CMake 3.25+, Node.js 20+ and a JDK 25 for the mod. Use a CMake
+Windows: Visual Studio 2022 (MSVC), CMake 3.25+ and a JDK 25 for the mod. Use a CMake
 with working TLS, such as the one bundled with Visual Studio or CLion; MSYS2/MinGW CMake cannot
-verify GitHub's certificate. OR-Tools, the web UI's npm packages and the other libraries are
-downloaded on the first build.
+verify GitHub's certificate. OR-Tools and the other libraries are downloaded on
+the first build.
 
 ```
 cmake --preset msvc
 cmake --build --preset release
-ctest --preset release                        # C++ tests
-cd web && npm test && npx playwright test     # UI unit and end-to-end tests
+ctest --preset release      # C++ tests
 ```
 
 Only `Release` and `RelWithDebInfo` exist, because the prebuilt OR-Tools is release-only.
@@ -85,15 +84,6 @@ cd mod
 
 To use a solver other than the bundled one, set `solver_exe` in
 `config/redstone_solver.properties`.
-
-## Desktop app
-
-Run `build/msvc/Release/redstone_solver.exe`. Describe the circuit on the left (volume, ports,
-truth table, timing, allowed blocks), or directly in the 3D view: add or move ports, pre-place
-blocks the solver must keep, and mark cells it must leave empty. Press Solve, then explore the
-circuit: switch inputs by clicking them, step the simulator, edit blocks (every edit is
-re-checked) and export `/setblock` commands. Block textures are read from your own Minecraft jar
-(found automatically for Prism and the vanilla launcher); nothing from Minecraft is bundled.
 
 ## Command line
 
@@ -132,9 +122,8 @@ More spec lines:
 | Path | Contents |
 |---|---|
 | `src/redstone/` | solver library: simulator, SAT encoder, compose, shrink, evolve |
-| `src/host/` | `redstone_solver.exe`: the desktop app, and with `--serve` the HTTP host the mod talks to |
+| `src/host/` | `redstone_solver.exe`: the local HTTP host the mod starts and talks to |
 | `src/app`, `src/evolve`, `src/bench`, `src/datagen` | command line tools (`redstone_cli`, `redstone_evolve`, ...) |
-| `web/` | the desktop app's UI (React, three.js) |
 | `mod/` | the Fabric mod |
 | `tests/`, `bench/`, `examples/` | C++ tests, benchmark specs, example specs |
 | `docs/` | how the solve methods compare; `ideas.md` is the roadmap of open ideas |

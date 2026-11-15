@@ -1,7 +1,7 @@
 # Third-party notices
 
-redstone_solver is MIT licensed (see `LICENSE`). The solver program and the mod jar include the
-following third-party software; each license text is in `licenses/`.
+redstone_solver is MIT licensed (see `LICENSE`). The mod jar includes the solver program, which contains
+the following third-party software; each license text is in `licenses/`.
 
 ## Native solver (redstone_solver.exe and its DLLs)
 
@@ -20,22 +20,8 @@ following third-party software; each license text is in `licenses/`.
 | [zlib](https://zlib.net) 1.3.1 (from the OR-Tools package) | zlib | `licenses/zlib.txt` |
 | [bzip2](https://sourceware.org/bzip2/) (from the OR-Tools package) | bzip2 (BSD-style) | `licenses/bzip2.txt` |
 | [CaDiCaL](https://github.com/arminbiere/cadical) 3.0.1 | MIT | `licenses/cadical.txt` |
-| [miniz](https://github.com/richgel999/miniz) 3.1.2 | MIT | `licenses/miniz.txt` |
 | [cpp-httplib](https://github.com/yhirose/cpp-httplib) 0.60.1 | MIT | `licenses/cpp-httplib.txt` |
 | [nlohmann/json](https://github.com/nlohmann/json) 3.12.0 | MIT | `licenses/nlohmann-json.txt` |
-| [webview](https://github.com/webview/webview) 0.12.0 | MIT | `licenses/webview.txt` |
-| Microsoft WebView2 SDK | BSD-3-Clause | `licenses/webview2-sdk.txt` |
 | Microsoft Visual C++ runtime (msvcp140, vcruntime140) | Visual Studio redistributable terms | - |
 
-## Web UI (embedded in the solver program)
-
-| Component | License | Text |
-|---|---|---|
-| [React and React DOM](https://react.dev) | MIT | `licenses/react.txt`, `licenses/react-dom.txt` |
-| [three.js](https://threejs.org) | MIT | `licenses/three.txt` |
-| [@react-three/fiber](https://github.com/pmndrs/react-three-fiber) | MIT | `licenses/react-three-fiber.txt` |
-| [@react-three/drei](https://github.com/pmndrs/drei) | MIT | `licenses/react-three-drei.txt` |
-| [zustand](https://github.com/pmndrs/zustand) | MIT | `licenses/zustand.txt` |
-
-Nothing from Minecraft is included: block textures are read at run time from the player's own
-game jar.
+Nothing from Minecraft is included.
