@@ -3,8 +3,8 @@ package io.github.drakou111.redstonesolver;
 import java.io.IOException;
 import java.io.Reader;
 import java.io.UncheckedIOException;
-import java.lang.System.Logger;
-import java.lang.System.Logger.Level;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -17,7 +17,7 @@ public record ModConfig(Path solverExecutable) {
     public static final String EXECUTABLE_PROPERTY = "redstone.solver.exe";
 
     private static final String KEY_EXECUTABLE = "solver_exe";
-    private static final Logger LOGGER = System.getLogger(ModConfig.class.getName());
+    private static final Logger LOGGER = LoggerFactory.getLogger(ModConfig.class);
     private static final String TEMPLATE = """
             # Path to redstone_solver.exe. Empty: the solver that comes with the mod (unpacked into
             # redstone_solver/ in the game folder), or one built there with: cmake --build --preset release
@@ -30,7 +30,7 @@ public record ModConfig(Path solverExecutable) {
         try {
             return NativeSolver.install(dir).orElse(fallback);
         } catch (UncheckedIOException | IllegalStateException e) {
-            LOGGER.log(Level.WARNING, "Could not unpack the solver that comes with the mod: " + e.getMessage(), e);
+            LOGGER.warn("Could not unpack the solver that comes with the mod: " + e.getMessage(), e);
             return fallback;
         }
     }

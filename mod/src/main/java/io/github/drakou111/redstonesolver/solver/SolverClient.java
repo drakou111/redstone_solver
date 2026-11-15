@@ -7,8 +7,6 @@ import com.google.gson.JsonParser;
 import java.io.BufferedReader;
 import java.io.IOException;
 import java.io.InputStreamReader;
-import java.lang.System.Logger;
-import java.lang.System.Logger.Level;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
@@ -18,35 +16,49 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.security.SecureRandom;
 import java.time.Duration;
-import java.util.HexFormat;
-import java.util.Optional;
-import java.util.List;
+import java.util.ArrayDeque;
 import java.util.ArrayList;
+import java.util.Deque;
+import java.util.HexFormat;
+import java.util.List;
 import java.util.Objects;
+import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /** Runs {@code redstone_solver --serve} as a child process and calls its HTTP API. */
 public final class SolverClient implements AutoCloseable {
-    private static final Logger LOGGER = System.getLogger(SolverClient.class.getName());
+    private static final Logger LOGGER = LoggerFactory.getLogger(SolverClient.class);
     private static final Duration STARTUP_TIMEOUT = Duration.ofSeconds(15);
     private static final Duration REQUEST_TIMEOUT = Duration.ofSeconds(60);
     private static final Pattern SERVE_URL = Pattern.compile("^(http://[^/]+)/\\?token=(\\S+)$");
     private static final int TOKEN_BYTES = 16;
+    /** The last stderr lines kept for the error message when the solver dies. */
+    private static final int KEPT_STDERR_LINES = 5;
+    // Windows NTSTATUS codes a crashed native process exits with.
+    private static final int STATUS_ACCESS_VIOLATION = 0xC0000005;
+    private static final int STATUS_NO_MEMORY = 0xC0000017;
+    private static final int STATUS_STACK_OVERFLOW = 0xC00000FD;
+    private static final int STATUS_STACK_BUFFER_OVERRUN = 0xC0000409;
+    private static final int STATUS_ABORT = 3;
 
     private final Process process;
     private final String baseUrl;
     private final String token;
     private final HttpClient http;
+    private final Deque<String> lastErrors;
 
-    private SolverClient(Process process, String baseUrl, String token) {
+    private SolverClient(Process process, String baseUrl, String token, Deque<String> lastErrors) {
         this.process = process;
         this.baseUrl = baseUrl;
         this.token = token;
+        this.lastErrors = lastErrors;
         this.http = HttpClient.newBuilder().connectTimeout(REQUEST_TIMEOUT).build();
     }
 
@@ -75,8 +87,9 @@ public final class SolverClient implements AutoCloseable {
         } catch (IOException e) {
             throw new SolverException("Cannot start the solver at " + executable + ": " + e.getMessage(), e);
         }
-        drainToLog(new BufferedReader(new InputStreamReader(process.getErrorStream(), StandardCharsets.UTF_8)),
-                "solver stderr");
+        Deque<String> lastErrors = new ArrayDeque<>();
+        drainStderr(new BufferedReader(new InputStreamReader(process.getErrorStream(), StandardCharsets.UTF_8)),
+                lastErrors);
 
         BufferedReader stdout = new BufferedReader(new InputStreamReader(process.getInputStream(), StandardCharsets.UTF_8));
         CompletableFuture<String> firstLine = CompletableFuture.supplyAsync(() -> {
@@ -101,18 +114,18 @@ public final class SolverClient implements AutoCloseable {
             throw new SolverException("The solver failed to start: " + e.getCause().getMessage(), e.getCause());
         }
         if (line == null) {
-            String code = exitCode(process);
+            String reason = waitForExit(process).map(SolverClient::describeExit).orElse("it is still running");
             process.destroy();
-            throw new SolverException("The solver exited at startup (exit code " + code + ")");
+            throw new SolverException("The solver exited at startup: " + reason + lastLines(lastErrors));
         }
         Matcher matcher = SERVE_URL.matcher(line.trim());
         if (!matcher.matches()) {
             process.destroy();
             throw new SolverException("Unexpected solver startup line: " + line);
         }
-        drainToLog(stdout, "solver stdout");
-        LOGGER.log(Level.INFO, "Solver started at {0}", matcher.group(1));
-        return new SolverClient(process, matcher.group(1), matcher.group(2));
+        drainStdout(stdout);
+        LOGGER.info("Solver started at {}", matcher.group(1));
+        return new SolverClient(process, matcher.group(1), matcher.group(2), lastErrors);
     }
 
     public boolean isAlive() {
@@ -131,6 +144,12 @@ public final class SolverClient implements AutoCloseable {
         try {
             response = this.http.send(request, HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
         } catch (IOException e) {
+            Optional<Integer> exit = waitForExit(this.process);
+            if (exit.isPresent()) {
+                String message = "The solver stopped: " + describeExit(exit.get()) + lastLines(this.lastErrors);
+                LOGGER.error(message);
+                throw new SolverException(message, e);
+            }
             throw new SolverException("The solver did not answer " + route + ": " + e.getMessage(), e);
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
@@ -163,23 +182,61 @@ public final class SolverClient implements AutoCloseable {
         }
     }
 
-    private static void drainToLog(BufferedReader lines, String name) {
-        Thread.ofVirtual().name(name).start(() -> {
+    /** Explains an exit code in words a player can pass on in a bug report. */
+    static String describeExit(int code) {
+        String hex = "exit code 0x%08X".formatted(code);
+        return switch (code) {
+            case STATUS_NO_MEMORY -> "it ran out of memory (" + hex + "); try a smaller box or a shorter time limit";
+            case STATUS_ABORT, STATUS_STACK_BUFFER_OVERRUN ->
+                    "it aborted, often from running out of memory (" + hex + "); try a smaller box";
+            case STATUS_ACCESS_VIOLATION -> "it crashed (" + hex + ", access violation)";
+            case STATUS_STACK_OVERFLOW -> "it crashed (" + hex + ", stack overflow)";
+            case 1 -> "it was ended from outside, for example by an antivirus or the task manager (" + hex + ")";
+            default -> "it exited unexpectedly (" + hex + ")";
+        };
+    }
+
+    private static Optional<Integer> waitForExit(Process process) {
+        try {
+            return process.waitFor(1, TimeUnit.SECONDS) ? Optional.of(process.exitValue()) : Optional.empty();
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            return Optional.empty();
+        }
+    }
+
+    private static String lastLines(Deque<String> lastErrors) {
+        synchronized (lastErrors) {
+            return lastErrors.isEmpty() ? "" : ". Its last output: " + String.join(" | ", lastErrors);
+        }
+    }
+
+    /** The solver writes to stderr only when something goes wrong, so every line goes to the game log. */
+    private static void drainStderr(BufferedReader lines, Deque<String> lastErrors) {
+        Thread.ofVirtual().name("solver stderr").start(() -> {
             try (BufferedReader reader = lines) {
                 String line;
-                while ((line = reader.readLine()) != null) LOGGER.log(Level.DEBUG, "{0}: {1}", name, line);
+                while ((line = reader.readLine()) != null) {
+                    LOGGER.warn("solver: {}", line);
+                    synchronized (lastErrors) {
+                        if (lastErrors.size() == KEPT_STDERR_LINES) lastErrors.removeFirst();
+                        lastErrors.addLast(line);
+                    }
+                }
             } catch (IOException e) {
-                LOGGER.log(Level.DEBUG, name + " closed: " + e.getMessage());
+                LOGGER.debug("solver stderr closed: {}", e.getMessage());
             }
         });
     }
 
-    private static String exitCode(Process process) {
-        try {
-            return process.waitFor(1, TimeUnit.SECONDS) ? String.valueOf(process.exitValue()) : "still running";
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-            return "unknown";
-        }
+    private static void drainStdout(BufferedReader lines) {
+        Thread.ofVirtual().name("solver stdout").start(() -> {
+            try (BufferedReader reader = lines) {
+                String line;
+                while ((line = reader.readLine()) != null) LOGGER.info("solver: {}", line);
+            } catch (IOException e) {
+                LOGGER.debug("solver stdout closed: {}", e.getMessage());
+            }
+        });
     }
 }

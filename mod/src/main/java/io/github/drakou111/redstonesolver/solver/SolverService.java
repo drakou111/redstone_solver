@@ -4,8 +4,8 @@ import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import io.github.drakou111.redstonesolver.core.Layout;
-import java.lang.System.Logger;
-import java.lang.System.Logger.Level;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import java.nio.file.Path;
 import java.time.Duration;
 import java.util.ArrayList;
@@ -22,7 +22,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 public final class SolverService implements AutoCloseable {
     public static final Set<String> JOB_ROUTES = Set.of("solve/start", "compose/start", "shrink/start", "evolve/start");
 
-    private static final Logger LOGGER = System.getLogger(SolverService.class.getName());
+    private static final Logger LOGGER = LoggerFactory.getLogger(SolverService.class);
     private static final Duration POLL_INTERVAL = Duration.ofMillis(500);
 
     /** Receives progress and the end of a job, on the polling thread. */
@@ -90,7 +90,7 @@ public final class SolverService implements AutoCloseable {
             } catch (SolverException e) {
                 outcome = failure(e.getMessage());
             } catch (RuntimeException e) {
-                LOGGER.log(Level.ERROR, "Solver job failed", e);
+                LOGGER.error("Solver job failed", e);
                 outcome = failure("Unexpected error: " + e);
             } finally {
                 this.running.set(false);
@@ -119,7 +119,7 @@ public final class SolverService implements AutoCloseable {
 
     private synchronized SolverClient client() {
         if (this.client == null || !this.client.isAlive()) {
-            if (this.client != null) LOGGER.log(Level.WARNING, "The solver process ended; starting it again");
+            if (this.client != null) LOGGER.warn("The solver process ended; starting it again");
             this.client = SolverClient.start(this.executable, this.library);
         }
         return this.client;
@@ -177,7 +177,7 @@ public final class SolverService implements AutoCloseable {
             for (JsonElement tick : solver.call("result/analyze", body).getAsJsonArray("settleTicks"))
                 settle.add(tick.getAsInt());
         } catch (SolverException e) {
-            LOGGER.log(Level.WARNING, "Timing analysis failed: " + e.getMessage());
+            LOGGER.warn("Timing analysis failed: " + e.getMessage());
             analysisError = Optional.of(e.getMessage());
         }
         return new SolveOutcome(Optional.of(Layout.fromJson(layoutJson)), Optional.of(layoutJson), Optional.of(spec),

@@ -3,15 +3,15 @@ package io.github.drakou111.redstonesolver.client;
 import io.github.drakou111.redstonesolver.Chat;
 import io.github.drakou111.redstonesolver.core.CircuitDraft;
 import java.io.UncheckedIOException;
-import java.lang.System.Logger;
-import java.lang.System.Logger.Level;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import java.util.Optional;
 import net.fabricmc.fabric.api.client.networking.v1.ClientPlayConnectionEvents;
 import net.minecraft.client.Minecraft;
 
 /** Restores the draft of a world or server on joining it and saves it on leaving. */
 public final class DraftAutosave {
-    private static final Logger LOGGER = System.getLogger(DraftAutosave.class.getName());
+    private static final Logger LOGGER = LoggerFactory.getLogger(DraftAutosave.class);
 
     private final ClientState state;
     private final DraftFiles files;
@@ -33,7 +33,7 @@ public final class DraftAutosave {
         try {
             this.files.save(this.currentName, this.state, true);
         } catch (UncheckedIOException e) {
-            LOGGER.log(Level.WARNING, "Could not save the draft: " + e.getMessage());
+            LOGGER.warn("Could not save the draft: " + e.getMessage());
         }
     }
 
@@ -47,7 +47,7 @@ public final class DraftAutosave {
             if (this.files.load(this.currentName, this.state) && client.player != null)
                 client.player.sendSystemMessage(Chat.hint("[Solver] Restored your draft for this world."));
         } catch (IllegalArgumentException | UncheckedIOException e) {
-            LOGGER.log(Level.WARNING, "Could not restore the draft: " + e.getMessage());
+            LOGGER.warn("Could not restore the draft: " + e.getMessage());
             if (client.player != null)
                 client.player.sendSystemMessage(Chat.error("Could not restore your draft: " + e.getMessage()));
         }
