@@ -115,6 +115,9 @@ def bundleSolver = tasks.register("bundleSolver", BundleSolver) {
 
 jar {
 	from(bundleSolver)
+	// The licenses of everything the jar carries (the bundled solver included).
+	from("../LICENSE", "../THIRD_PARTY_NOTICES.md")
+	from("../licenses") { into "licenses" }
 }
 
 tasks.withType(JavaCompile).configureEach {
