@@ -25,3 +25,8 @@ CLAUDE.local.md
 
 # Python
 __pycache__/
+
+# Tool caches
+.ruff_cache/
+.pytest_cache/
+node_modules/
